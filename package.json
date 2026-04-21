@@ -33,6 +33,8 @@
     "events": "^3.3.0"
   },
   "devDependencies": {
+    "@kubernetes/client-node": "^1.4.0",
+    "@testcontainers/k3s": "^11.14.0",
     "@types/node": "^24.0.0",
     "@vitest/browser": "^3.2.4",
     "esbuild": "^0.25.11",
