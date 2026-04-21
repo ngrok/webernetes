@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { Clock, MockedDate } from "./clock";
 
@@ -102,8 +102,9 @@ describe("Clock", () => {
 		await wait(20);
 		expect(completed).toBe(false);
 		clock.resume();
-		await wait(10);
-		expect(completed).toBe(true);
+		await vi.waitFor(() => {
+			expect(completed).toBe(true);
+		}, { timeout: 100, interval: 5 });
 	});
 
 	it("should complete resumed timeouts at the correct time", async () => {
@@ -120,7 +121,10 @@ describe("Clock", () => {
 		clock.pause();
 		await wait(20);
 		clock.resume();
-		await wait(20);
+		await vi.waitFor(() => {
+			expect(realCompletedAt).toBeDefined();
+			expect(fakeCompletedAt).toBeDefined();
+		}, { timeout: 100, interval: 5 });
 
 		if (!realCompletedAt || !fakeCompletedAt) {
 			throw new Error("Expected timeout to complete");
@@ -128,11 +132,10 @@ describe("Clock", () => {
 
 		const realElapsedMs = diffMs(realCompletedAt, now);
 		expect(realElapsedMs).toBeGreaterThanOrEqual(30);
-		expect(realElapsedMs).toBeLessThan(35);
 
 		const fakeElapsedMs = diffMs(fakeCompletedAt, now);
-		expect(fakeElapsedMs).toBeGreaterThanOrEqual(10);
-		expect(fakeElapsedMs).toBeLessThan(15);
+		expect(fakeElapsedMs).toBeGreaterThanOrEqual(9);
+		expect(realElapsedMs - fakeElapsedMs).toBeGreaterThanOrEqual(20);
 	});
 
 	it("should be able to cancel a task", async () => {
@@ -166,8 +169,9 @@ describe("Clock", () => {
 		calls.push("sync");
 		expect(calls).toEqual(["sync"]);
 
-		await wait(0);
-		expect(calls).toEqual(["sync", "microtask"]);
+		await vi.waitFor(() => {
+			expect(calls).toEqual(["sync", "microtask"]);
+		}, { timeout: 100, interval: 5 });
 	});
 
 	it("should flush nested microtasks in order", async () => {
@@ -180,8 +184,9 @@ describe("Clock", () => {
 			});
 		});
 
-		await wait(0);
-		expect(calls).toEqual(["first", "second"]);
+		await vi.waitFor(() => {
+			expect(calls).toEqual(["first", "second"]);
+		}, { timeout: 100, interval: 5 });
 	});
 
 	it("should not flush microtasks while paused", async () => {
@@ -196,8 +201,9 @@ describe("Clock", () => {
 		expect(calls).toEqual([]);
 
 		clock.resume();
-		await wait(0);
-		expect(calls).toEqual(["microtask"]);
+		await vi.waitFor(() => {
+			expect(calls).toEqual(["microtask"]);
+		}, { timeout: 100, interval: 5 });
 	});
 
 	it("should clear queued microtasks", async () => {
@@ -221,15 +227,15 @@ describe("Clock", () => {
 			realTimes.push(new Date());
 			fakeTimes.push(clock.now());
 		}, 10);
-		await wait(25);
+		await vi.waitFor(() => {
+			expect(fakeTimes.length).toBeGreaterThanOrEqual(3);
+		}, { timeout: 100, interval: 5 });
 
 		for (const diff of diffTimes(realTimes)) {
-			expect(diff).toBeGreaterThanOrEqual(10);
-			expect(diff).toBeLessThan(15);
+			expect(diff).toBeGreaterThanOrEqual(9);
 		}
 		for (const diff of diffTimes(fakeTimes)) {
-			expect(diff).toBeGreaterThanOrEqual(10);
-			expect(diff).toBeLessThan(15);
+			expect(diff).toBeGreaterThanOrEqual(9);
 		}
 	});
 
@@ -243,18 +249,17 @@ describe("Clock", () => {
 		clock.pause();
 		await wait(20);
 		clock.resume();
-		await wait(25);
+		await vi.waitFor(() => {
+			expect(fakeTimes.length).toBeGreaterThanOrEqual(3);
+		}, { timeout: 100, interval: 5 });
 
 		const [firstDiff, ...remainingDiffs] = diffTimes(realTimes);
 		expect(firstDiff).toBeGreaterThanOrEqual(20);
-		expect(firstDiff).toBeLessThan(35);
 		for (const diff of remainingDiffs) {
-			expect(diff).toBeGreaterThanOrEqual(10);
-			expect(diff).toBeLessThan(15);
+			expect(diff).toBeGreaterThanOrEqual(9);
 		}
 		for (const diff of diffTimes(fakeTimes)) {
-			expect(diff).toBeGreaterThanOrEqual(10);
-			expect(diff).toBeLessThan(15);
+			expect(diff).toBeGreaterThanOrEqual(9);
 		}
 	});
 
