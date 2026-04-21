@@ -32,8 +32,8 @@
 // - Auth/admin: getRoles(), getUsers(), role(), user(). Not relevant to the
 //   use cases this fake is designed for.
 
+import { Buffer } from "buffer";
 import { EventEmitter } from "events";
-
 import { Clock } from "./clock";
 import { SortedMap } from "./collections";
 

@@ -12,6 +12,10 @@
   "files": [
     "dist"
   ],
+  "dependencies": {
+    "buffer": "^6.0.3",
+    "events": "^3.3.0"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "test": "vitest run",
@@ -26,7 +30,9 @@
     ]
   },
   "devDependencies": {
+    "@types/node": "^24.0.0",
     "etcd3": "^1.1.2",
+    "esbuild": "^0.25.11",
     "testcontainers": "^11.14.0",
     "typescript": "^5.8.0",
     "vitest": "^3.0.0"

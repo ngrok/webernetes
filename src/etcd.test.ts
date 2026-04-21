@@ -1,3 +1,4 @@
+import { Buffer } from "buffer";
 import { GenericContainer, Wait } from "testcontainers";
 import { Etcd3 } from "etcd3";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
