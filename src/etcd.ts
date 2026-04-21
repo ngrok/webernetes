@@ -516,10 +516,6 @@ class FakeState {
 	}
 
 	public close(): void {
-		const error = new EtcdError("Tried to call a Watch method on etcd3, but the client was already closed", "errClosed");
-		for (const watcher of this.watchers) {
-			watcher.disconnect(error);
-		}
 		this.watchers.clear();
 	}
 

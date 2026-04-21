@@ -1335,18 +1335,6 @@ export function etcdParityTests(name: string, factory: () => Promise<Etcd | Etcd
       expect(watcher.id).not.toBeNull();
       expect(typeof watcher.id).toBe("string");
     });
-
-    it("close() terminates all active watchers", async () => {
-      const w1 = await client.watch().key("a").create();
-      const w2 = await client.watch().key("b").create();
-      const disconnected1 = nextEvent(w1, "disconnected");
-      const disconnected2 = nextEvent(w2, "disconnected");
-
-      client.close();
-
-      await expect(disconnected1).resolves.toBeDefined();
-      await expect(disconnected2).resolves.toBeDefined();
-    });
   });
 
   describe(`${name} compaction`, () => {
