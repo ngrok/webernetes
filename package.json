@@ -1,0 +1,20 @@
+{
+  "name": "k8s-web-simulator",
+  "version": "0.1.0",
+  "type": "module",
+  "packageManager": "pnpm@10.0.0",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest watch",
+    "test:coverage": "vitest run --coverage",
+    "typecheck": "tsc --noEmit"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild", "protobufjs"]
+  },
+  "devDependencies": {
+    "etcd3": "^1.1.2",
+    "typescript": "^5.8.0",
+    "vitest": "^3.0.0"
+  }
+}
