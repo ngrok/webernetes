@@ -10,6 +10,6 @@
     "lib": ["ES2023", "ESNext.Disposable"],
     "outDir": "dist"
   },
-  "include": ["src/**/*.ts", "vitest.config.ts"],
+  "include": ["src/**/*.ts", "vitest.config.ts", "vitest.browser.config.ts"],
   "exclude": ["node_modules", "dist"]
 }

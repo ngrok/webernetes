@@ -315,11 +315,13 @@ class FakeState {
 		this.assertValidRange(options.key, options.rangeEnd);
 
 		const revision = this.resolveRevision(options.revision);
-		this.assertRangeRevisionAvailable(
-			namespacedKey(namespace, options.key),
-			namespacedRangeEnd(namespace, options.rangeEnd),
-			revision,
-		);
+		if (options.revision != null && options.revision > 0) {
+			this.assertRangeRevisionAvailable(
+				namespacedKey(namespace, options.key),
+				namespacedRangeEnd(namespace, options.rangeEnd),
+				revision,
+			);
+		}
 		const ordered = new SortedMap<SortKey, StoredValue>((left, right) =>
 			compareSortKeys(left, right, options.sortOrder),
 		);
@@ -521,6 +523,20 @@ class FakeState {
 		this.watchers.clear();
 	}
 
+	public compact(requestedRevision: number): void {
+		const revision = this.resolveRevision(requestedRevision);
+		if (revision <= 0) {
+			return;
+		}
+		this.compactedRevision = Math.max(this.compactedRevision, revision);
+		for (const [historyRevision] of this.history.entries()) {
+			if (historyRevision > revision) {
+				break;
+			}
+			this.history.delete(historyRevision);
+		}
+	}
+
 	private resolveRevision(requestedRevision?: number): number {
 		if (requestedRevision == null || requestedRevision <= 0) {
 			return this.revision;
@@ -694,6 +710,9 @@ class Namespace {
 
 export class Etcd extends Namespace {
 	private readonly stateRef: FakeState;
+	public readonly kv: {
+		compact: (request: { revision: number | string; physical?: boolean }) => Promise<{ header: ResponseHeader }>;
+	};
 
 	constructor(clock: Clock, options?: EtcdOptions) {
 		const state = new FakeState(clock, {
@@ -701,6 +720,12 @@ export class Etcd extends Namespace {
 		});
 		super(state, "");
 		this.stateRef = state;
+		this.kv = {
+			compact: async ({ revision }) => {
+				this.stateRef.compact(Number(revision));
+				return { header: this.stateRef.header() };
+			},
+		};
 	}
 
 	/** Frees resources associated with the client. */

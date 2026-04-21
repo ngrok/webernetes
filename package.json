@@ -18,7 +18,11 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "test": "vitest run",
+    "test": "pnpm test:node && pnpm test:browser",
+    "test:node": "vitest run --config vitest.config.ts",
+    "test:browser": "vitest run --config vitest.browser.config.ts",
+    "test:all": "pnpm test",
+    "test:browser:install": "playwright install chromium",
     "test:watch": "vitest watch",
     "test:coverage": "vitest run --coverage",
     "typecheck": "tsc --noEmit"
@@ -30,9 +34,11 @@
     ]
   },
   "devDependencies": {
+    "@vitest/browser": "^3.2.4",
     "@types/node": "^24.0.0",
     "etcd3": "^1.1.2",
     "esbuild": "^0.25.11",
+    "playwright": "^1.55.0",
     "testcontainers": "^11.14.0",
     "typescript": "^5.8.0",
     "vitest": "^3.0.0"
