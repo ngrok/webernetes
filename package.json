@@ -3,17 +3,31 @@
   "version": "0.1.0",
   "type": "module",
   "packageManager": "pnpm@10.0.0",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
     "test": "vitest run",
     "test:watch": "vitest watch",
     "test:coverage": "vitest run --coverage",
     "typecheck": "tsc --noEmit"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["esbuild", "protobufjs"]
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "protobufjs"
+    ]
   },
   "devDependencies": {
     "etcd3": "^1.1.2",
+    "testcontainers": "^11.14.0",
     "typescript": "^5.8.0",
     "vitest": "^3.0.0"
   }

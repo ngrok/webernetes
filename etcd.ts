@@ -179,7 +179,8 @@ export class EtcdError extends Error {
 			| "errFutureRev"
 			| "errInvalidRange"
 			| "errInvalidArgument"
-			| "errUnsupported",
+			| "errUnsupported"
+			| "errClosed",
 	) {
 		super(message);
 		this.name = "EtcdError";
@@ -472,13 +473,12 @@ class FakeState {
 				options.startRevision,
 			);
 			if (compactRevision !== undefined) {
-				watcher.fail(
-					new EtcdError("etcdserver: mvcc: required revision has been compacted", "errCompacted"),
-					this.header(),
-					{
+				watcher.connect(this.header());
+				this.clock.setTimeout(() => {
+					watcher.fail(new EtcdError("Watcher canceled: ", "errCompacted"), this.header(), {
 						compactRevision,
-					},
-				);
+					});
+				}, 0);
 				return;
 			}
 
@@ -514,8 +514,9 @@ class FakeState {
 	}
 
 	public close(): void {
+		const error = new EtcdError("Tried to call a Watch method on etcd3, but the client was already closed", "errClosed");
 		for (const watcher of this.watchers) {
-			watcher.end();
+			watcher.disconnect(error);
 		}
 		this.watchers.clear();
 	}
@@ -1315,6 +1316,17 @@ class WatcherImpl extends EventEmitter implements Watcher {
 			cancel_reason: error.message,
 			events: [],
 		} satisfies WatchResponse);
+	}
+
+	public disconnect(error: EtcdError): void {
+		if (this.ended) {
+			return;
+		}
+		this.ended = true;
+		this.state.detachWatcher(this);
+		this.connected = false;
+		(this as { id: string | null }).id = null;
+		this.emit("disconnected", error);
 	}
 
 	public end(): void {
