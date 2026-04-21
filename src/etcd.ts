@@ -274,12 +274,13 @@ function isPrefixRangable(value: unknown): value is { prefix: string | Buffer } 
 	return typeof value === "object" && value !== null && "prefix" in value;
 }
 
-function isBoundedRangable(value: unknown): value is { start: string | Buffer; end: string | Buffer } {
+function isBoundedRangable(
+	value: unknown,
+): value is { start: string | Buffer; end: string | Buffer } {
 	return typeof value === "object" && value !== null && "start" in value && "end" in value;
 }
 
 abstract class PromiseWrap<T> implements PromiseLike<T> {
-	// oxlint-disable-next-line unicorn/no-thenable - intentional etcd3-compatible promise-like builder API
 	public then<R1 = T, R2 = never>(
 		onFulfilled?: ((value: T) => R1 | PromiseLike<R1>) | null,
 		onRejected?: ((reason: unknown) => R2 | PromiseLike<R2>) | null,
@@ -302,7 +303,9 @@ class FakeState {
 	// matching keys, matching real etcd's global compaction watermark.
 	private compactedRevision = 0;
 
-	private readonly histories = new SortedMap<string, StoredRevision[]>((l, r) => l.localeCompare(r));
+	private readonly histories = new SortedMap<string, StoredRevision[]>((l, r) =>
+		l.localeCompare(r),
+	);
 	private readonly history = new SortedMap<number, RevisionEvent>((l, r) => l - r);
 	private readonly watchers = new Set<WatcherImpl>();
 
@@ -397,7 +400,11 @@ class FakeState {
 
 		return {
 			header: this.header(revision),
-			prev_kv: options.prevKv ? (existing ? toPublicKv(existing, namespace) : undefined) : undefined,
+			prev_kv: options.prevKv
+				? existing
+					? toPublicKv(existing, namespace)
+					: undefined
+				: undefined,
 		};
 	}
 
@@ -538,7 +545,10 @@ class FakeState {
 			return this.revision;
 		}
 		if (requestedRevision > this.revision) {
-			throw new EtcdError("etcdserver: mvcc: required revision is a future revision", "errFutureRev");
+			throw new EtcdError(
+				"etcdserver: mvcc: required revision is a future revision",
+				"errFutureRev",
+			);
 		}
 		return requestedRevision;
 	}
@@ -581,7 +591,10 @@ class FakeState {
 		}
 	}
 
-	private resolveStoredValueAt(revisions: StoredRevision[], revision: number): StoredValue | undefined {
+	private resolveStoredValueAt(
+		revisions: StoredRevision[],
+		revision: number,
+	): StoredValue | undefined {
 		const resolved = findRevisionAtOrBefore(revisions, revision);
 		if (!resolved || resolved.deleted) {
 			return undefined;
@@ -602,7 +615,11 @@ class FakeState {
 		}
 	}
 
-	private compactedRevisionForRange(_start: string, _rangeEnd: string, revision: number): number | undefined {
+	private compactedRevisionForRange(
+		_start: string,
+		_rangeEnd: string,
+		revision: number,
+	): number | undefined {
 		if (revision <= 0) {
 			return undefined;
 		}
@@ -638,7 +655,11 @@ class Namespace {
 
 	/** `.get()` starts a query to look up a single key from etcd. */
 	public get(key: string | Buffer): SingleRangeBuilder {
-		return new SingleRangeBuilder(this.state, this.prefix, typeof key === "string" ? key : key.toString());
+		return new SingleRangeBuilder(
+			this.state,
+			this.prefix,
+			typeof key === "string" ? key : key.toString(),
+		);
 	}
 
 	/** `.getAll()` starts a query to look up multiple keys from etcd. */
@@ -694,7 +715,12 @@ class Namespace {
 	}
 
 	/** `if()` starts a new etcd transaction, which allows you to execute complex statements atomically. See documentation on the ComparatorBuilder for more information. */
-	public if(_key: string | Buffer, _column: string, _cmp: string, _value: string | Buffer | number): never {
+	public if(
+		_key: string | Buffer,
+		_column: string,
+		_cmp: string,
+		_value: string | Buffer | number,
+	): never {
 		throw new EtcdError("if() is not implemented in the fake etcd", "errUnsupported");
 	}
 
@@ -707,7 +733,10 @@ class Namespace {
 export class Etcd extends Namespace {
 	private readonly stateRef: FakeState;
 	public readonly kv: {
-		compact: (request: { revision: number | string; physical?: boolean }) => Promise<{ header: ResponseHeader }>;
+		compact: (request: {
+			revision: number | string;
+			physical?: boolean;
+		}) => Promise<{ header: ResponseHeader }>;
 	};
 
 	constructor(clock: Clock, options?: EtcdOptions) {
@@ -1239,8 +1268,14 @@ class WatcherImpl extends EventEmitter implements Watcher {
 	public override on(event: "connecting", handler: (req: unknown) => void): this;
 	public override on(event: "connected", handler: (response: WatchResponse) => void): this;
 	public override on(event: "data", handler: (response: WatchResponse) => void): this;
-	public override on(event: "put", handler: (kv: KeyValue, previous?: KeyValue | null) => void): this;
-	public override on(event: "delete", handler: (kv: KeyValue, previous?: KeyValue | null) => void): this;
+	public override on(
+		event: "put",
+		handler: (kv: KeyValue, previous?: KeyValue | null) => void,
+	): this;
+	public override on(
+		event: "delete",
+		handler: (kv: KeyValue, previous?: KeyValue | null) => void,
+	): this;
 	public override on(event: "end", handler: () => void): this;
 	public override on(event: "disconnected", handler: (res: EtcdError) => void): this;
 	public override on(event: "error", handler: (error: EtcdError) => void): this;
@@ -1324,7 +1359,11 @@ class WatcherImpl extends EventEmitter implements Watcher {
 		}
 	}
 
-	public fail(error: EtcdError, header: ResponseHeader, extra?: { compactRevision?: number }): void {
+	public fail(
+		error: EtcdError,
+		header: ResponseHeader,
+		extra?: { compactRevision?: number },
+	): void {
 		this.state.detachWatcher(this);
 		this.connected = false;
 		this.emit("error", error);
@@ -1459,7 +1498,10 @@ function currentValue(revisions: StoredRevision[]): StoredValue | undefined {
 	};
 }
 
-function findRevisionAtOrBefore(revisions: StoredRevision[], revision: number): StoredRevision | undefined {
+function findRevisionAtOrBefore(
+	revisions: StoredRevision[],
+	revision: number,
+): StoredRevision | undefined {
 	let low = 0;
 	let high = revisions.length - 1;
 	let result: StoredRevision | undefined;

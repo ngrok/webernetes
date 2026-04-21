@@ -1,0 +1,17 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["promise", "typescript", "vitest"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "warn"
+  },
+  "rules": {
+    "curly": "error",
+    "eslint/no-shadow": "off",
+    "jest/valid-title": "off",
+    "no-useless-switch-case": "off",
+    "no-explicit-any": "warn",
+    "typescript/no-non-null-assertion": "error"
+  },
+  "ignorePatterns": ["coverage", "dist", "node_modules"]
+}

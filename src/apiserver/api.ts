@@ -4,21 +4,21 @@ import { NodeStore } from "./storage/nodes";
 import { PodStore } from "./storage/pods";
 
 export class Api {
-  public readonly v1: CoreV1;
+	public readonly v1: CoreV1;
 
-  constructor(clock: Clock) {
-    const etcd = new Etcd(clock);
+	constructor(clock: Clock) {
+		const etcd = new Etcd(clock);
 
-    this.v1 = new CoreV1(etcd);
-  }
+		this.v1 = new CoreV1(etcd);
+	}
 }
 
 class CoreV1 {
-  public readonly pods: PodStore;
-  public readonly nodes: NodeStore;
+	public readonly pods: PodStore;
+	public readonly nodes: NodeStore;
 
-  constructor(etcd: Etcd) {
-    this.pods = new PodStore(etcd);
-    this.nodes = new NodeStore(etcd);
-  }
+	constructor(etcd: Etcd) {
+		this.pods = new PodStore(etcd);
+		this.nodes = new NodeStore(etcd);
+	}
 }
