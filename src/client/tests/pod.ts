@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { K8s, KubeConfig } from "../types";
 
 export function tests(k8s: K8s, config: KubeConfig) {
@@ -24,6 +24,12 @@ export function tests(k8s: K8s, config: KubeConfig) {
 			namespace = resp.metadata.name;
 		});
 
+		afterAll(async () => {
+			await api.deleteNamespace({
+				name: namespace,
+			});
+		});
+
 		it("should be able to create a pod", async () => {
 			const pod = await api.createNamespacedPod({
 				namespace,
@@ -32,7 +38,7 @@ export function tests(k8s: K8s, config: KubeConfig) {
 						name: "test",
 					},
 					spec: {
-						containers: [{ name: "test", image: "pause" }],
+						containers: [{ name: "test", image: "rancher/pause:3.6" }],
 					},
 				},
 			});

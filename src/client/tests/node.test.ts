@@ -9,12 +9,15 @@ let containerPromise: Promise<StartedK3sContainer> | undefined;
 async function getK3sContainer() {
 	containerPromise ??= new K3sContainer("rancher/k3s:v1.35.4-rc3-k3s1")
 		.withName("k8s-web-simulator-k3s")
+		.withCommand(["server", "--disable=traefik", "--disable=metrics-server"])
 		.withReuse()
 		.start();
 	return containerPromise;
 }
 
 const kc = new k8s.KubeConfig();
+
+const dontDeleteNamespaces = ["default", "kube-system", "kube-public", "kube-node-lease"];
 
 beforeAll(async () => {
 	const container = await getK3sContainer();
@@ -26,7 +29,7 @@ beforeAll(async () => {
 		// oxlint-disable-next-line typescript/no-non-null-assertion
 		const name = ns.metadata!.name!;
 
-		if (name === "default" || name === "kube-system" || name === "kube-public") {
+		if (dontDeleteNamespaces.includes(name)) {
 			continue;
 		}
 
