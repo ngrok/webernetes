@@ -1,5 +1,6 @@
-import { V1ObjectMeta } from "../client";
-import type { Etcd } from "../cluster/etcd";
+import { V1ObjectMeta } from "../../client";
+import { NotFound } from "../../client/errors";
+import type { Etcd } from "../etcd";
 
 export interface StoreOpts {
 	namespaced?: boolean;
@@ -21,9 +22,9 @@ export class Store<T extends Storable> {
 		private readonly opts: StoreOpts,
 	) {}
 
-	protected validateCreate(_: T): void {}
+	protected async validateCreate(_: T): Promise<void> {}
 
-	protected validateUpdate(_: T): void {}
+	protected async validateUpdate(_: T): Promise<void> {}
 
 	private key(name: string, namespace?: string): string {
 		let k = `/registry/${this.opts.defaultQualifiedResource}`;
@@ -33,10 +34,16 @@ export class Store<T extends Storable> {
 		return `${k}/${name}`;
 	}
 
+	private async namespaceExists(namespace: string): Promise<boolean> {
+		const k = `/registry/namespaces/${namespace}`;
+		const value = await this.etcd.get(k).json();
+		return !!value;
+	}
+
 	async get(name: string, namespace?: string): Promise<T | undefined> {
 		const k = this.key(name, namespace);
 		const value = await this.etcd.get(k).json();
-		return (value ?? undefined) as T | undefined;
+		return value as T | undefined;
 	}
 
 	async create(obj: T): Promise<T> {
@@ -44,10 +51,26 @@ export class Store<T extends Storable> {
 			throw new Error(`Object must have metadata`);
 		}
 
+		if (this.opts.namespaced) {
+			if (!obj.metadata.namespace) {
+				obj.metadata.namespace = "default";
+			}
+
+			if (!(await this.namespaceExists(obj.metadata.namespace))) {
+				throw new NotFound(`"${obj.metadata.namespace}" does not exist`);
+			}
+		} else {
+			if (obj.metadata.namespace) {
+				throw new Error(
+					`Resource ${this.opts.defaultQualifiedResource} is not namespaced, found namespace ${obj.metadata.namespace} in metadata`,
+				);
+			}
+		}
+
 		if (!obj.metadata.name && obj.metadata.generateName) {
 			while (true) {
 				obj.metadata.name = generateName(obj.metadata.generateName);
-				if (await this.get(obj.metadata.name)) {
+				if (await this.get(obj.metadata.name, obj.metadata.namespace)) {
 					continue;
 				}
 				break;
@@ -56,10 +79,6 @@ export class Store<T extends Storable> {
 
 		if (!obj.metadata.name) {
 			throw new Error(`Object must have a name`);
-		}
-
-		if (this.opts.namespaced && !obj.metadata.namespace) {
-			obj.metadata.namespace = "default";
 		}
 
 		const existing = await this.get(obj.metadata.name, obj.metadata.namespace);
@@ -98,5 +117,11 @@ export class Store<T extends Storable> {
 		const k = this.key(name, namespace);
 		const response = await this.etcd.delete().key(k).getPrevious();
 		return response.length > 0;
+	}
+
+	async list(namespace?: string): Promise<T[]> {
+		const k = this.key("", namespace);
+		const response = await this.etcd.getAll().prefix(k).json();
+		return Object.values(response) as T[];
 	}
 }
