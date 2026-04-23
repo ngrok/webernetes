@@ -7,7 +7,7 @@ import * as pod from "./pod";
 let containerPromise: Promise<StartedK3sContainer> | undefined;
 
 async function getK3sContainer() {
-	containerPromise ??= new K3sContainer("rancher/k3s:v1.32.4-k3s1").start();
+	containerPromise ??= new K3sContainer("rancher/k3s:v1.35.4-rc3-k3s1").start();
 	return containerPromise;
 }
 

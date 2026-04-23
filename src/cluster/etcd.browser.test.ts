@@ -1,4 +1,4 @@
-import { Clock } from "./clock";
+import { Clock } from "../clock";
 import { Etcd } from "./etcd";
 import { etcdParityTests } from "./etcd.test-helpers";
 

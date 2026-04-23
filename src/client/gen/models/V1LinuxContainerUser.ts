@@ -1,5 +1,5 @@
 export interface V1LinuxContainerUser {
-	gid?: number;
+	gid: number;
 	supplementalGroups?: Array<number>;
-	uid?: number;
+	uid: number;
 }

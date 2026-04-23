@@ -34,8 +34,8 @@
 
 import { Buffer } from "buffer";
 import { EventEmitter } from "events";
-import { Clock } from "./clock";
-import { SortedMap } from "./collections";
+import { Clock } from "../clock";
+import { SortedMap } from "../collections";
 
 const zeroKey = "\0";
 

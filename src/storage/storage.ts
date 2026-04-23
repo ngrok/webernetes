@@ -1,5 +1,5 @@
-import type { Etcd } from "../../etcd";
-import type { ObjectMeta, TypeMeta } from "../../types/meta/v1/types";
+import { V1ObjectMeta } from "../client";
+import type { Etcd } from "../cluster/etcd";
 
 export interface StoreOpts {
 	namespaced?: boolean;
@@ -11,7 +11,11 @@ function generateName(prefix: string): string {
 	return `${prefix}-${Math.random().toString(36).substring(2, 8)}`;
 }
 
-export class Store<T extends TypeMeta & ObjectMeta> {
+interface Storable {
+	metadata?: V1ObjectMeta;
+}
+
+export class Store<T extends Storable> {
 	constructor(
 		private readonly etcd: Etcd,
 		private readonly opts: StoreOpts,

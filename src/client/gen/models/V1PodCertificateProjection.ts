@@ -1,7 +1,8 @@
 export interface V1PodCertificateProjection {
-	credentialBundlePath: string;
-	keyType?: string;
+	certificateChainPath?: string;
+	credentialBundlePath?: string;
+	keyPath?: string;
+	keyType: string;
 	maxExpirationSeconds?: number;
-	path: string;
 	signerName: string;
 }

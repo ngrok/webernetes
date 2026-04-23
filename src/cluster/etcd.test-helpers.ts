@@ -2,7 +2,7 @@ import { Buffer } from "buffer";
 import type { Etcd3 } from "etcd3";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
-import { wait } from "./promise";
+import { wait } from "../promise";
 import { Etcd } from "./etcd";
 
 // Waits for the next occurrence of `event` on `emitter`, rejecting after `timeout` ms.

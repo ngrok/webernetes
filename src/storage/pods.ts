@@ -1,8 +1,8 @@
-import type { Etcd } from "../../etcd";
-import type { Pod } from "../../types/core/v1/types";
+import { V1Pod } from "../client";
+import type { Etcd } from "../cluster/etcd";
 import { Store } from "./storage";
 
-export class PodStore extends Store<Pod> {
+export class PodStore extends Store<V1Pod> {
 	constructor(etcd: Etcd) {
 		super(etcd, {
 			defaultQualifiedResource: "pods",
@@ -11,13 +11,13 @@ export class PodStore extends Store<Pod> {
 		});
 	}
 
-	protected override validateCreate(pod: Pod): void {
+	protected override validateCreate(pod: V1Pod): void {
 		if (!pod.metadata?.name) {
 			throw new Error("Pod name is required");
 		}
 	}
 
-	protected override validateUpdate(pod: Pod): void {
+	protected override validateUpdate(pod: V1Pod): void {
 		if (!pod.metadata?.name) {
 			throw new Error("Pod name is required");
 		}

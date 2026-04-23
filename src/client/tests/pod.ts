@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { k8s as K8sModule } from "./index";
+import { K8s, KubeConfig } from "../types";
 
-export function tests(k8s: K8sModule, config: InstanceType<K8sModule["KubeConfig"]>) {
+export function tests(k8s: K8s, config: KubeConfig) {
 	describe("Pods", () => {
 		it("should be able to create a pod", async () => {
 			const api = config.makeApiClient(k8s.CoreV1Api);

@@ -1,4 +1,4 @@
 export interface V1Sysctl {
-	name?: string;
-	value?: string;
+	name: string;
+	value: string;
 }

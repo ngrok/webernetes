@@ -45,7 +45,7 @@
     "oxlint": "1.60.0",
     "playwright": "^1.55.0",
     "testcontainers": "^11.14.0",
-    "typescript": "^5.8.0",
+    "typescript": "^6.0.3",
     "vitest": "^3.0.0"
   },
   "packageManager": "pnpm@10.0.0",

@@ -1,3 +1,5 @@
 export interface V1ContainerExtendedResourceRequest {
-	name: string;
+	containerName: string;
+	requestName: string;
+	resourceName: string;
 }
