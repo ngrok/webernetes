@@ -1,4 +1,5 @@
 import { KubeConfig } from "./config";
+import { labelsMatch, parseLabelSelector } from "./labels";
 import { NodeStore, PodStore, Storable, Store } from "../cluster/storage";
 import { Etcd } from "../cluster/etcd";
 
@@ -44,27 +45,8 @@ function storeFromKind(kind: string, etcd: Etcd): Store<Storable> {
 	}
 }
 
-function parseLabels(labels?: string): Record<string, string> {
-	if (!labels) {
-		return {};
-	}
-	const result: Record<string, string> = {};
-	for (const pair of labels.split(",")) {
-		const [key, value] = pair.split("=");
-		if (key && value) {
-			result[key.trim()] = value.trim();
-		}
-	}
-	return result;
-}
-
-function labelsMatch(labels: Record<string, string>, selector: Record<string, string>): boolean {
-	for (const [key, value] of Object.entries(selector)) {
-		if (labels[key] !== value) {
-			return false;
-		}
-	}
-	return true;
+function objectKey(obj: { metadata?: { namespace?: string; name?: string } }): string {
+	return `${obj.metadata?.namespace ?? ""}/${obj.metadata?.name ?? ""}`;
 }
 
 export class Watch {
@@ -100,14 +82,28 @@ export class Watch {
 			throw new Error(`Invalid label selector: ${selector}`);
 		}
 
-		const labels = parseLabels(selector);
+		const labels = parseLabelSelector(selector);
+		const matchingKeys = new Set<string>();
 
 		const watcher = await store.watch(namespace);
 		watcher.on("event", (phase, obj) => {
-			if (!labelsMatch(obj.metadata?.labels || {}, labels)) {
+			const key = objectKey(obj);
+			const matches = labelsMatch(obj, labels);
+			const matchedPreviously = matchingKeys.has(key);
+
+			if (!matches) {
+				// This mirrors the filtered informer/view semantics documented by client-go:
+				// an object that stops matching after an update is treated as a delete for
+				// selector-scoped consumers. See FilteringResourceEventHandler:
+				// https://pkg.go.dev/github.com/kubernetes/client-go/tools/cache#FilteringResourceEventHandler
+				if (matchedPreviously) {
+					matchingKeys.delete(key);
+					callback("DELETED", obj, { type: "DELETED", object: obj });
+				}
 				return;
 			}
 
+			matchingKeys.add(key);
 			callback(phase, obj, { type: phase, object: obj });
 		});
 

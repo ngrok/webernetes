@@ -7,13 +7,11 @@ export function tests(k8s: K8s, config: KubeConfig) {
 		let api: InstanceType<typeof k8s.CoreV1Api>;
 		let namespace: string;
 
-		beforeAll(async () => {
-			api = config.makeApiClient(k8s.CoreV1Api);
-
+		async function createNamespace(generateName: string): Promise<string> {
 			const resp = await api.createNamespace({
 				body: {
 					metadata: {
-						generateName: "test-",
+						generateName,
 					},
 				},
 			});
@@ -22,7 +20,13 @@ export function tests(k8s: K8s, config: KubeConfig) {
 				throw new Error("Failed to create namespace");
 			}
 
-			namespace = resp.metadata.name;
+			return resp.metadata.name;
+		}
+
+		beforeAll(async () => {
+			api = config.makeApiClient(k8s.CoreV1Api);
+
+			namespace = await createNamespace("test-");
 		});
 
 		afterAll(async () => {
@@ -31,9 +35,9 @@ export function tests(k8s: K8s, config: KubeConfig) {
 			});
 		});
 
-		async function createPod(pod: Partial<V1Pod>): Promise<V1Pod> {
+		async function createPod(pod: Partial<V1Pod>, podNamespace = namespace): Promise<V1Pod> {
 			return await api.createNamespacedPod({
-				namespace,
+				namespace: podNamespace,
 				body: {
 					metadata: {
 						...pod.metadata,
@@ -191,6 +195,189 @@ export function tests(k8s: K8s, config: KubeConfig) {
 				namespace,
 			});
 			expect(current.metadata?.labels?.app).toBe("fresh");
+		});
+
+		it("should default pods without metadata.namespace to the default namespace", async () => {
+			const pod = await api.createNamespacedPod({
+				namespace: "default",
+				body: {
+					metadata: {
+						generateName: "default-namespace-test-",
+					},
+					spec: {
+						containers: [{ name: "test", image: "rancher/pause:3.6" }],
+					},
+				},
+			});
+
+			if (!pod.metadata?.name) {
+				throw new Error("Failed to create pod");
+			}
+
+			try {
+				expect(pod.metadata.namespace).toBe("default");
+
+				const current = await api.readNamespacedPod({
+					name: pod.metadata.name,
+					namespace: "default",
+				});
+
+				expect(current.metadata?.namespace).toBe("default");
+			} finally {
+				await api.deleteNamespacedPod({
+					name: pod.metadata.name,
+					namespace: "default",
+					gracePeriodSeconds: 0,
+					body: {
+						gracePeriodSeconds: 0,
+					},
+				});
+			}
+		});
+
+		it("should list pods across namespaces", async () => {
+			const otherNamespace = await createNamespace("list-all-namespaces-");
+			const podName = "list-all-primary";
+			const otherPodName = "list-all-secondary";
+
+			await createPod({ metadata: { name: podName } });
+			await createPod({ metadata: { name: otherPodName } }, otherNamespace);
+
+			try {
+				const pods = await api.listPodForAllNamespaces();
+
+				expect(pods.items).toEqual(
+					expect.arrayContaining([
+						expect.objectContaining({
+							metadata: expect.objectContaining({
+								name: podName,
+								namespace,
+							}),
+						}),
+						expect.objectContaining({
+							metadata: expect.objectContaining({
+								name: otherPodName,
+								namespace: otherNamespace,
+							}),
+						}),
+					]),
+				);
+			} finally {
+				await api.deleteNamespacedPod({
+					name: otherPodName,
+					namespace: otherNamespace,
+					gracePeriodSeconds: 0,
+					body: {
+						gracePeriodSeconds: 0,
+					},
+				});
+				await api.deleteNamespacedPod({
+					name: podName,
+					namespace,
+					gracePeriodSeconds: 0,
+					body: {
+						gracePeriodSeconds: 0,
+					},
+				});
+				await api.deleteNamespace({
+					name: otherNamespace,
+				});
+			}
+		});
+
+		it("should support label selectors when listing pods across namespaces", async () => {
+			const otherNamespace = await createNamespace("list-all-selected-");
+			const selectedPodName = "list-all-selected-primary";
+			const otherSelectedPodName = "list-all-selected-secondary";
+			const ignoredPodName = "list-all-ignored";
+
+			await createPod({
+				metadata: {
+					name: selectedPodName,
+					labels: { app: "selected" },
+				},
+			});
+			await createPod(
+				{
+					metadata: {
+						name: otherSelectedPodName,
+						labels: { app: "selected" },
+					},
+				},
+				otherNamespace,
+			);
+			await createPod(
+				{
+					metadata: {
+						name: ignoredPodName,
+						labels: { app: "ignored" },
+					},
+				},
+				otherNamespace,
+			);
+
+			try {
+				const pods = await api.listPodForAllNamespaces({
+					labelSelector: "app=selected",
+				});
+
+				expect(pods.items).toEqual(
+					expect.arrayContaining([
+						expect.objectContaining({
+							metadata: expect.objectContaining({
+								name: selectedPodName,
+								namespace,
+								labels: expect.objectContaining({
+									app: "selected",
+								}),
+							}),
+						}),
+						expect.objectContaining({
+							metadata: expect.objectContaining({
+								name: otherSelectedPodName,
+								namespace: otherNamespace,
+								labels: expect.objectContaining({
+									app: "selected",
+								}),
+							}),
+						}),
+					]),
+				);
+				expect(
+					pods.items.find(
+						(pod) =>
+							pod.metadata?.name === ignoredPodName && pod.metadata?.namespace === otherNamespace,
+					),
+				).toBeUndefined();
+			} finally {
+				await api.deleteNamespacedPod({
+					name: ignoredPodName,
+					namespace: otherNamespace,
+					gracePeriodSeconds: 0,
+					body: {
+						gracePeriodSeconds: 0,
+					},
+				});
+				await api.deleteNamespacedPod({
+					name: otherSelectedPodName,
+					namespace: otherNamespace,
+					gracePeriodSeconds: 0,
+					body: {
+						gracePeriodSeconds: 0,
+					},
+				});
+				await api.deleteNamespacedPod({
+					name: selectedPodName,
+					namespace,
+					gracePeriodSeconds: 0,
+					body: {
+						gracePeriodSeconds: 0,
+					},
+				});
+				await api.deleteNamespace({
+					name: otherNamespace,
+				});
+			}
 		});
 	});
 }

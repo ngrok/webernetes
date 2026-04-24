@@ -36,6 +36,20 @@ export interface CoreV1ApiListNamespacedPodRequest {
 	watch?: boolean;
 }
 
+export interface CoreV1ApiListPodForAllNamespacesRequest {
+	pretty?: string;
+	allowWatchBookmarks?: boolean;
+	_continue?: string;
+	fieldSelector?: string;
+	labelSelector?: string;
+	limit?: number;
+	resourceVersion?: string;
+	resourceVersionMatch?: string;
+	sendInitialEvents?: boolean;
+	timeoutSeconds?: number;
+	watch?: boolean;
+}
+
 export interface CoreV1ApiReadNamespacedPodRequest {
 	name: string;
 	namespace: string;
@@ -86,6 +100,7 @@ export interface CoreV1Api {
 	deleteNamespacedPod(request: CoreV1ApiDeleteNamespacedPodRequest): Promise<V1Pod>;
 	deleteNamespace(request: CoreV1ApiDeleteNamespaceRequest): Promise<V1Status>;
 	listNamespacedPod(request: CoreV1ApiListNamespacedPodRequest): Promise<V1PodList>;
+	listPodForAllNamespaces(request?: CoreV1ApiListPodForAllNamespacesRequest): Promise<V1PodList>;
 	readNamespacedPod(request: CoreV1ApiReadNamespacedPodRequest): Promise<V1Pod>;
 	replaceNamespacedPod(request: CoreV1ApiReplaceNamespacedPodRequest): Promise<V1Pod>;
 }

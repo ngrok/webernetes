@@ -35,6 +35,14 @@ export class Store<T extends Storable> {
 		return `${k}/${name}`;
 	}
 
+	private listPrefix(namespace?: string): string {
+		if (!this.opts.namespaced || namespace !== undefined) {
+			return this.key("", namespace);
+		}
+
+		return `/registry/${this.opts.defaultQualifiedResource}/`;
+	}
+
 	private async namespaceExists(namespace: string): Promise<boolean> {
 		const k = `/registry/namespaces/${namespace}`;
 		const value = await this.etcd.get(k).json();
@@ -153,7 +161,7 @@ export class Store<T extends Storable> {
 	}
 
 	async list(namespace?: string): Promise<T[]> {
-		const k = this.key("", namespace);
+		const k = this.listPrefix(namespace);
 		const response = await this.etcd.getAll().prefix(k).exec();
 		return response.kvs.map((kv) => {
 			const obj = JSON.parse(kv.value.toString()) as T;
@@ -162,7 +170,7 @@ export class Store<T extends Storable> {
 	}
 
 	async watch(namespace?: string): Promise<Watcher<T>> {
-		const k = this.key("", namespace);
+		const k = this.listPrefix(namespace);
 		const watcher = await this.etcd.watch().prefix(k).withPreviousKV().create();
 		return new Watcher<T>(watcher);
 	}

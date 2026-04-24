@@ -2,6 +2,7 @@ import { Cluster } from "../../../../cluster";
 import { NamespaceStore, NodeStore, PodStore } from "../../../../cluster/storage";
 import { Store } from "../../../../cluster/storage/store";
 import { NotFound } from "../../../errors";
+import { filterByLabels, parseLabelSelector } from "../../../labels";
 import { V1Namespace, V1PodList, V1Status } from "../../models";
 import type { V1Node } from "../../models/V1Node";
 import type { V1Pod } from "../../models/V1Pod";
@@ -12,37 +13,12 @@ import type {
 	CoreV1ApiDeleteNamespacedPodRequest,
 	CoreV1ApiDeleteNamespaceRequest,
 	CoreV1Api as CoreV1ApiInterface,
+	CoreV1ApiListPodForAllNamespacesRequest,
 	CoreV1ApiListNamespacedPodRequest,
 	CoreV1ApiReadNamespacedPodRequest,
 	CoreV1ApiReplaceNamespacedPodRequest,
 } from "../types/CoreV1Api";
 import { rethrowApiErrors } from "./errors";
-
-function parseLabelSelector(selector?: string): Record<string, string> {
-	if (!selector) {
-		return {};
-	}
-
-	const result: Record<string, string> = {};
-	for (const pair of selector.split(",")) {
-		const [key, value] = pair.split("=");
-		if (key && value) {
-			result[key.trim()] = value.trim();
-		}
-	}
-
-	return result;
-}
-
-function labelsMatch(labels: Record<string, string>, selector: Record<string, string>): boolean {
-	for (const [key, value] of Object.entries(selector)) {
-		if (labels[key] !== value) {
-			return false;
-		}
-	}
-
-	return true;
-}
 
 export class CoreV1Api implements CoreV1ApiInterface {
 	private readonly namespaces: Store<V1Namespace>;
@@ -73,14 +49,25 @@ export class CoreV1Api implements CoreV1ApiInterface {
 	public async listNamespacedPod(request: CoreV1ApiListNamespacedPodRequest): Promise<V1PodList> {
 		return await rethrowApiErrors(async () => {
 			const selector = parseLabelSelector(request.labelSelector);
-			const pods = (await this.pods.list(request.namespace)).filter((pod) =>
-				labelsMatch(pod.metadata?.labels ?? {}, selector),
-			);
 			return {
 				metadata: {
 					resourceVersion: "",
 				},
-				items: pods,
+				items: filterByLabels(await this.pods.list(request.namespace), selector),
+			};
+		});
+	}
+
+	public async listPodForAllNamespaces(
+		request: CoreV1ApiListPodForAllNamespacesRequest = {},
+	): Promise<V1PodList> {
+		return await rethrowApiErrors(async () => {
+			const selector = parseLabelSelector(request.labelSelector);
+			return {
+				metadata: {
+					resourceVersion: "",
+				},
+				items: filterByLabels(await this.pods.list(), selector),
 			};
 		});
 	}
