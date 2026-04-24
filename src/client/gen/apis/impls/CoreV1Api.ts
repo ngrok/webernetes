@@ -63,6 +63,8 @@ export class CoreV1Api implements CoreV1ApiInterface {
 		_options?: unknown,
 	): Promise<V1Pod> {
 		return await rethrowApiErrors(async () => {
+			param.body.metadata ??= {};
+			param.body.metadata.namespace ??= param.namespace;
 			return await this.pods.create(param.body);
 		});
 	}

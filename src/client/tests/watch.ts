@@ -93,6 +93,7 @@ export function tests(k8s: K8s, config: KubeConfig) {
 						phase: "ADDED",
 						obj: expect.objectContaining({
 							metadata: expect.objectContaining({
+								namespace,
 								name: "watched-pod",
 							}),
 						}),

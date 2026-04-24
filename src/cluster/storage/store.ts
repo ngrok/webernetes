@@ -1,6 +1,7 @@
 import { V1ObjectMeta } from "../../client";
 import { NotFound } from "../../client/errors";
 import type { Etcd } from "../etcd";
+import { Watcher } from "./watch";
 
 export interface StoreOpts {
 	namespaced?: boolean;
@@ -12,7 +13,7 @@ function generateName(prefix: string): string {
 	return `${prefix}-${Math.random().toString(36).substring(2, 8)}`;
 }
 
-interface Storable {
+export interface Storable {
 	metadata?: V1ObjectMeta;
 }
 
@@ -123,5 +124,11 @@ export class Store<T extends Storable> {
 		const k = this.key("", namespace);
 		const response = await this.etcd.getAll().prefix(k).json();
 		return Object.values(response) as T[];
+	}
+
+	async watch(namespace?: string): Promise<Watcher<T>> {
+		const k = this.key("", namespace);
+		const watcher = await this.etcd.watch().prefix(k).withPreviousKV().create();
+		return new Watcher<T>(watcher);
 	}
 }
