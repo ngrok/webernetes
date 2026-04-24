@@ -1,4 +1,5 @@
 import * as pod from "./pod";
+import * as informer from "./informer";
 import * as watch from "./watch";
 import * as k8s from "../";
 import { Cluster } from "../../cluster";
@@ -15,4 +16,5 @@ afterAll(() => {
 });
 
 pod.tests(k8s, cluster.kubeConfig);
+informer.tests(k8s, cluster.kubeConfig);
 watch.tests(k8s, cluster.kubeConfig);

@@ -18,6 +18,32 @@ import type {
 } from "../types/CoreV1Api";
 import { rethrowApiErrors } from "./errors";
 
+function parseLabelSelector(selector?: string): Record<string, string> {
+	if (!selector) {
+		return {};
+	}
+
+	const result: Record<string, string> = {};
+	for (const pair of selector.split(",")) {
+		const [key, value] = pair.split("=");
+		if (key && value) {
+			result[key.trim()] = value.trim();
+		}
+	}
+
+	return result;
+}
+
+function labelsMatch(labels: Record<string, string>, selector: Record<string, string>): boolean {
+	for (const [key, value] of Object.entries(selector)) {
+		if (labels[key] !== value) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
 export class CoreV1Api implements CoreV1ApiInterface {
 	private readonly namespaces: Store<V1Namespace>;
 	private readonly nodes: Store<V1Node>;
@@ -46,7 +72,10 @@ export class CoreV1Api implements CoreV1ApiInterface {
 
 	public async listNamespacedPod(request: CoreV1ApiListNamespacedPodRequest): Promise<V1PodList> {
 		return await rethrowApiErrors(async () => {
-			const pods = await this.pods.list(request.namespace);
+			const selector = parseLabelSelector(request.labelSelector);
+			const pods = (await this.pods.list(request.namespace)).filter((pod) =>
+				labelsMatch(pod.metadata?.labels ?? {}, selector),
+			);
 			return {
 				metadata: {
 					resourceVersion: "",
