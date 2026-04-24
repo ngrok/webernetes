@@ -1,6 +1,7 @@
 import { Cluster } from "../../../../cluster";
 import { NamespaceStore, NodeStore, PodStore } from "../../../../cluster/storage";
 import { Store } from "../../../../cluster/storage/store";
+import { NotFound } from "../../../errors";
 import { V1Namespace, V1PodList, V1Status } from "../../models";
 import type { V1Node } from "../../models/V1Node";
 import type { V1Pod } from "../../models/V1Pod";
@@ -8,9 +9,12 @@ import type {
 	CoreV1ApiCreateNamespacedPodRequest,
 	CoreV1ApiCreateNamespaceRequest,
 	CoreV1ApiCreateNodeRequest,
+	CoreV1ApiDeleteNamespacedPodRequest,
 	CoreV1ApiDeleteNamespaceRequest,
 	CoreV1Api as CoreV1ApiInterface,
 	CoreV1ApiListNamespacedPodRequest,
+	CoreV1ApiReadNamespacedPodRequest,
+	CoreV1ApiReplaceNamespacedPodRequest,
 } from "../types/CoreV1Api";
 import { rethrowApiErrors } from "./errors";
 
@@ -66,6 +70,38 @@ export class CoreV1Api implements CoreV1ApiInterface {
 			param.body.metadata ??= {};
 			param.body.metadata.namespace ??= param.namespace;
 			return await this.pods.create(param.body);
+		});
+	}
+
+	public async readNamespacedPod(request: CoreV1ApiReadNamespacedPodRequest): Promise<V1Pod> {
+		return await rethrowApiErrors(async () => {
+			const pod = await this.pods.get(request.name, request.namespace);
+			if (!pod) {
+				throw new NotFound(`Pod "${request.name}" not found`);
+			}
+
+			return pod;
+		});
+	}
+
+	public async deleteNamespacedPod(request: CoreV1ApiDeleteNamespacedPodRequest): Promise<V1Pod> {
+		return await rethrowApiErrors(async () => {
+			const pod = await this.pods.get(request.name, request.namespace);
+			if (!pod) {
+				throw new NotFound(`Pod "${request.name}" not found`);
+			}
+
+			await this.pods.delete(request.name, request.namespace);
+			return pod;
+		});
+	}
+
+	public async replaceNamespacedPod(request: CoreV1ApiReplaceNamespacedPodRequest): Promise<V1Pod> {
+		return await rethrowApiErrors(async () => {
+			request.body.metadata ??= {};
+			request.body.metadata.name = request.name;
+			request.body.metadata.namespace ??= request.namespace;
+			return await this.pods.update(request.name, request.body);
 		});
 	}
 }

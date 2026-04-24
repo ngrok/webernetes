@@ -9,6 +9,18 @@ export interface CoreV1ApiCreateNamespacedPodRequest {
 	fieldValidation?: string;
 }
 
+export interface CoreV1ApiDeleteNamespacedPodRequest {
+	name: string;
+	namespace: string;
+	pretty?: string;
+	dryRun?: string;
+	gracePeriodSeconds?: number;
+	ignoreStoreReadErrorWithClusterBreakingPotential?: boolean;
+	orphanDependents?: boolean;
+	propagationPolicy?: string;
+	body?: V1DeleteOptions;
+}
+
 export interface CoreV1ApiListNamespacedPodRequest {
 	namespace: string;
 	pretty?: string;
@@ -22,6 +34,22 @@ export interface CoreV1ApiListNamespacedPodRequest {
 	sendInitialEvents?: boolean;
 	timeoutSeconds?: number;
 	watch?: boolean;
+}
+
+export interface CoreV1ApiReadNamespacedPodRequest {
+	name: string;
+	namespace: string;
+	pretty?: string;
+}
+
+export interface CoreV1ApiReplaceNamespacedPodRequest {
+	name: string;
+	namespace: string;
+	body: V1Pod;
+	pretty?: string;
+	dryRun?: string;
+	fieldManager?: string;
+	fieldValidation?: string;
 }
 
 export interface CoreV1ApiCreateNamespaceRequest {
@@ -55,6 +83,9 @@ export interface CoreV1Api {
 	createNamespace(request: CoreV1ApiCreateNamespaceRequest): Promise<V1Namespace>;
 	createNode(request: CoreV1ApiCreateNodeRequest): Promise<V1Node>;
 	createNamespacedPod(request: CoreV1ApiCreateNamespacedPodRequest): Promise<V1Pod>;
+	deleteNamespacedPod(request: CoreV1ApiDeleteNamespacedPodRequest): Promise<V1Pod>;
 	deleteNamespace(request: CoreV1ApiDeleteNamespaceRequest): Promise<V1Status>;
 	listNamespacedPod(request: CoreV1ApiListNamespacedPodRequest): Promise<V1PodList>;
+	readNamespacedPod(request: CoreV1ApiReadNamespacedPodRequest): Promise<V1Pod>;
+	replaceNamespacedPod(request: CoreV1ApiReplaceNamespacedPodRequest): Promise<V1Pod>;
 }

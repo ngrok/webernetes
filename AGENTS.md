@@ -31,6 +31,10 @@ General rules for this repository:
   compatibility or maintainability.
 - It is acceptable to inspect the real client in `node_modules/` to understand
   shapes and signatures, but do not import from it in the fake client source.
+- In this repo the package is installed at `node_modules/@kubernetes/client-node`
+  and may be a pnpm symlink. For generated API and request shapes, prefer the
+  `.d.ts` files under `node_modules/@kubernetes/client-node/dist/gen/`, notably
+  `dist/gen/apis/*.d.ts` and `dist/gen/types/ObjectParamAPI.d.ts`.
 
 Client-specific rules:
 
