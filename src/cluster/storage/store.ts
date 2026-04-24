@@ -1,5 +1,5 @@
 import { V1ObjectMeta } from "../../client";
-import { NotFound } from "../../client/errors";
+import { Conflict, NotFound } from "../../client/errors";
 import type { Etcd } from "../etcd";
 import { Watcher } from "./watch";
 
@@ -41,10 +41,31 @@ export class Store<T extends Storable> {
 		return !!value;
 	}
 
+	private withResourceVersion(obj: T, resourceVersion: string): T {
+		obj.metadata ??= {};
+		obj.metadata.resourceVersion = resourceVersion;
+		return obj;
+	}
+
+	private async readStored(
+		name: string,
+		namespace?: string,
+	): Promise<{ obj: T; resourceVersion: string } | undefined> {
+		const response = await this.etcd.get(this.key(name, namespace)).exec();
+		const kv = response.kvs[0];
+		if (!kv) {
+			return undefined;
+		}
+
+		const obj = JSON.parse(kv.value.toString()) as T;
+		return {
+			obj: this.withResourceVersion(obj, kv.mod_revision),
+			resourceVersion: kv.mod_revision,
+		};
+	}
+
 	async get(name: string, namespace?: string): Promise<T | undefined> {
-		const k = this.key(name, namespace);
-		const value = await this.etcd.get(k).json();
-		return value as T | undefined;
+		return (await this.readStored(name, namespace))?.obj;
 	}
 
 	async create(obj: T): Promise<T> {
@@ -90,8 +111,8 @@ export class Store<T extends Storable> {
 		this.validateCreate(obj);
 
 		const k = this.key(obj.metadata.name, obj.metadata.namespace);
-		await this.etcd.put(k).value(JSON.stringify(obj)).exec();
-		return obj;
+		const response = await this.etcd.put(k).value(JSON.stringify(obj)).exec();
+		return this.withResourceVersion(obj, response.header.revision);
 	}
 
 	async update(name: string, obj: T): Promise<T> {
@@ -107,11 +128,22 @@ export class Store<T extends Storable> {
 			obj.metadata.namespace = "default";
 		}
 
+		const existing = await this.readStored(name, obj.metadata.namespace);
+		if (!existing) {
+			throw new NotFound(`${this.opts.singularQualifiedResource} "${name}" not found`);
+		}
+
+		if (obj.metadata.resourceVersion && obj.metadata.resourceVersion !== existing.resourceVersion) {
+			throw new Conflict(
+				`${this.opts.singularQualifiedResource} "${name}" was modified; please apply your changes to the latest version and try again`,
+			);
+		}
+
 		this.validateUpdate(obj);
 
 		const k = this.key(name, obj.metadata.namespace);
-		await this.etcd.put(k).value(JSON.stringify(obj)).exec();
-		return obj;
+		const response = await this.etcd.put(k).value(JSON.stringify(obj)).exec();
+		return this.withResourceVersion(obj, response.header.revision);
 	}
 
 	async delete(name: string, namespace?: string): Promise<boolean> {
@@ -122,8 +154,11 @@ export class Store<T extends Storable> {
 
 	async list(namespace?: string): Promise<T[]> {
 		const k = this.key("", namespace);
-		const response = await this.etcd.getAll().prefix(k).json();
-		return Object.values(response) as T[];
+		const response = await this.etcd.getAll().prefix(k).exec();
+		return response.kvs.map((kv) => {
+			const obj = JSON.parse(kv.value.toString()) as T;
+			return this.withResourceVersion(obj, kv.mod_revision);
+		});
 	}
 
 	async watch(namespace?: string): Promise<Watcher<T>> {

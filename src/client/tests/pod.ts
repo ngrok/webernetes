@@ -148,5 +148,49 @@ export function tests(k8s: K8s, config: KubeConfig) {
 				pods.items.find((pod) => pod.metadata?.name === "replace-test")?.metadata?.labels?.app,
 			).toBe("replaced");
 		});
+
+		it("should throw 409 when replacing a pod with a stale resourceVersion", async () => {
+			await createPod({
+				metadata: {
+					name: "replace-conflict-test",
+					labels: { app: "original" },
+				},
+			});
+
+			const stale = await api.readNamespacedPod({
+				name: "replace-conflict-test",
+				namespace,
+			});
+
+			expect(stale.metadata?.resourceVersion).toBeTruthy();
+
+			await replacePod("replace-conflict-test", (current) => {
+				current.metadata = {
+					...current.metadata,
+					name: "replace-conflict-test",
+					labels: { app: "fresh" },
+				};
+			});
+
+			await expect(
+				api.replaceNamespacedPod({
+					name: "replace-conflict-test",
+					namespace,
+					body: {
+						...stale,
+						metadata: {
+							...stale.metadata,
+							labels: { app: "stale" },
+						},
+					},
+				}),
+			).rejects.toThrow(/HTTP-Code: 409/);
+
+			const current = await api.readNamespacedPod({
+				name: "replace-conflict-test",
+				namespace,
+			});
+			expect(current.metadata?.labels?.app).toBe("fresh");
+		});
 	});
 }

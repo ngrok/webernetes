@@ -2,19 +2,28 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import type { V1Pod } from "../gen/models";
 import type { K8s, KubeConfig } from "../types";
 
+interface WatchAndWaitOptions<T> {
+	url: string;
+	queryParams: Record<string, string>;
+	onEvent: (phase: string, obj: T) => void;
+	assert: () => void;
+	act?: () => Promise<void>;
+}
+
 export function tests(k8s: K8s, config: KubeConfig) {
-	async function watchAndWait<T>(
-		url: string,
-		queryParams: Record<string, string>,
-		callback: (phase: string, obj: T) => void,
-		wait: () => void,
-	): Promise<void> {
+	async function watchAndWait<T>({
+		url,
+		queryParams,
+		onEvent,
+		assert,
+		act,
+	}: WatchAndWaitOptions<T>): Promise<void> {
 		const watch = new k8s.Watch(config);
 		const controller = await watch.watch(
 			url,
 			queryParams,
 			(phase: string, obj: unknown) => {
-				callback(phase, obj as T);
+				onEvent(phase, obj as T);
 			},
 			(err) => {
 				if (err instanceof Error) {
@@ -27,7 +36,8 @@ export function tests(k8s: K8s, config: KubeConfig) {
 		);
 
 		try {
-			await vi.waitFor(wait);
+			await act?.();
+			await vi.waitFor(assert);
 		} finally {
 			controller?.abort();
 		}
@@ -108,13 +118,13 @@ export function tests(k8s: K8s, config: KubeConfig) {
 		it("exports Watch and emits ADDED for created pods", async () => {
 			const events: Array<{ phase: string; obj: V1Pod }> = [];
 
-			const promise = watchAndWait(
-				`/api/v1/namespaces/${namespace}/pods`,
-				{},
-				(phase, obj: V1Pod) => {
+			await watchAndWait({
+				url: `/api/v1/namespaces/${namespace}/pods`,
+				queryParams: {},
+				onEvent: (phase, obj: V1Pod) => {
 					events.push({ phase, obj });
 				},
-				() => {
+				assert: () => {
 					expect(events).toContainEqual({
 						phase: "ADDED",
 						obj: expect.objectContaining({
@@ -125,42 +135,42 @@ export function tests(k8s: K8s, config: KubeConfig) {
 						}),
 					});
 				},
-			);
-
-			await createPod({ metadata: { name: "watched-pod" } });
-			await promise;
+				act: async () => {
+					await createPod({ metadata: { name: "watched-pod" } });
+				},
+			});
 		});
 
 		it("passes labelSelector through to watch", async () => {
 			const seenNames: string[] = [];
-			const promise = watchAndWait(
-				`/api/v1/namespaces/${namespace}/pods`,
-				{ labelSelector: "app=selected" },
-				(_, obj: V1Pod) => {
+			await watchAndWait({
+				url: `/api/v1/namespaces/${namespace}/pods`,
+				queryParams: { labelSelector: "app=selected" },
+				onEvent: (_, obj: V1Pod) => {
 					seenNames.push(obj.metadata?.name ?? "");
 				},
-				() => {
+				assert: () => {
 					expect(seenNames).toContain("selected-pod");
 					expect(seenNames).not.toContain("ignored-pod");
 				},
-			);
-
-			await createPod({ metadata: { name: "ignored-pod", labels: { app: "ignored" } } });
-			await createPod({ metadata: { name: "selected-pod", labels: { app: "selected" } } });
-			await promise;
+				act: async () => {
+					await createPod({ metadata: { name: "ignored-pod", labels: { app: "ignored" } } });
+					await createPod({ metadata: { name: "selected-pod", labels: { app: "selected" } } });
+				},
+			});
 		});
 
 		it("emits DELETED for deleted pods", async () => {
 			const events: Array<{ phase: string; obj: V1Pod }> = [];
 			await createPod({ metadata: { name: "deleted-pod" } });
 
-			const promise = watchAndWait(
-				`/api/v1/namespaces/${namespace}/pods`,
-				{},
-				(phase, obj: V1Pod) => {
+			await watchAndWait({
+				url: `/api/v1/namespaces/${namespace}/pods`,
+				queryParams: {},
+				onEvent: (phase, obj: V1Pod) => {
 					events.push({ phase, obj });
 				},
-				() => {
+				assert: () => {
 					expect(events).toContainEqual({
 						phase: "DELETED",
 						obj: expect.objectContaining({
@@ -171,30 +181,30 @@ export function tests(k8s: K8s, config: KubeConfig) {
 						}),
 					});
 				},
-			);
-
-			await api.deleteNamespacedPod({
-				name: "deleted-pod",
-				namespace,
-				gracePeriodSeconds: 0,
-				body: {
-					gracePeriodSeconds: 0,
+				act: async () => {
+					await api.deleteNamespacedPod({
+						name: "deleted-pod",
+						namespace,
+						gracePeriodSeconds: 0,
+						body: {
+							gracePeriodSeconds: 0,
+						},
+					});
 				},
 			});
-			await promise;
 		});
 
 		it("emits MODIFIED for replaced pods", async () => {
 			const events: Array<{ phase: string; obj: V1Pod }> = [];
 			await createPod({ metadata: { name: "modified-pod", labels: { app: "original" } } });
 
-			const promise = watchAndWait(
-				`/api/v1/namespaces/${namespace}/pods`,
-				{},
-				(phase, obj: V1Pod) => {
+			await watchAndWait({
+				url: `/api/v1/namespaces/${namespace}/pods`,
+				queryParams: {},
+				onEvent: (phase, obj: V1Pod) => {
 					events.push({ phase, obj });
 				},
-				() => {
+				assert: () => {
 					expect(events).toContainEqual({
 						phase: "MODIFIED",
 						obj: expect.objectContaining({
@@ -208,17 +218,17 @@ export function tests(k8s: K8s, config: KubeConfig) {
 						}),
 					});
 				},
-			);
-
-			await replacePod("modified-pod", (current) => {
-				current.metadata = {
-					name: "modified-pod",
-					labels: {
-						app: "modified",
-					},
-				};
+				act: async () => {
+					await replacePod("modified-pod", (current) => {
+						current.metadata = {
+							name: "modified-pod",
+							labels: {
+								app: "modified",
+							},
+						};
+					});
+				},
 			});
-			await promise;
 		});
 	});
 }
