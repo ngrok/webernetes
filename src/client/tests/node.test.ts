@@ -3,6 +3,7 @@ import { K3sContainer, type StartedK3sContainer } from "@testcontainers/k3s";
 import * as k8s from "@kubernetes/client-node";
 
 import * as pod from "./pod";
+import * as watch from "./watch";
 
 let containerPromise: Promise<StartedK3sContainer> | undefined;
 
@@ -38,3 +39,4 @@ beforeAll(async () => {
 });
 
 pod.tests(k8s, kc);
+watch.tests(k8s, kc);

@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+CONTAINER_NAME="k8s-web-simulator-k3s"
+
+if ! docker inspect --format '{{.State.Running}}' "$CONTAINER_NAME" 2>/dev/null | grep -q true; then
+  echo "error: container '$CONTAINER_NAME' is not running" >&2
+  exit 1
+fi
+
+PORT=$(docker port "$CONTAINER_NAME" 6443 | head -1 | awk -F: '{print $NF}')
+
+TMPFILE=$(mktemp)
+trap 'rm -f "$TMPFILE"' EXIT
+
+docker exec "$CONTAINER_NAME" cat /etc/rancher/k3s/k3s.yaml \
+  | sed "s|https://127.0.0.1:6443|https://127.0.0.1:${PORT}|" \
+  > "$TMPFILE"
+
+KUBECONFIG="$TMPFILE" kubectl "$@"

@@ -1,13 +1,23 @@
-// oxlint-disable typescript/no-explicit-any
-import { CoreV1Api } from "./gen/apis/types";
+import type { CoreV1Api } from "./gen/apis/types";
 
-interface ApiType {}
+export interface ApiType {}
+// oxlint-disable-next-line typescript/no-explicit-any
+export type ApiConstructor<T> = new (...args: any[]) => T;
+
+export interface Watch {
+	watch(
+		path: string,
+		queryParams: Record<string, string | number | boolean | undefined>,
+		callback: (phase: string, apiObj: unknown, watchObj?: unknown) => void,
+		done: (err: unknown) => void,
+	): Promise<AbortController>;
+}
 
 export interface KubeConfig {
-	makeApiClient<T extends ApiType>(api: new (...args: any[]) => T): T;
+	makeApiClient<T extends ApiType>(api: ApiConstructor<T>): T;
 }
 
 export interface K8s {
-	KubeConfig: new (...args: any[]) => KubeConfig;
-	CoreV1Api: new (...args: any[]) => CoreV1Api;
+	CoreV1Api: ApiConstructor<CoreV1Api>;
+	Watch: ApiConstructor<Watch>;
 }
