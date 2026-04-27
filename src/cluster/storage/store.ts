@@ -19,13 +19,19 @@ export interface Storable {
 
 export class Store<T extends Storable> {
 	constructor(
-		private readonly etcd: Etcd,
+		protected readonly etcd: Etcd,
 		private readonly opts: StoreOpts,
 	) {}
 
 	protected async validateCreate(_: T): Promise<void> {}
 
 	protected async validateUpdate(_: T): Promise<void> {}
+
+	protected async prepareCreate(_: T): Promise<void> {}
+
+	protected async prepareUpdate(_: T, _existing: T): Promise<void> {}
+
+	protected async prepareDelete(_: T): Promise<void> {}
 
 	private key(name: string, namespace?: string): string {
 		let k = `/registry/${this.opts.defaultQualifiedResource}`;
@@ -116,7 +122,8 @@ export class Store<T extends Storable> {
 			throw new Error(`Object with name ${obj.metadata.name} already exists`);
 		}
 
-		this.validateCreate(obj);
+		await this.prepareCreate(obj);
+		await this.validateCreate(obj);
 
 		const k = this.key(obj.metadata.name, obj.metadata.namespace);
 		const response = await this.etcd.put(k).value(JSON.stringify(obj)).exec();
@@ -147,7 +154,8 @@ export class Store<T extends Storable> {
 			);
 		}
 
-		this.validateUpdate(obj);
+		await this.prepareUpdate(obj, existing.obj);
+		await this.validateUpdate(obj);
 
 		const k = this.key(name, obj.metadata.namespace);
 		const response = await this.etcd.put(k).value(JSON.stringify(obj)).exec();
@@ -156,6 +164,10 @@ export class Store<T extends Storable> {
 
 	async delete(name: string, namespace?: string): Promise<boolean> {
 		const k = this.key(name, namespace);
+		const existing = await this.readStored(name, namespace);
+		if (existing) {
+			await this.prepareDelete(existing.obj);
+		}
 		const response = await this.etcd.delete().key(k).getPrevious();
 		return response.length > 0;
 	}

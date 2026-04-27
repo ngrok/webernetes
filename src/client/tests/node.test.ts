@@ -3,6 +3,7 @@ import { K3sContainer, type StartedK3sContainer } from "@testcontainers/k3s";
 import * as k8s from "@kubernetes/client-node";
 
 import * as pod from "./pod";
+import * as service from "./service";
 import * as informer from "./informer";
 import * as watch from "./watch";
 
@@ -40,5 +41,6 @@ beforeAll(async () => {
 });
 
 pod.tests(k8s, kc);
+service.tests(k8s, kc);
 informer.tests(k8s, kc);
 watch.tests(k8s, kc);

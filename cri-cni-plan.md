@@ -1034,22 +1034,36 @@ and richer controllers should come after that first signal.
 
 ### Phase 1: API And Storage Prerequisites
 
-- [ ] Add minimal Service generated/client types needed by shared tests:
+- [x] Add minimal Service generated/client types needed by shared tests:
       `V1Service`, `V1ServiceSpec`, `V1ServicePort`, `V1ServiceList`, and any
       required metadata/status support.
-- [ ] Add minimal CoreV1 Service API methods in `src/client/gen/apis/` and
+      Implemented lightweight Service model files under `src/client/gen/models/`
+      and exported them through the generated model index.
+- [x] Add minimal CoreV1 Service API methods in `src/client/gen/apis/` and
       storage under `src/cluster/storage/`.
-- [ ] Implement Service create/update/delete allocation semantics in apiserver
+      Added Service create/read/list/list-all/replace/delete methods to the fake
+      CoreV1 API surface, plus `ServiceStore` under `src/cluster/storage/`.
+- [x] Implement Service create/update/delete allocation semantics in apiserver
       Service storage: allocate `spec.clusterIP` for ClusterIP/NodePort
       Services, allocate `spec.ports[*].nodePort` for NodePort Services,
       preserve allocated values across updates, and release allocations on
       delete. Service controllers consume these allocated values; they do not
       allocate them.
-- [ ] Add Service validation/defaulting only as far as the first shared test
+      Added range-backed `IpRange`/`PortRange` allocation helpers using etcd
+      locks, with explicit claim/release support and shared tests covering
+      preservation and release/reclaim behavior against both real Kubernetes and
+      the simulator.
+- [x] Add Service validation/defaulting only as far as the first shared test
       needs. Avoid trying to fully clone apiserver Service validation up front.
+      Implemented minimal defaulting for Service type, port protocol, targetPort,
+      clusterIPs, and NodePort/ClusterIP validation needed by the current shared
+      Service tests.
 - [ ] Add a cluster-level NodePort fetch helper, exposed from `Cluster` or
       `ClusterNetwork`. It should match the existing fetch-style boundary:
       accept a NodePort and `HttpRequest`, then return `Promise<HttpResponse>`.
+      Deferred until the networking primitives exist, so this helper can route
+      through the same model as pod networking, endpoints, and kube-proxy-style
+      Service behavior.
 
 ### Phase 2: Runtime And Network Primitives
 

@@ -375,6 +375,293 @@ export function etcdParityTests(name: string, factory: () => Promise<Etcd | Etcd
 			expect(kv?.version).toBe("3");
 		});
 
+		it("transaction success branch applies put operations when comparisons pass", async () => {
+			const result = await client
+				.if("lock", "Version", "==", 0)
+				.then(client.put("lock").value("owner-1"))
+				.else(client.get("lock"))
+				.commit();
+
+			expect(result.succeeded).toBe(true);
+			expect(result.responses).toHaveLength(1);
+			expect(result.responses[0]?.response_put).toBeDefined();
+			expect(await client.get("lock").string()).toBe("owner-1");
+
+			const kv = (await client.get("lock").exec()).kvs[0];
+			expect(kv?.create_revision).toBe(revision(1));
+			expect(kv?.mod_revision).toBe(revision(1));
+			expect(kv?.version).toBe("1");
+		});
+
+		it("transaction failure branch returns range responses when comparisons fail", async () => {
+			await client.put("lock").value("owner-1");
+
+			const result = await client
+				.if("lock", "Version", "==", 0)
+				.then(client.put("lock").value("owner-2"))
+				.else(client.get("lock"))
+				.commit();
+
+			expect(result.succeeded).toBe(false);
+			expect(result.responses).toHaveLength(1);
+			const range = result.responses[0]?.response_range;
+			expect(range?.kvs).toHaveLength(1);
+			expect(range?.kvs[0]?.key.toString()).toBe("lock");
+			expect(range?.kvs[0]?.value.toString()).toBe("owner-1");
+			expect(await client.get("lock").string()).toBe("owner-1");
+		});
+
+		it("transaction supports chained comparisons against value, create revision, and mod revision", async () => {
+			await client.put("item").value("v1");
+			await client.put("item").value("v2");
+
+			const result = await client
+				.if("item", "Value", "==", "v2")
+				.and("item", "Create", "==", Number(revision(1)))
+				.and("item", "Mod", "==", Number(revision(2)))
+				.then(client.put("item").value("v3"))
+				.else(client.get("item"))
+				.commit();
+
+			expect(result.succeeded).toBe(true);
+			expect(await client.get("item").string()).toBe("v3");
+			const kv = (await client.get("item").exec()).kvs[0];
+			expect(kv?.create_revision).toBe(revision(1));
+			expect(kv?.mod_revision).toBe(revision(3));
+			expect(kv?.version).toBe("3");
+		});
+
+		it("transaction applies multiple write operations at one shared revision", async () => {
+			await client.put("txn/delete-me").value("old");
+
+			// oxlint-disable-next-line promise/valid-params
+			const result = await client
+				.if("txn/a", "Version", "==", 0)
+				.then(
+					client.put("txn/a").value("one"),
+					client.put("txn/b").value("two"),
+					client.delete().key("txn/delete-me"),
+				)
+				.commit();
+
+			expect(result.succeeded).toBe(true);
+			expect(result.header.revision).toBe(revision(2));
+			expect(result.responses).toHaveLength(3);
+			expect(result.responses[0]?.response_put?.header.revision).toBe(result.header.revision);
+			expect(result.responses[1]?.response_put?.header.revision).toBe(result.header.revision);
+			expect(result.responses[2]?.response_delete_range?.header.revision).toBe(
+				result.header.revision,
+			);
+
+			const a = (await client.get("txn/a").exec()).kvs[0];
+			const b = (await client.get("txn/b").exec()).kvs[0];
+			expect(a?.mod_revision).toBe(result.header.revision);
+			expect(b?.mod_revision).toBe(result.header.revision);
+			expect(await client.get("txn/delete-me").exists()).toBe(false);
+		});
+
+		it("transaction can return range responses for multi-key operations", async () => {
+			await client.put("pods/a").value("one");
+			await client.put("pods/b").value("two");
+			await client.put("nodes/a").value("node");
+
+			const result = await client
+				.if("ready", "Version", "==", 0)
+				.then(client.getAll().prefix("pods/"))
+				.commit();
+
+			expect(result.succeeded).toBe(true);
+			const response = result.responses[0]?.response_range;
+			expect(response?.kvs.map((kv) => kv.key.toString())).toEqual(["pods/a", "pods/b"]);
+			expect(response?.kvs.map((kv) => kv.value.toString())).toEqual(["one", "two"]);
+		});
+
+		it("transaction operations respect namespaces", async () => {
+			const ns = client.namespace("ns/");
+
+			const result = await ns
+				.if("key", "Version", "==", 0)
+				.then(ns.put("key").value("value"))
+				.commit();
+
+			expect(result.succeeded).toBe(true);
+			expect(await ns.get("key").string()).toBe("value");
+			expect(await client.get("ns/key").string()).toBe("value");
+			expect(await client.get("key").string()).toBeNull();
+		});
+
+		it("transaction watch data contains all events at the same revision", async () => {
+			const watcher = await client.watch().prefix("watch-txn/").create();
+			const dataReceived = nextEvent<{
+				header: { revision: string };
+				events: { kv: { key: Buffer; mod_revision: string } }[];
+			}>(watcher, "data");
+
+			await client
+				.if("watch-txn/a", "Version", "==", 0)
+				.then(client.put("watch-txn/a").value("one"), client.put("watch-txn/b").value("two"))
+				.commit();
+
+			const response = await dataReceived;
+			expect(response.events).toHaveLength(2);
+			expect(response.events.map((event) => event.kv.key.toString())).toEqual([
+				"watch-txn/a",
+				"watch-txn/b",
+			]);
+			expect(
+				response.events.every((event) => event.kv.mod_revision === response.header.revision),
+			).toBe(true);
+		});
+
+		it("transaction rejects multiple writes to the same key", async () => {
+			await expect(
+				client
+					.if("dup", "Version", "==", 0)
+					.then(client.put("dup").value("one"), client.put("dup").value("two"))
+					.commit(),
+			).rejects.toThrow(/duplicate key|multiple times/i);
+		});
+
+		it("transaction serializes concurrent create-if-missing contenders", async () => {
+			const contenderIds = Array.from({ length: 20 }, (_, index) => `owner-${index}`);
+
+			const results = await Promise.all(
+				contenderIds.map(async (id) => {
+					return await client
+						.if("singleton", "Version", "==", 0)
+						.then(client.put("singleton").value(id))
+						.else(client.get("singleton"))
+						.commit();
+				}),
+			);
+
+			const succeeded = results.filter((result) => result.succeeded);
+			expect(succeeded).toHaveLength(1);
+
+			const storedOwner = await client.get("singleton").string();
+			expect(contenderIds).toContain(storedOwner);
+			expect(succeeded[0]?.responses[0]?.response_put).toBeDefined();
+
+			for (const result of results.filter((r) => !r.succeeded)) {
+				const kv = result.responses[0]?.response_range?.kvs[0];
+				expect(kv?.value.toString()).toBe(storedOwner);
+			}
+		});
+
+		it("transaction supports compare-and-swap loops for concurrent increments", async () => {
+			const incrementCount = 25;
+
+			async function incrementCounter(): Promise<number> {
+				for (;;) {
+					const response = await client.get("counter").exec();
+					const kv = response.kvs[0];
+					const current = kv ? Number(kv.value.toString()) : 0;
+					const next = current + 1;
+					const transaction = kv
+						? client.if("counter", "Mod", "==", Number(kv.mod_revision))
+						: client.if("counter", "Version", "==", 0);
+
+					const result = await transaction.then(client.put("counter").value(next)).commit();
+					if (result.succeeded) {
+						return next;
+					}
+				}
+			}
+
+			const increments = await Promise.all(
+				Array.from({ length: incrementCount }, () => incrementCounter()),
+			);
+
+			expect(await client.get("counter").number()).toBe(incrementCount);
+			expect(new Set(increments).size).toBe(incrementCount);
+			expect(increments.toSorted((left, right) => left - right)).toEqual(
+				Array.from({ length: incrementCount }, (_, index) => index + 1),
+			);
+		});
+
+		it("lock().do() runs the callback while holding a lock and releases it afterward", async () => {
+			const events: string[] = [];
+
+			const value = await client
+				.lock("locks/do")
+				.ttl(5)
+				.do(async () => {
+					events.push("inside");
+					await client.put("locks/do/value").value("written");
+					return "result";
+				});
+
+			expect(value).toBe("result");
+			expect(events).toEqual(["inside"]);
+			expect(await client.get("locks/do/value").string()).toBe("written");
+			await expect(client.lock("locks/do").ttl(5).acquire()).resolves.toBeDefined();
+		});
+
+		it("lock acquire rejects while another holder owns the same lock", async () => {
+			const first = await client.lock("locks/contended").ttl(5).acquire();
+
+			try {
+				await expect(client.lock("locks/contended").ttl(5).acquire()).rejects.toThrow(
+					/Failed to acquire a lock/,
+				);
+			} finally {
+				await first.release();
+			}
+		});
+
+		it("lock release allows another holder to acquire the same lock", async () => {
+			const first = await client.lock("locks/reacquire").ttl(5).acquire();
+			await first.release();
+
+			const second = await client.lock("locks/reacquire").ttl(5).acquire();
+			expect(second).toBeDefined();
+			await second.release();
+		});
+
+		it("lock().do() releases the lock when the callback throws", async () => {
+			await expect(
+				client
+					.lock("locks/throwing")
+					.ttl(5)
+					.do(async () => {
+						await client.put("locks/throwing/value").value("before-error");
+						throw new Error("boom");
+					}),
+			).rejects.toThrow("boom");
+
+			const next = await client.lock("locks/throwing").ttl(5).acquire();
+			await next.release();
+		});
+
+		it("locks are isolated by namespace", async () => {
+			const ns1 = client.namespace("ns1/");
+			const ns2 = client.namespace("ns2/");
+			const first = await ns1.lock("same-name").ttl(5).acquire();
+
+			try {
+				const second = await ns2.lock("same-name").ttl(5).acquire();
+				expect(second).toBeDefined();
+				await second.release();
+			} finally {
+				await first.release();
+			}
+		});
+
+		it("lock ttl expiry allows another holder to acquire the same lock", async () => {
+			const first = await client.lock("locks/expires").ttl(1).acquire();
+			const lease = await first.leaseId();
+			expect(lease).not.toBeNull();
+
+			// etcd3 keeps lock leases alive automatically. Stop the keepalive loop
+			// without revoking the lease so this test exercises server-side TTL expiry.
+			(first as unknown as { lease?: { release(): void } }).lease?.release();
+			await wait(2500);
+
+			const next = await client.lock("locks/expires").ttl(5).acquire();
+			expect(next).toBeDefined();
+			await next.release();
+		});
+
 		it("delete and recreate resets version and assigns a new createRevision", async () => {
 			await client.put("key").value("v1");
 			await client.put("key").value("v2");
@@ -1013,6 +1300,77 @@ export function etcdParityTests(name: string, factory: () => Promise<Etcd | Etcd
 			expect(buffers["b"]?.toString()).toBe("two");
 		});
 
+		it("mutating a buffer returned by get().buffer() does not mutate stored data", async () => {
+			await client.put("binary").value(Buffer.from([0, 1, 2, 255]));
+
+			const first = await client.get("binary").buffer();
+			expect(first).not.toBeNull();
+			if (!first) {
+				throw new Error("expected binary value");
+			}
+			first[0] = 99;
+			first[3] = 100;
+
+			const second = await client.get("binary").buffer();
+			expect([...Buffer.from(second ?? [])]).toEqual([0, 1, 2, 255]);
+		});
+
+		it("mutating buffers returned by getAll().buffers() does not mutate stored data", async () => {
+			await client.put("binary/a").value(Buffer.from([1, 2, 3]));
+			await client.put("binary/b").value(Buffer.from([4, 5, 6]));
+
+			const first = await client.getAll().prefix("binary/").buffers();
+			first["binary/a"]?.fill(9);
+			first["binary/b"]?.fill(8);
+
+			const second = await client.getAll().prefix("binary/").buffers();
+			expect([...Buffer.from(second["binary/a"] ?? [])]).toEqual([1, 2, 3]);
+			expect([...Buffer.from(second["binary/b"] ?? [])]).toEqual([4, 5, 6]);
+		});
+
+		it("mutating previous key buffers does not mutate stored historical or current data", async () => {
+			await client.put("binary").value(Buffer.from([1, 2, 3]));
+
+			const previous = await client
+				.put("binary")
+				.value(Buffer.from([4, 5, 6]))
+				.getPrevious();
+			expect(previous).toBeDefined();
+			previous?.value.fill(9);
+
+			expect([...((await client.get("binary").revision(revision(1)).buffer()) ?? [])]).toEqual([
+				1, 2, 3,
+			]);
+			expect([...((await client.get("binary").buffer()) ?? [])]).toEqual([4, 5, 6]);
+		});
+
+		it("mutating transaction response buffers does not mutate stored data", async () => {
+			await client.put("binary/a").value(Buffer.from([7, 8, 9]));
+
+			const result = await client
+				.if("binary/ready", "Version", "==", 0)
+				.then(client.get("binary/a"))
+				.commit();
+			const kv = result.responses[0]?.response_range?.kvs[0];
+			expect(kv).toBeDefined();
+			kv?.value.fill(0);
+
+			expect([...((await client.get("binary/a").buffer()) ?? [])]).toEqual([7, 8, 9]);
+		});
+
+		it("mutating key buffers returned by exec() does not mutate stored keys", async () => {
+			await client.put("binary/a").value("value");
+
+			const first = await client.getAll().prefix("binary/").exec();
+			const kv = first.kvs[0];
+			expect(kv).toBeDefined();
+			kv?.key.fill(120);
+
+			const second = await client.getAll().prefix("binary/").exec();
+			expect(second.kvs.map((entry) => entry.key.toString())).toEqual(["binary/a"]);
+			expect(await client.get("binary/a").string()).toBe("value");
+		});
+
 		it("getAll().keyBuffers() returns keys as Buffers", async () => {
 			await client.put("a").value("1");
 			await client.put("b").value("2");
@@ -1021,6 +1379,19 @@ export function etcdParityTests(name: string, factory: () => Promise<Etcd | Etcd
 
 			expect(keys.every((k) => Buffer.isBuffer(k))).toBe(true);
 			expect(keys.map((k) => k.toString()).toSorted()).toEqual(["a", "b"]);
+		});
+
+		it("mutating buffers returned by getAll().keyBuffers() does not mutate stored keys", async () => {
+			await client.put("binary/a").value("one");
+			await client.put("binary/b").value("two");
+
+			const first = await client.getAll().prefix("binary/").keyBuffers();
+			for (const key of first) {
+				key.fill(120);
+			}
+
+			const second = await client.getAll().prefix("binary/").keyBuffers();
+			expect(second.map((key) => key.toString()).toSorted()).toEqual(["binary/a", "binary/b"]);
 		});
 
 		it("get().buffer() returns null for a missing key", async () => {

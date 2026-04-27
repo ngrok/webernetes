@@ -17,6 +17,10 @@ General rules for this repository:
 - Prefer preserving the broad structure of the real
   `kubernetes-client/javascript` repository where that helps compatibility, but
   keep the fake implementation human-readable and editable.
+- In cluster simulation code, do not call global timer/time APIs such as
+  `setTimeout`, `setInterval`, or `Date.now` directly. Route timeout, interval,
+  and current-time behavior through the cluster `Clock` instance so the
+  simulator can be paused and controlled deterministically.
 - Shared tests should exercise the same calling code against the real client and
   the fake client. Favor changes that make the fake's public exported types line
   up with the real client's public exported types closely enough that unions and

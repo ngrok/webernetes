@@ -16,6 +16,8 @@
 //   (only), withPreviousKV, cancel. Each mutation gets a globally
 //   unique revision, matching real etcd semantics.
 // - namespace: prefix isolation, arbitrarily nestable.
+// - Transactions: if()/and()/then()/else()/commit() with range, put, and
+//   delete ops, atomic compare-and-swap semantics, and batched watch delivery.
 // - Revision compaction: retainedRevisions option bounds per-key history.
 //   A global compaction watermark ensures reads and watches against any
 //   compacted revision throw errCompacted, even on empty ranges.
@@ -24,9 +26,6 @@
 // - Leases: lease(), put().lease(), put().ignoreLease(). Requires TTL tracking
 //   and a keepalive loop — unnecessary for the scenarios this fake covers.
 // - Distributed lock: lock(). Built on leases; same reasoning.
-// - Transactions: if()/then()/else()/commit(), and the op() helpers on Put and
-//   Delete builders. Requires multi-key atomic compare-and-swap; too complex
-//   for current needs.
 // - STM (software transactional memory): stm(). Built on transactions.
 // - Elections: election(). Built on leases and transactions.
 // - Auth/admin: getRoles(), getUsers(), role(), user(). Not relevant to the
@@ -101,10 +100,72 @@ export interface WatchResponse {
 export type SortTarget = "Key" | "Version" | "Create" | "Mod" | "Value";
 export type SortOrder = "None" | "Ascend" | "Descend";
 export type WatchOperation = "put" | "delete";
+export type CompareResult = "Equal" | "Greater" | "Less" | "NotEqual";
+export type CompareTarget = "Version" | "Create" | "Mod" | "Value" | "Lease";
+export type Comparator = "==" | "===" | ">" | "<" | "!=" | "!==";
+
+export const comparator: Record<Comparator, CompareResult> = {
+	"==": "Equal",
+	"===": "Equal",
+	">": "Greater",
+	"<": "Less",
+	"!=": "NotEqual",
+	"!==": "NotEqual",
+};
+
+export const compareTarget: Record<CompareTarget, keyof Compare> = {
+	Version: "version",
+	Create: "create_revision",
+	Mod: "mod_revision",
+	Value: "value",
+	Lease: "lease",
+};
+
+export interface Compare {
+	result?: CompareResult;
+	target?: CompareTarget;
+	key?: Buffer;
+	version?: string | number;
+	create_revision?: string | number;
+	mod_revision?: string | number;
+	value?: Buffer;
+	lease?: string | number;
+	range_end?: Buffer;
+}
+
+export interface RequestOp {
+	request_range?: RangeOptions;
+	request_put?: PutOptions;
+	request_delete_range?: DeleteOptions;
+	request_txn?: TxnRequest;
+}
+
+export interface ResponseOp {
+	response_range?: RangeResponse;
+	response_put?: PutResponse;
+	response_delete_range?: DeleteResponse;
+	response_txn?: TxnResponse;
+}
+
+export interface TxnRequest {
+	compare?: Compare[];
+	success?: RequestOp[];
+	failure?: RequestOp[];
+}
+
+export interface TxnResponse {
+	header: ResponseHeader;
+	succeeded: boolean;
+	responses: ResponseOp[];
+}
+
+export interface Operation {
+	op(): Promise<RequestOp>;
+}
 
 interface StoredValue {
 	key: string;
-	value: string;
+	value: Buffer;
 	createRevision: number;
 	modRevision: number;
 	version: number;
@@ -112,7 +173,7 @@ interface StoredValue {
 
 interface StoredRevision {
 	key: string;
-	value?: string;
+	value?: Buffer;
 	createRevision: number;
 	modRevision: number;
 	version: number;
@@ -120,7 +181,7 @@ interface StoredRevision {
 	historyRevision: number;
 }
 
-interface RangeOptions {
+export interface RangeOptions {
 	key: string;
 	rangeEnd: string;
 	limit: number;
@@ -135,15 +196,15 @@ interface RangeOptions {
 	maxCreateRevision?: number;
 }
 
-interface DeleteOptions {
+export interface DeleteOptions {
 	key: string;
 	rangeEnd: string;
 	prevKv: boolean;
 }
 
-interface PutOptions {
+export interface PutOptions {
 	key: string;
-	value?: string;
+	value?: Buffer;
 	prevKv: boolean;
 	ignoreValue: boolean;
 }
@@ -168,6 +229,13 @@ interface SortKey {
 
 interface EtcdOptions {
 	retainedRevisions?: number;
+}
+
+interface LeaseRecord {
+	id: string;
+	key: string;
+	expireHandle: number;
+	keepAliveHandle: number;
 }
 
 export class EtcdError extends Error {
@@ -298,6 +366,7 @@ abstract class PromiseWrap<T> implements PromiseLike<T> {
 class FakeState {
 	private revision = 0;
 	private nextWatchId = 1;
+	private nextLeaseId = 1;
 	// Highest revision that has been globally compacted. Any read or watch at
 	// a revision <= this value throws errCompacted, even for ranges with no
 	// matching keys, matching real etcd's global compaction watermark.
@@ -306,8 +375,9 @@ class FakeState {
 	private readonly histories = new SortedMap<string, StoredRevision[]>((l, r) =>
 		l.localeCompare(r),
 	);
-	private readonly history = new SortedMap<number, RevisionEvent>((l, r) => l - r);
+	private readonly history = new SortedMap<number, RevisionEvent[]>((l, r) => l - r);
 	private readonly watchers = new Set<WatcherImpl>();
+	private readonly leases = new Map<string, LeaseRecord>();
 
 	constructor(
 		private readonly clock: Clock,
@@ -364,103 +434,76 @@ class FakeState {
 	}
 
 	public put(namespace: string, options: PutOptions): PutResponse {
-		this.assertNonEmptyKey(options.key);
-
-		const key = namespacedKey(namespace, options.key);
-		const existing = currentValue(this.histories.get(key) ?? []);
-
-		if (options.ignoreValue && !existing) {
-			throw new EtcdError("etcdserver: key not found", "errInvalidArgument");
-		}
 		const revision = this.bumpRevision();
-		const nextValue: StoredValue = {
-			key,
-			value: options.ignoreValue && existing ? existing.value : (options.value ?? ""),
-			createRevision: existing?.createRevision ?? revision,
-			modRevision: revision,
-			version: (existing?.version ?? 0) + 1,
-		};
-
-		const record = this.appendRevision(
-			key,
-			{
-				key,
-				value: nextValue.value,
-				createRevision: nextValue.createRevision,
-				modRevision: revision,
-				version: nextValue.version,
-			},
-			{
-				type: "Put",
-				kv: toPublicKv(nextValue, ""),
-				prev_kv: existing ? toPublicKv(existing, "") : null,
-			},
-		);
-		this.publish(record);
-
-		return {
-			header: this.header(revision),
-			prev_kv: options.prevKv
-				? existing
-					? toPublicKv(existing, namespace)
-					: undefined
-				: undefined,
-		};
+		const applied = this.applyPutAtRevision(namespace, options, revision);
+		this.publish(applied.records);
+		return applied.response;
 	}
 
 	public delete(namespace: string, options: DeleteOptions): DeleteResponse {
-		this.assertValidRange(options.key, options.rangeEnd);
+		const deleted = this.collectDeleted(namespace, options);
+		if (deleted.length === 0) {
+			return { header: this.header(), deleted: "0", prev_kvs: [] };
+		}
+		const revision = this.bumpRevision();
+		const applied = this.applyDeleteAtRevision(namespace, options, revision, deleted);
+		this.publish(applied.records);
+		return applied.response;
+	}
 
-		const deleted: StoredValue[] = [];
-		for (const [, revisions] of iterateRange(
-			this.histories,
-			namespacedKey(namespace, options.key),
-			namespacedRangeEnd(namespace, options.rangeEnd),
-		)) {
-			const current = currentValue(revisions);
-			if (current) {
-				deleted.push(cloneStoredValue(current));
+	public txn(request: TxnRequest): TxnResponse {
+		const compare = request.compare ?? [];
+		const succeeded = compare.every((clause) => this.evaluateCompare(clause));
+		const operations = succeeded ? (request.success ?? []) : (request.failure ?? []);
+		this.assertTxnWriteRangesValid(operations);
+
+		const writes = operations.some(
+			(op) => op.request_put !== undefined || op.request_delete_range !== undefined,
+		);
+		const revision = writes ? this.bumpRevision() : this.revision;
+		const responses: ResponseOp[] = [];
+		const records: RevisionEvent[] = [];
+
+		for (const op of operations) {
+			if (op.request_range) {
+				responses.push({ response_range: this.range("", op.request_range) });
+				continue;
+			}
+			if (op.request_put) {
+				const applied = this.applyPutAtRevision("", op.request_put, revision);
+				responses.push({ response_put: applied.response });
+				records.push(...applied.records);
+				continue;
+			}
+			if (op.request_delete_range) {
+				const deleted = this.collectDeleted("", op.request_delete_range);
+				const applied =
+					deleted.length === 0
+						? {
+								response: { header: this.header(revision), deleted: "0", prev_kvs: [] },
+								records: [],
+							}
+						: this.applyDeleteAtRevision("", op.request_delete_range, revision, deleted);
+				responses.push({ response_delete_range: applied.response });
+				records.push(...applied.records);
+				continue;
+			}
+			if (op.request_txn) {
+				throw new EtcdError(
+					"nested transactions are not implemented in the fake etcd",
+					"errUnsupported",
+				);
 			}
 		}
 
-		if (deleted.length === 0) {
-			return {
-				header: this.header(),
-				deleted: "0",
-				prev_kvs: [],
-			};
-		}
-
-		// Each deleted key gets its own revision bump, diverging from real etcd
-		// where a DeleteRange is a single transaction with one shared revision.
-		// This simplification avoids the need for batch transactions and is
-		// acceptable for the demo scenarios this fake supports.
-		for (const value of deleted) {
-			const revision = this.bumpRevision();
-			const absolutePrevKv = toPublicKv(value, "");
-			const record = this.appendRevision(
-				value.key,
-				{
-					key: value.key,
-					value: undefined,
-					createRevision: value.createRevision,
-					modRevision: revision,
-					version: value.version,
-					deleted: true,
-				},
-				{
-					type: "Delete",
-					kv: { ...absolutePrevKv, mod_revision: String(revision) },
-					prev_kv: absolutePrevKv,
-				},
-			);
-			this.publish(record);
+		if (records.length > 0) {
+			this.publish(records);
 		}
 
 		return {
-			header: this.header(),
-			deleted: String(deleted.length),
-			prev_kvs: options.prevKv ? deleted.map((value) => toPublicKv(value, namespace)) : [],
+			header: this.header(revision),
+			succeeded,
+			responses,
 		};
 	}
 
@@ -492,8 +535,8 @@ class FakeState {
 			}
 
 			watcher.connect(this.header());
-			for (const [, record] of this.history.entriesFrom(options.startRevision)) {
-				watcher.handle(record);
+			for (const [, records] of this.history.entriesFrom(options.startRevision)) {
+				watcher.handleMany(records);
 			}
 		});
 
@@ -524,6 +567,86 @@ class FakeState {
 
 	public close(): void {
 		this.watchers.clear();
+		for (const lease of this.leases.values()) {
+			this.clock.clearTimeout(lease.expireHandle);
+			this.clock.clearInterval(lease.keepAliveHandle);
+		}
+		this.leases.clear();
+	}
+
+	public async acquireLock(namespace: string, key: string, ttlSeconds: number): Promise<FakeLease> {
+		if (ttlSeconds < 1) {
+			throw new RangeError(
+				`The TTL in an etcd lease must be at least 1 second. Got: ${ttlSeconds}`,
+			);
+		}
+		const absoluteKey = namespacedKey(namespace, key);
+		const leaseId = String(this.nextLeaseId++);
+		const result = this.txn({
+			compare: [
+				{
+					key: Buffer.from(absoluteKey),
+					target: "Create",
+					result: "Equal",
+					create_revision: 0,
+				},
+			],
+			success: [
+				{
+					request_put: {
+						key: absoluteKey,
+						value: Buffer.alloc(0),
+						prevKv: false,
+						ignoreValue: false,
+					},
+				},
+			],
+		});
+		if (!result.succeeded) {
+			throw new Error(`Failed to acquire a lock on ${key}`);
+		}
+
+		const lease = new FakeLease(
+			this,
+			this.clock,
+			leaseId,
+			absoluteKey,
+			Math.max(1, ttlSeconds) * 1000,
+		);
+		this.leases.set(leaseId, lease.record);
+		return lease;
+	}
+
+	public revokeLease(id: string): void {
+		const lease = this.leases.get(id);
+		if (!lease) {
+			return;
+		}
+		this.clock.clearTimeout(lease.expireHandle);
+		this.clock.clearInterval(lease.keepAliveHandle);
+		this.leases.delete(id);
+		if (currentValue(this.histories.get(lease.key) ?? [])) {
+			this.delete("", { key: lease.key, rangeEnd: "", prevKv: false });
+		}
+	}
+
+	public releaseLeasePassively(id: string): void {
+		const lease = this.leases.get(id);
+		if (!lease) {
+			return;
+		}
+		this.clock.clearInterval(lease.keepAliveHandle);
+	}
+
+	public refreshLease(id: string, ttlMs: number): void {
+		const lease = this.leases.get(id);
+		if (!lease) {
+			return;
+		}
+		this.clock.clearTimeout(lease.expireHandle);
+		lease.expireHandle = this.clock.setTimeout(() => {
+			this.revokeLease(id);
+		}, ttlMs);
 	}
 
 	public compact(requestedRevision: number): void {
@@ -558,6 +681,113 @@ class FakeState {
 		return this.revision;
 	}
 
+	private collectDeleted(namespace: string, options: DeleteOptions): StoredValue[] {
+		this.assertValidRange(options.key, options.rangeEnd);
+		const deleted: StoredValue[] = [];
+		for (const [, revisions] of iterateRange(
+			this.histories,
+			namespacedKey(namespace, options.key),
+			namespacedRangeEnd(namespace, options.rangeEnd),
+		)) {
+			const current = currentValue(revisions);
+			if (current) {
+				deleted.push(cloneStoredValue(current));
+			}
+		}
+		return deleted;
+	}
+
+	private applyPutAtRevision(
+		namespace: string,
+		options: PutOptions,
+		revision: number,
+	): { response: PutResponse; records: RevisionEvent[] } {
+		this.assertNonEmptyKey(options.key);
+
+		const key = namespacedKey(namespace, options.key);
+		const existing = currentValue(this.histories.get(key) ?? []);
+
+		if (options.ignoreValue && !existing) {
+			throw new EtcdError("etcdserver: key not found", "errInvalidArgument");
+		}
+		const nextValue: StoredValue = {
+			key,
+			value:
+				options.ignoreValue && existing
+					? Buffer.from(existing.value)
+					: Buffer.from(options.value ?? emptyBuffer),
+			createRevision: existing?.createRevision ?? revision,
+			modRevision: revision,
+			version: (existing?.version ?? 0) + 1,
+		};
+
+		const record = this.appendRevision(
+			key,
+			{
+				key,
+				value: Buffer.from(nextValue.value),
+				createRevision: nextValue.createRevision,
+				modRevision: revision,
+				version: nextValue.version,
+			},
+			{
+				type: "Put",
+				kv: toPublicKv(nextValue, ""),
+				prev_kv: existing ? toPublicKv(existing, "") : null,
+			},
+		);
+
+		return {
+			response: {
+				header: this.header(revision),
+				prev_kv: options.prevKv
+					? existing
+						? toPublicKv(existing, namespace)
+						: undefined
+					: undefined,
+			},
+			records: [record],
+		};
+	}
+
+	private applyDeleteAtRevision(
+		namespace: string,
+		options: DeleteOptions,
+		revision: number,
+		deleted: StoredValue[],
+	): { response: DeleteResponse; records: RevisionEvent[] } {
+		const records: RevisionEvent[] = [];
+		for (const value of deleted) {
+			const absolutePrevKv = toPublicKv(value, "");
+			records.push(
+				this.appendRevision(
+					value.key,
+					{
+						key: value.key,
+						value: undefined,
+						createRevision: value.createRevision,
+						modRevision: revision,
+						version: value.version,
+						deleted: true,
+					},
+					{
+						type: "Delete",
+						kv: { ...absolutePrevKv, mod_revision: String(revision) },
+						prev_kv: absolutePrevKv,
+					},
+				),
+			);
+		}
+		return {
+			response: {
+				header: this.header(revision),
+				deleted: String(deleted.length),
+				prev_kvs: options.prevKv ? deleted.map((value) => toPublicKv(value, namespace)) : [],
+			},
+			records,
+		};
+	}
+
 	private appendRevision(
 		key: string,
 		revision: Omit<StoredRevision, "historyRevision" | "deleted"> & { deleted?: boolean },
@@ -567,7 +797,10 @@ class FakeState {
 			revision: revision.modRevision,
 			event,
 		};
-		this.history.set(revision.modRevision, record);
+		this.history.set(revision.modRevision, [
+			...(this.history.get(revision.modRevision) ?? []),
+			record,
+		]);
 		const revisions = [...(this.histories.get(key) ?? [])];
 		revisions.push({
 			...revision,
@@ -577,7 +810,6 @@ class FakeState {
 		while (revisions.length > this.options.retainedRevisions) {
 			const removed = revisions.shift();
 			if (removed) {
-				this.history.delete(removed.historyRevision);
 				this.compactedRevision = Math.max(this.compactedRevision, removed.historyRevision);
 			}
 		}
@@ -585,9 +817,79 @@ class FakeState {
 		return record;
 	}
 
-	private publish(record: RevisionEvent): void {
+	private publish(records: RevisionEvent[]): void {
 		for (const watcher of this.watchers) {
-			watcher.handle(record);
+			watcher.handleMany(records);
+		}
+	}
+
+	private evaluateCompare(compare: Compare): boolean {
+		const key = compare.key?.toString() ?? "";
+		const current = currentValue(this.histories.get(key) ?? []);
+		let left: string | number;
+		let right: string | number;
+
+		switch (compare.target) {
+			case "Value":
+				left = current?.value.toString("latin1") ?? "";
+				right = compare.value?.toString("latin1") ?? "";
+				break;
+			case "Create":
+				left = current?.createRevision ?? 0;
+				right = Number(compare.create_revision ?? 0);
+				break;
+			case "Mod":
+				left = current?.modRevision ?? 0;
+				right = Number(compare.mod_revision ?? 0);
+				break;
+			case "Lease":
+				left = 0;
+				right = Number(compare.lease ?? 0);
+				break;
+			case "Version":
+			default:
+				left = current?.version ?? 0;
+				right = Number(compare.version ?? 0);
+				break;
+		}
+
+		switch (compare.result) {
+			case "Greater":
+				return left > right;
+			case "Less":
+				return left < right;
+			case "NotEqual":
+				return left !== right;
+			case "Equal":
+			default:
+				return left === right;
+		}
+	}
+
+	private assertTxnWriteRangesValid(operations: RequestOp[]): void {
+		const ranges: Array<{ start: string; end: string }> = [];
+		for (const op of operations) {
+			let range: { start: string; end: string } | undefined;
+			if (op.request_put) {
+				range = { start: op.request_put.key, end: "" };
+			} else if (op.request_delete_range) {
+				range = {
+					start: op.request_delete_range.key,
+					end: op.request_delete_range.rangeEnd,
+				};
+			}
+			if (!range) {
+				continue;
+			}
+			for (const existing of ranges) {
+				if (rangesOverlap(existing, range)) {
+					throw new EtcdError(
+						"etcdserver: duplicate key given in txn request",
+						"errInvalidArgument",
+					);
+				}
+			}
+			ranges.push(range);
 		}
 	}
 
@@ -601,7 +903,7 @@ class FakeState {
 		}
 		return {
 			key: resolved.key,
-			value: resolved.value ?? "",
+			value: resolved.value ? Buffer.from(resolved.value) : Buffer.alloc(0),
 			createRevision: resolved.createRevision,
 			modRevision: resolved.modRevision,
 			version: resolved.version,
@@ -644,6 +946,51 @@ class FakeState {
 		if (key.length === 0 && rangeEnd !== zeroKey) {
 			throw new EtcdError("etcdserver: key is not provided", "errEmptyKey");
 		}
+	}
+}
+
+class FakeLease {
+	public readonly record: LeaseRecord;
+
+	constructor(
+		private readonly state: FakeState,
+		private readonly clock: Clock,
+		public readonly id: string,
+		key: string,
+		private readonly ttlMs: number,
+	) {
+		this.record = {
+			id,
+			key,
+			expireHandle: 0,
+			keepAliveHandle: 0,
+		};
+		this.record.expireHandle = this.stateClockTimeout();
+		this.record.keepAliveHandle = this.stateClockInterval();
+	}
+
+	public revoke(): Promise<void> {
+		this.state.revokeLease(this.id);
+		return Promise.resolve();
+	}
+
+	public release(): void {
+		this.state.releaseLeasePassively(this.id);
+	}
+
+	private stateClockTimeout(): number {
+		return this.clock.setTimeout(() => {
+			this.state.revokeLease(this.id);
+		}, this.ttlMs);
+	}
+
+	private stateClockInterval(): number {
+		return this.clock.setInterval(
+			() => {
+				this.state.refreshLease(this.id, this.ttlMs);
+			},
+			Math.max(1, Math.floor(this.ttlMs / 3)),
+		);
 	}
 }
 
@@ -705,8 +1052,8 @@ class Namespace {
 	}
 
 	/** `lock()` is a helper to provide distributed locking capability. See the documentation on the Lock class for more information and examples. */
-	public lock(_key: string | Buffer): never {
-		throw new EtcdError("lock() is not implemented in the fake etcd", "errUnsupported");
+	public lock(key: string | Buffer): Lock {
+		return new Lock(this.state, this.prefix, key);
 	}
 
 	/** `stm()` creates a new software transaction, see more details about how this works and why you might find this useful on the SoftwareTransaction class. */
@@ -716,12 +1063,12 @@ class Namespace {
 
 	/** `if()` starts a new etcd transaction, which allows you to execute complex statements atomically. See documentation on the ComparatorBuilder for more information. */
 	public if(
-		_key: string | Buffer,
-		_column: string,
-		_cmp: string,
-		_value: string | Buffer | number,
-	): never {
-		throw new EtcdError("if() is not implemented in the fake etcd", "errUnsupported");
+		key: string | Buffer,
+		column: CompareTarget,
+		cmp: Comparator,
+		value: string | Buffer | number,
+	): ComparatorBuilder {
+		return new ComparatorBuilder(this.state, this.prefix).and(key, column, cmp, value);
 	}
 
 	/** Creates a new {@link Election} instead. See more information on the Election class documentation. */
@@ -739,7 +1086,10 @@ export class Etcd extends Namespace {
 		}) => Promise<{ header: ResponseHeader }>;
 	};
 
-	constructor(clock: Clock, options?: EtcdOptions) {
+	constructor(
+		public readonly clock: Clock,
+		options?: EtcdOptions,
+	) {
 		const state = new FakeState(clock, {
 			retainedRevisions: Math.max(1, options?.retainedRevisions ?? 3),
 		});
@@ -861,9 +1211,9 @@ export class SingleRangeBuilder extends RangeBuilder<string | null> {
 		return this;
 	}
 
-	/** op() is not implemented in the fake etcd. */
-	public op(): never {
-		throw new EtcdError("op() is not implemented in the fake etcd", "errUnsupported");
+	/** Returns the request op for this builder, used in transactions. */
+	public async op(): Promise<RequestOp> {
+		return { request_range: namespacedRangeOptions(this.namespace, this.request) };
 	}
 
 	protected createPromise(): Promise<string | null> {
@@ -960,9 +1310,9 @@ export class MultiRangeBuilder extends RangeBuilder<Record<string, string>> {
 		return this;
 	}
 
-	/** op() is not implemented in the fake etcd. */
-	public op(): never {
-		throw new EtcdError("op() is not implemented in the fake etcd", "errUnsupported");
+	/** Returns the request op for this builder, used in transactions. */
+	public async op(): Promise<RequestOp> {
+		return { request_range: namespacedRangeOptions(this.namespace, this.request) };
 	}
 
 	protected createPromise(): Promise<Record<string, string>> {
@@ -997,9 +1347,9 @@ export class PutBuilder extends PromiseWrap<PutResponse> {
 	/** value sets the value that will be stored in the key. */
 	public value(value: string | Buffer | number): this {
 		if (Buffer.isBuffer(value)) {
-			this.request.value = value.toString();
+			this.request.value = Buffer.from(value);
 		} else {
-			this.request.value = String(value);
+			this.request.value = Buffer.from(String(value));
 		}
 		return this;
 	}
@@ -1045,9 +1395,9 @@ export class PutBuilder extends PromiseWrap<PutResponse> {
 		return this.state.put(this.namespace, this.request);
 	}
 
-	/** op() is not implemented in the fake etcd. */
-	public op(): never {
-		throw new EtcdError("op() is not implemented in the fake etcd", "errUnsupported");
+	/** Returns the request op for this builder, used in transactions. */
+	public async op(): Promise<RequestOp> {
+		return { request_put: namespacedPutOptions(this.namespace, this.request) };
 	}
 
 	protected createPromise(): Promise<PutResponse> {
@@ -1121,13 +1471,161 @@ export class DeleteBuilder extends PromiseWrap<DeleteResponse> {
 		return this;
 	}
 
-	/** op() is not implemented in the fake etcd. */
-	public op(): never {
-		throw new EtcdError("op() is not implemented in the fake etcd", "errUnsupported");
+	/** Returns the request op for this builder, used in transactions. */
+	public async op(): Promise<RequestOp> {
+		return { request_delete_range: namespacedDeleteOptions(this.namespace, this.request) };
 	}
 
 	protected createPromise(): Promise<DeleteResponse> {
 		return this.exec();
+	}
+}
+
+export class ComparatorBuilder {
+	private readonly compare: Compare[] = [];
+	private success: Array<Promise<RequestOp>> = [];
+	private failure: Array<Promise<RequestOp>> = [];
+
+	constructor(
+		private readonly state: FakeState,
+		private readonly namespace: string,
+	) {}
+
+	/** No-op options (matches etcd3 API). */
+	public options(_options: unknown): this {
+		return this;
+	}
+
+	/** Adds a new comparison clause to the transaction. */
+	public and(
+		key: string | Buffer,
+		column: CompareTarget,
+		cmp: Comparator,
+		value: string | Buffer | number,
+	): this {
+		if (!(column in compareTarget)) {
+			throw new EtcdError(`Unexpected comparison target: ${column}`, "errInvalidArgument");
+		}
+		if (!(cmp in comparator)) {
+			throw new EtcdError(`Unexpected comparator: ${cmp}`, "errInvalidArgument");
+		}
+
+		const compare: Compare = {
+			key: Buffer.from(namespacedKey(this.namespace, bufferToString(key))),
+			result: comparator[cmp],
+			target: column,
+		};
+		switch (column) {
+			case "Value":
+				compare.value = Buffer.isBuffer(value) ? value : Buffer.from(String(value));
+				break;
+			case "Create":
+				compare.create_revision = Number(value);
+				break;
+			case "Mod":
+				compare.mod_revision = Number(value);
+				break;
+			case "Lease":
+				compare.lease = Number(value);
+				break;
+			case "Version":
+				compare.version = Number(value);
+				break;
+		}
+		this.compare.push(compare);
+		return this;
+	}
+
+	/** Adds operations to run if every comparison succeeds. */
+	public then(...clauses: Array<RequestOp | Operation>): this {
+		this.success = this.mapOperations(clauses);
+		return this;
+	}
+
+	/** Adds operations to run if any comparison fails. */
+	public else(...clauses: Array<RequestOp | Operation>): this {
+		this.failure = this.mapOperations(clauses);
+		return this;
+	}
+
+	/** Runs the generated transaction and returns its result. */
+	public async commit(): Promise<TxnResponse> {
+		return this.state.txn({
+			compare: this.compare,
+			success: await Promise.all(this.success),
+			failure: await Promise.all(this.failure),
+		});
+	}
+
+	private mapOperations(ops: Array<RequestOp | Operation>): Array<Promise<RequestOp>> {
+		return ops.map((op) => {
+			if (isOperation(op)) {
+				return op.op();
+			}
+			return Promise.resolve(op);
+		});
+	}
+}
+
+export class Lock {
+	private leaseTTL = 30;
+	private lease: FakeLease | undefined;
+
+	constructor(
+		private readonly state: FakeState,
+		private readonly namespace: string,
+		private readonly key: string | Buffer,
+	) {}
+
+	/** Sets the TTL of the lease underlying the lock. Defaults to 30 seconds. */
+	public ttl(seconds: number): this {
+		if (this.lease) {
+			throw new Error("Cannot set a lock TTL after acquiring the lock");
+		}
+		this.leaseTTL = seconds;
+		return this;
+	}
+
+	/** No-op options (matches etcd3 API). */
+	public options(_options: unknown): this {
+		return this;
+	}
+
+	/** Acquire attempts to acquire the lock, rejecting if it is already held. */
+	public async acquire(): Promise<this> {
+		this.lease = await this.state.acquireLock(
+			this.namespace,
+			bufferToString(this.key),
+			this.leaseTTL,
+		);
+		return this;
+	}
+
+	/** Returns the lease associated with this lock, or null if it has not been acquired. */
+	public async leaseId(): Promise<string | null> {
+		return this.lease?.id ?? null;
+	}
+
+	/** Release frees the lock. */
+	public async release(): Promise<void> {
+		if (!this.lease) {
+			throw new Error("Attempted to release a lock which was not acquired");
+		}
+		await this.lease.revoke();
+		this.lease = undefined;
+	}
+
+	/** Acquires the lock, runs the callback, and releases the lock afterward. */
+	public async do<T>(fn: () => T | Promise<T>): Promise<T> {
+		await this.acquire();
+		try {
+			const value = await fn();
+			await this.release();
+			return value;
+		} catch (error) {
+			await this.release();
+			throw error;
+		}
 	}
 }
 
@@ -1313,47 +1811,59 @@ class WatcherImpl extends EventEmitter implements Watcher {
 	}
 
 	public handle(record: RevisionEvent): void {
+		this.handleMany([record]);
+	}
+
+	public handleMany(records: RevisionEvent[]): void {
 		if (!this.connected || this.ended) {
 			return;
 		}
 		const rangeKey = namespacedKey(this.namespace, this.options.key);
 		const rangeEnd = namespacedRangeEnd(this.namespace, this.options.rangeEnd);
-		const rawEventKey = record.event.kv.key.toString();
-		if (!isKeyInRange(rawEventKey, rangeKey, rangeEnd)) {
-			return;
+		const matched: WatchEvent[] = [];
+		let responseRevision: number | undefined;
+		for (const record of records) {
+			const rawEventKey = record.event.kv.key.toString();
+			if (!isKeyInRange(rawEventKey, rangeKey, rangeEnd)) {
+				continue;
+			}
+			if (this.options.filters.has(record.event.type)) {
+				continue;
+			}
+
+			const unprefixed = unprefixKey(rawEventKey, this.namespace);
+			const kv: KeyValue = { ...record.event.kv, key: Buffer.from(unprefixed) };
+			let prev_kv: KeyValue | null = null;
+			if (this.options.prevKv && record.event.prev_kv) {
+				const rawPrevKey = record.event.prev_kv.key.toString();
+				const unprefixedPrev = unprefixKey(rawPrevKey, this.namespace);
+				prev_kv = { ...record.event.prev_kv, key: Buffer.from(unprefixedPrev) };
+			}
+			matched.push({
+				type: record.event.type,
+				kv,
+				prev_kv,
+			});
+			responseRevision = record.revision;
 		}
-		if (this.options.filters.has(record.event.type)) {
+
+		if (matched.length === 0 || responseRevision == null) {
 			return;
 		}
 
 		const response: WatchResponse = {
-			header: this.state.header(record.revision),
+			header: this.state.header(responseRevision),
 			watch_id: String(this._watchId),
 			created: false,
 			canceled: false,
 			compact_revision: "0",
 			cancel_reason: "",
-			events: [],
+			events: matched,
 		};
-
-		const unprefixed = unprefixKey(rawEventKey, this.namespace);
-		const kv: KeyValue = { ...record.event.kv, key: Buffer.from(unprefixed) };
-		let prev_kv: KeyValue | null = null;
-		if (this.options.prevKv && record.event.prev_kv) {
-			const rawPrevKey = record.event.prev_kv.key.toString();
-			const unprefixedPrev = unprefixKey(rawPrevKey, this.namespace);
-			prev_kv = { ...record.event.prev_kv, key: Buffer.from(unprefixedPrev) };
-		}
-		response.events.push({
-			type: record.event.type,
-			kv,
-			prev_kv,
-		});
 
 		this.emit("data", response);
 
-		const event = response.events[0];
-		if (event) {
+		for (const event of response.events) {
 			// emit lowercase event name to match etcd3 Watcher which emits "put" and "delete"
 			this.emit(event.type === "Put" ? "put" : "delete", event.kv, event.prev_kv);
 		}
@@ -1436,6 +1946,47 @@ function namespacedRangeEnd(namespace: string, rangeEnd: string): string {
 	return `${namespace}${rangeEnd}`;
 }
 
+function namespacedRangeOptions(namespace: string, options: RangeOptions): RangeOptions {
+	return {
+		...options,
+		key: namespacedKey(namespace, options.key),
+		rangeEnd: namespacedRangeEnd(namespace, options.rangeEnd),
+	};
+}
+
+function namespacedPutOptions(namespace: string, options: PutOptions): PutOptions {
+	return {
+		...options,
+		key: namespacedKey(namespace, options.key),
+	};
+}
+
+function namespacedDeleteOptions(namespace: string, options: DeleteOptions): DeleteOptions {
+	return {
+		...options,
+		key: namespacedKey(namespace, options.key),
+		rangeEnd: namespacedRangeEnd(namespace, options.rangeEnd),
+	};
+}
+
+function bufferToString(value: string | Buffer): string {
+	return typeof value === "string" ? value : value.toString();
+}
+
+function isOperation(value: RequestOp | Operation): value is Operation {
+	return typeof (value as Operation).op === "function";
+}
+
+function rangesOverlap(
+	left: { start: string; end: string },
+	right: { start: string; end: string },
+): boolean {
+	return (
+		isKeyInRange(left.start, right.start, right.end) ||
+		isKeyInRange(right.start, left.start, left.end)
+	);
+}
+
 function* iterateRange<V>(
 	values: SortedMap<string, V>,
 	start: string,
@@ -1481,6 +2032,7 @@ function toPublicKv(value: StoredValue, namespace: string, keysOnly = false): Ke
 function cloneStoredValue(value: StoredValue): StoredValue {
 	return {
 		...value,
+		value: Buffer.from(value.value),
 	};
 }
 
@@ -1491,7 +2043,7 @@ function currentValue(revisions: StoredRevision[]): StoredValue | undefined {
 	}
 	return {
 		key: last.key,
-		value: last.value ?? "",
+		value: last.value ? Buffer.from(last.value) : Buffer.alloc(0),
 		createRevision: last.createRevision,
 		modRevision: last.modRevision,
 		version: last.version,
@@ -1546,7 +2098,7 @@ function makeSortKey(value: StoredValue, target: SortTarget): SortKey {
 		case "Version":
 			return { primary: value.version, key: value.key };
 		case "Value":
-			return { primary: value.value, key: value.key };
+			return { primary: value.value.toString("latin1"), key: value.key };
 		case "Key":
 		default:
 			return { primary: value.key, key: value.key };
