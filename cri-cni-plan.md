@@ -1067,22 +1067,69 @@ and richer controllers should come after that first signal.
 
 ### Phase 2: Runtime And Network Primitives
 
-- [ ] Move existing `src/cluster/network.ts` into `src/cluster/cni/network.ts`
+- [x] Move existing `src/cluster/network.ts` into `src/cluster/cni/network.ts`
       so there is one network implementation under `src/cluster/cni/`.
-- [ ] Add shared HTTP types in `src/cluster/cni/http.ts`.
-- [ ] Add initial `ClusterNetwork` support for pod IP allocation, pod
+- [x] Add shared HTTP types in `src/cluster/cni/http.ts`.
+- [x] Add initial `ClusterNetwork` support for pod IP allocation, pod
       registration, process-owned HTTP listener binding, listener cleanup, and
       direct HTTP dispatch by IP/port.
-- [ ] Add `ImageRegistry` and `ImageDefinition` in `src/cluster/cri/image.ts`.
-- [ ] Add `PodInstance`, `ContainerInstance`, and `ProcessInstance` in
+- [x] Add `ImageRegistry` and `ImageDefinition` in `src/cluster/cri/image.ts`.
+- [x] Add `PodInstance`, `ContainerInstance`, and `ProcessInstance` in
       `src/cluster/cri/`, including argv handling and `Promise<number>` process
       exits.
-- [ ] Add `ProcessContext.listenHttp()` and `ProcessContext.fetch()` for IP and
+- [x] Add `ProcessContext.listenHttp()` and `ProcessContext.fetch()` for IP and
       Service/NodePort paths needed by the first test. `listenDns()` and
       `resolveDns()` can wait until the DNS phase.
-- [ ] Add the kubelet-facing runtime in `src/cluster/cri/runtime.ts`, owning
+- [x] Add the kubelet-facing runtime in `src/cluster/cri/runtime.ts`, owning
       live pod/container maps and delegating listener/fetch work to
       `ClusterNetwork`.
+
+Phase 2 implementation notes:
+
+- The runtime surface intentionally moved closer to Kubernetes CRI naming after
+  reviewing kubelet/kuberuntime source. The public lifecycle calls are now
+  sandbox-oriented (`runPodSandbox`, `stopPodSandbox`, `removePodSandbox`,
+  `createContainer`, `startContainer`, `stopContainer`) instead of the original
+  `createPod`/`deletePod` shape in this plan. `runPodSandbox()` and
+  `createContainer()` return IDs, matching the CRI request/response boundary,
+  while tests and simulator internals can still inspect live objects through
+  lookup helpers. This should make the later TypeScript kubelet port easier to
+  align with upstream kubelet control flow.
+- The original plan used interfaces for many single-implementation lifecycle
+  objects. The implementation now uses concrete classes for owned simulator
+  objects such as `Runtime`, `PodSandboxInstance`, `ContainerInstance`,
+  `ProcessInstance`, `ProcessContext`, `ImageRegistry`, and network listeners.
+  Interfaces remain for passive configs, statuses, request/response payloads,
+  and callback shapes.
+- `PodInstance` was effectively renamed to `PodSandboxInstance` at the runtime
+  boundary. This better matches CRI: the sandbox owns the pod IP/network
+  registration, and multiple sandbox attempts can exist for one pod UID.
+- Pod IP assignment now happens inside the fake CNI setup path
+  (`ClusterNetwork.setupPodSandbox()`), not as a separate runtime allocation
+  step. This mirrors the real kubelet boundary more closely: kubelet calls
+  `RunPodSandbox`, the runtime/CNI side sets up networking, and kubelet later
+  learns the IP from `PodSandboxStatus.network.ip`. Stopping a sandbox removes
+  the network registration, so status no longer reports an IP after network
+  resources are reclaimed.
+- The CRI-shaped config/status objects were intentionally trimmed after the
+  first pass. Fields copied from CRI but not used by the simulator were removed,
+  including image/runtime handler plumbing, exec stdout/stderr modeling,
+  container working directory/log/stdin/TTY fields, status `imageId`, and
+  additional pod IP status. The goal is kubelet control-flow alignment, not
+  inert CRI field parity.
+- `src/cluster/cri/AGENTS.md` now records the local rules for this directory,
+  with `CLAUDE.md` symlinked to it. It names the upstream kubelet, kuberuntime,
+  and CRI source files/types to inspect before changing the runtime boundary.
+- Long-running fake processes use cooperative cancellation via
+  `ProcessContext.signal` and `ProcessContext.waitUntilKilled()`. This avoids
+  the earlier non-resolving promise pattern in fake images, while still keeping
+  the simulator browser-friendly.
+- DNS listener types exist, but DNS routing and realistic `resolveDns()` behavior
+  remain deferred to the DNS phase.
+- Current coverage is focused unit coverage for the in-memory runtime and
+  network primitives. There is not yet parity coverage against a real kubelet or
+  real Kubernetes CRI behavior, so this phase should be treated as a foundation
+  rather than proof that lifecycle behavior is fully kubelet-compatible.
 
 ### Phase 3: Scheduling And Kubelet Startup
 
