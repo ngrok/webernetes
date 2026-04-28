@@ -4,7 +4,6 @@ export interface ServiceInstance {
 	readonly namespace: string;
 	readonly clusterIp: string;
 	readonly type: "ClusterIP" | "NodePort";
-	readonly selector: ReadonlyMap<string, string>;
 	readonly ports: readonly ServicePort[];
 }
 
@@ -17,8 +16,6 @@ export interface ServicePort {
 }
 
 export interface ServiceEndpoint {
-	service: ServiceInstance;
-	podIp: string;
+	ip: string;
 	port: number;
-	targetPort: number;
 }

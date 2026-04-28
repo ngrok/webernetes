@@ -1,4 +1,4 @@
-import type { CoreV1Api } from "./gen/apis/types";
+import type { CoreV1Api, DiscoveryV1Api } from "./gen/apis/types";
 import type { V1ListMeta, V1ObjectMeta } from "./gen/models";
 
 export interface KubernetesObject {
@@ -47,6 +47,7 @@ export interface Informer<T extends KubernetesObject> extends ObjectCache<T> {
 
 export interface K8s {
 	CoreV1Api: ApiConstructor<CoreV1Api>;
+	DiscoveryV1Api: ApiConstructor<DiscoveryV1Api>;
 	Watch: ApiConstructor<Watch>;
 	makeInformer<T extends KubernetesObject>(
 		kubeconfig: KubeConfig,

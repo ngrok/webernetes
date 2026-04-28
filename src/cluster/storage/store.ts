@@ -13,6 +13,10 @@ function generateName(prefix: string): string {
 	return `${prefix}-${Math.random().toString(36).substring(2, 8)}`;
 }
 
+function generateUid(): string {
+	return `${Math.random().toString(36).substring(2)}${Math.random().toString(36).substring(2)}`;
+}
+
 export interface Storable {
 	metadata?: V1ObjectMeta;
 }
@@ -116,6 +120,7 @@ export class Store<T extends Storable> {
 		if (!obj.metadata.name) {
 			throw new Error(`Object must have a name`);
 		}
+		obj.metadata.uid ??= generateUid();
 
 		const existing = await this.get(obj.metadata.name, obj.metadata.namespace);
 		if (existing) {
@@ -158,7 +163,15 @@ export class Store<T extends Storable> {
 		await this.validateUpdate(obj);
 
 		const k = this.key(name, obj.metadata.namespace);
-		const response = await this.etcd.put(k).value(JSON.stringify(obj)).exec();
+		const response = await this.etcd
+			.if(k, "Mod", "==", Number(existing.resourceVersion))
+			.then(this.etcd.put(k).value(JSON.stringify(obj)))
+			.commit();
+		if (!response.succeeded) {
+			throw new Conflict(
+				`${this.opts.singularQualifiedResource} "${name}" was modified; please apply your changes to the latest version and try again`,
+			);
+		}
 		return this.withResourceVersion(obj, response.header.revision);
 	}
 

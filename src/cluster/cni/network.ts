@@ -48,6 +48,10 @@ function servicePortKey(service: ServiceInstance, port: ServicePort): string {
 	return `${namespacedNameKey(service.namespace, service.name)}:${port.port}`;
 }
 
+function serviceRouteKey(namespace: string, name: string, port: number): string {
+	return `${namespacedNameKey(namespace, name)}:${port}`;
+}
+
 function isIpLiteral(host: string): boolean {
 	return ipToNumber(host) !== undefined;
 }
@@ -80,7 +84,7 @@ export class ClusterNetwork {
 	private servicesByClusterIp = new Map<string, ServiceInstance>();
 	private servicesByNodePort = new Map<number, NodePortRoute>();
 	private serviceEndpointRoutes = new Map<string, ServiceEndpointRoute>();
-	private endpointsByServicePort = new Map<string, ServiceEndpoint[]>();
+	private targetsByServicePort = new Map<string, string[]>();
 
 	constructor(options: ClusterNetworkOptions) {
 		this.podCIDR = new CIDR(options.podCIDR);
@@ -118,7 +122,6 @@ export class ClusterNetwork {
 		}
 		this.podsBySandboxId.delete(podSandboxId);
 		this.podsByIp.delete(pod.ip);
-		this.updatePodEndpoints(pod);
 		for (const key of [...this.httpListeners.keys()]) {
 			if (key.startsWith(`${pod.ip}:`)) {
 				this.httpListeners.delete(key);
@@ -139,7 +142,7 @@ export class ClusterNetwork {
 		for (const port of service.ports) {
 			const routeKey = servicePortKey(service, port);
 			this.serviceEndpointRoutes.set(routeKey, { service, port, key: routeKey });
-			this.endpointsByServicePort.set(routeKey, this.endpointsForServicePort(service, port));
+			this.targetsByServicePort.set(routeKey, []);
 			if (port.nodePort !== undefined) {
 				if (this.servicesByNodePort.has(port.nodePort)) {
 					throw new NetworkError(`NodePort ${port.nodePort} is already registered`);
@@ -160,22 +163,26 @@ export class ClusterNetwork {
 		for (const port of service.ports) {
 			const routeKey = servicePortKey(service, port);
 			this.serviceEndpointRoutes.delete(routeKey);
-			this.endpointsByServicePort.delete(routeKey);
+			this.targetsByServicePort.delete(routeKey);
 			if (port.nodePort !== undefined) {
 				this.servicesByNodePort.delete(port.nodePort);
 			}
 		}
 	}
 
-	updatePodEndpoints(pod: PodSandboxInstance): void {
-		for (const route of this.serviceEndpointRoutes.values()) {
-			if (route.service.namespace === pod.namespace) {
-				this.endpointsByServicePort.set(
-					route.key,
-					this.endpointsForServicePort(route.service, route.port),
-				);
-			}
-		}
+	setServiceTargets(
+		namespace: string,
+		name: string,
+		port: number,
+		targets: readonly string[],
+	): void {
+		this.targetsByServicePort.set(serviceRouteKey(namespace, name, port), [...targets]);
+	}
+
+	updatePodEndpoints(_pod: PodSandboxInstance): void {
+		// kube-proxy owns endpoint bookkeeping. This hook remains so runtime
+		// readiness transitions can call it until the runtime no longer knows about
+		// service endpoint updates.
 	}
 
 	resolveName(from: NetworkPeer, name: string): NetworkEndpoint[] {
@@ -219,7 +226,7 @@ export class ClusterNetwork {
 		const route = this.servicesByNodePort.get(nodePort);
 		if (route) {
 			const endpoint = this.selectEndpoint(route.service, route.port);
-			return await this.dispatchHttp(endpoint.podIp, endpoint.targetPort, undefined, init);
+			return await this.dispatchHttp(endpoint.ip, endpoint.port, undefined, init);
 		}
 		throw new NetworkError(`no Service for NodePort ${nodePort}`);
 	}
@@ -326,30 +333,15 @@ export class ClusterNetwork {
 			);
 		}
 		const endpoint = this.selectEndpoint(service, port);
-		return await this.dispatchHttp(endpoint.podIp, endpoint.targetPort, url, init);
+		return await this.dispatchHttp(endpoint.ip, endpoint.port, url, init);
 	}
 
 	private selectEndpoint(service: ServiceInstance, port: ServicePort): ServiceEndpoint {
-		// TODO(kube-proxy): this is temporary fake service-proxy behavior. Real
-		// kube-proxy watches Services and EndpointSlices, then programs the node
-		// dataplane to select backend endpoints for ClusterIP and NodePort traffic.
-		const endpoints = this.endpointsByServicePort.get(servicePortKey(service, port)) ?? [];
-		if (endpoints.length === 0) {
+		const targets = this.targetsByServicePort.get(servicePortKey(service, port)) ?? [];
+		if (targets.length === 0) {
 			throw new NetworkError(`Service ${service.namespace}/${service.name} has no ready endpoints`);
 		}
-		return endpoints[Math.floor(Math.random() * endpoints.length)];
-	}
-
-	private endpointsForServicePort(service: ServiceInstance, port: ServicePort): ServiceEndpoint[] {
-		return [...this.podsBySandboxId.values()]
-			.filter((pod) => pod.namespace === service.namespace && pod.isReady())
-			.filter((pod) => labelsMatch(service.selector, pod.labels))
-			.flatMap((pod) => {
-				const targetPort = resolveTargetPort(port, pod);
-				return targetPort === undefined
-					? []
-					: [{ service, podIp: pod.ip, port: port.port, targetPort }];
-			});
+		return parseEndpointTarget(targets[Math.floor(Math.random() * targets.length)]);
 	}
 
 	private async dispatchHttp(
@@ -403,27 +395,11 @@ export class NetworkRegistration {
 	}
 }
 
-function labelsMatch(
-	selector: ReadonlyMap<string, string>,
-	labels: ReadonlyMap<string, string>,
-): boolean {
-	for (const [key, value] of selector) {
-		if (labels.get(key) !== value) {
-			return false;
-		}
+function parseEndpointTarget(target: string): ServiceEndpoint {
+	const [ip, portValue, ...extra] = target.split(":");
+	const port = Number(portValue);
+	if (!ip || extra.length > 0 || !Number.isInteger(port) || port <= 0 || port > 65535) {
+		throw new NetworkError(`invalid Service endpoint target ${target}`);
 	}
-	return true;
-}
-
-function resolveTargetPort(port: ServicePort, pod: PodSandboxInstance): number | undefined {
-	if (typeof port.targetPort === "number") {
-		return port.targetPort;
-	}
-	for (const container of pod.containers.values()) {
-		const match = container.ports.find((containerPort) => containerPort.name === port.targetPort);
-		if (match) {
-			return match.containerPort;
-		}
-	}
-	return undefined;
+	return { ip, port };
 }

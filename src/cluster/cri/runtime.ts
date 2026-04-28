@@ -77,6 +77,7 @@ export interface RuntimeOptions {
 	kubeConfig: KubeConfig;
 	network: ClusterNetwork;
 	imageRegistry: ImageRegistry;
+	idPrefix?: string;
 }
 
 class ProcessExit extends Error {
@@ -172,7 +173,11 @@ export class Runtime {
 	}
 
 	async runPodSandbox(config: PodSandboxConfig): Promise<string> {
-		const sandbox = new PodSandboxInstance(`sandbox-${this.nextSandboxId++}`, config, this.nowMs());
+		const sandbox = new PodSandboxInstance(
+			`${this.options.idPrefix ?? ""}sandbox-${this.nextSandboxId++}`,
+			config,
+			this.nowMs(),
+		);
 		sandbox.setNetworkRegistration(this.network.setupPodSandbox(sandbox));
 		this.sandboxes.set(sandbox.id, sandbox);
 		return sandbox.id;
@@ -241,7 +246,7 @@ export class Runtime {
 			throw new Error(`image ${config.image.image} not found`);
 		}
 		const container = new ContainerInstance(
-			`container-${this.nextContainerId++}`,
+			`${this.options.idPrefix ?? ""}container-${this.nextContainerId++}`,
 			sandbox,
 			config,
 			image,

@@ -75,6 +75,16 @@ export interface CoreV1ApiReplaceNamespacedPodRequest {
 	fieldValidation?: string;
 }
 
+export interface CoreV1ApiReplaceNamespacedPodStatusRequest {
+	name: string;
+	namespace: string;
+	body: V1Pod;
+	pretty?: string;
+	dryRun?: string;
+	fieldManager?: string;
+	fieldValidation?: string;
+}
+
 export interface CoreV1ApiCreateNamespacedServiceRequest {
 	namespace: string;
 	body: V1Service;
@@ -185,5 +195,6 @@ export interface CoreV1Api {
 	readNamespacedPod(request: CoreV1ApiReadNamespacedPodRequest): Promise<V1Pod>;
 	readNamespacedService(request: CoreV1ApiReadNamespacedServiceRequest): Promise<V1Service>;
 	replaceNamespacedPod(request: CoreV1ApiReplaceNamespacedPodRequest): Promise<V1Pod>;
+	replaceNamespacedPodStatus(request: CoreV1ApiReplaceNamespacedPodStatusRequest): Promise<V1Pod>;
 	replaceNamespacedService(request: CoreV1ApiReplaceNamespacedServiceRequest): Promise<V1Service>;
 }

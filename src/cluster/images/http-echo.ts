@@ -1,0 +1,102 @@
+import type { ImageDefinition, ProcessContext } from "../cri";
+
+export class HttpEchoImage implements ImageDefinition {
+	async start(context: ProcessContext, argv: readonly string[]): Promise<number> {
+		const options = parseOptions(argv);
+		const text = options.text ?? context.env.get("ECHO_TEXT");
+		if (!text) {
+			return 127;
+		}
+
+		context.listenHttp(options.port, async (request) => {
+			if (request.path === "/health") {
+				return {
+					status: 200,
+					headers: appHeaders(),
+					body: '{"status":"ok"}\n',
+				};
+			}
+
+			return {
+				status: options.statusCode,
+				headers: appHeaders(),
+				body: `${text}\n`,
+			};
+		});
+		return await context.waitUntilKilled();
+	}
+
+	async exec(_context: ProcessContext, _argv: readonly string[]): Promise<number> {
+		return 0;
+	}
+}
+
+interface HttpEchoOptions {
+	port: number;
+	text?: string;
+	statusCode: number;
+}
+
+function parseOptions(argv: readonly string[]): HttpEchoOptions {
+	const options: HttpEchoOptions = {
+		port: 5678,
+		statusCode: 200,
+	};
+
+	for (let index = 0; index < argv.length; index++) {
+		const arg = argv[index] ?? "";
+		const [name, inlineValue] = splitFlag(arg);
+		if (!name) {
+			continue;
+		}
+
+		const value = inlineValue ?? argv[++index];
+		if (value === undefined) {
+			continue;
+		}
+
+		switch (name) {
+			case "listen":
+				options.port = parseListenPort(value);
+				break;
+			case "text":
+				options.text = unquote(value);
+				break;
+			case "status-code":
+				options.statusCode = Number(value);
+				break;
+		}
+	}
+
+	return options;
+}
+
+function splitFlag(arg: string): [string | undefined, string | undefined] {
+	const match = /^-+([^=]+)(?:=(.*))?$/.exec(arg);
+	if (!match) {
+		return [undefined, undefined];
+	}
+	return [match[1], match[2]];
+}
+
+function parseListenPort(value: string): number {
+	const port = Number(value.includes(":") ? value.slice(value.lastIndexOf(":") + 1) : value);
+	return Number.isFinite(port) ? port : 5678;
+}
+
+function unquote(value: string): string {
+	if (
+		(value.startsWith('"') && value.endsWith('"')) ||
+		(value.startsWith("'") && value.endsWith("'"))
+	) {
+		return value.slice(1, -1);
+	}
+	return value;
+}
+
+function appHeaders(): Record<string, string> {
+	return {
+		"X-App-Name": "http-echo",
+		"X-App-Version": "simulator",
+	};
+}

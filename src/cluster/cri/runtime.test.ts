@@ -169,10 +169,10 @@ describe("Runtime", () => {
 			namespace: "default",
 			clusterIp: "10.96.0.10",
 			type: "NodePort",
-			selector: new Map([["app", "demo"]]),
 			ports: [{ port: 80, targetPort: "http", nodePort: 30080 }],
 		};
 		runtime.network.registerService(service);
+		runtime.network.setServiceTargets("default", "demo", 80, [`${pod.ip}:8080`]);
 
 		const response = await runtime.network.fetchNodePort(30080);
 		const clusterIpResponse = await runtime.network.fetch(pod.networkPeer(), "http://demo/");
@@ -205,7 +205,6 @@ describe("Runtime", () => {
 			namespace: "default",
 			clusterIp: "10.96.0.10",
 			type: "NodePort",
-			selector: new Map([["app", "demo"]]),
 			ports: [{ port: 80, targetPort: 8080, nodePort: 30080 }],
 		};
 		runtime.network.registerService(service);
@@ -234,7 +233,6 @@ describe("Runtime", () => {
 			namespace: "default",
 			clusterIp: "10.96.0.10",
 			type: "ClusterIP",
-			selector: new Map([["app", "demo"]]),
 			ports: [{ port: 80, targetPort: 8080 }],
 		};
 		runtime.network.registerService(service);
@@ -255,11 +253,13 @@ describe("Runtime", () => {
 		);
 
 		await runtime.startContainer(containerId);
+		runtime.network.setServiceTargets("default", "demo", 80, [`${pod.ip}:8080`]);
 		await expect(runtime.network.fetch(pod.networkPeer(), "http://10.96.0.10/")).resolves.toEqual({
 			status: 204,
 		});
 
 		await runtime.stopContainer(containerId);
+		runtime.network.setServiceTargets("default", "demo", 80, []);
 		await expect(runtime.network.fetch(pod.networkPeer(), "http://10.96.0.10/")).rejects.toThrow(
 			"Service default/demo has no ready endpoints",
 		);

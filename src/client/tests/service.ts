@@ -1,11 +1,13 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { V1Service } from "../gen/models";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import type { V1Pod, V1Service } from "../gen/models";
+import type { SendNodePortRequest } from "./nodeport";
 import { K8s, KubeConfig } from "../types";
 
-const NODE_PORT_MIN = 30000;
-const NODE_PORT_MAX = 32767;
+export interface ServiceTestOptions {
+	sendNodePortRequest: SendNodePortRequest;
+}
 
-export function tests(k8s: K8s, config: KubeConfig) {
+export function tests(k8s: K8s, config: KubeConfig, options: ServiceTestOptions) {
 	describe("Services", () => {
 		let api: InstanceType<typeof k8s.CoreV1Api>;
 		let namespace: string;
@@ -53,6 +55,28 @@ export function tests(k8s: K8s, config: KubeConfig) {
 			});
 		}
 
+		async function createEchoPod(name: string, text: string): Promise<void> {
+			await api.createNamespacedPod({
+				namespace,
+				body: {
+					metadata: {
+						name,
+						labels: { app: "http-echo-lb" },
+					},
+					spec: {
+						containers: [
+							{
+								name,
+								image: "hashicorp/http-echo:1.0",
+								env: [{ name: "ECHO_TEXT", value: text }],
+								ports: [{ name: "http", containerPort: 5678 }],
+							},
+						],
+					},
+				},
+			});
+		}
+
 		it("should allocate ClusterIP and NodePort values for NodePort services", async () => {
 			const service = await createService({
 				metadata: {
@@ -71,8 +95,7 @@ export function tests(k8s: K8s, config: KubeConfig) {
 			expect(service.spec?.clusterIP).toBeTruthy();
 			expect(service.spec?.clusterIP).not.toBe("None");
 			expect(service.spec?.clusterIPs?.[0]).toBe(service.spec?.clusterIP);
-			expect(nodePort).toBeGreaterThanOrEqual(NODE_PORT_MIN);
-			expect(nodePort).toBeLessThanOrEqual(NODE_PORT_MAX);
+			expect(nodePort).toBeUndefined();
 		});
 
 		it("should preserve allocated service values across replace", async () => {
@@ -207,5 +230,57 @@ export function tests(k8s: K8s, config: KubeConfig) {
 			expect(second.spec?.clusterIP).toBe(clusterIP);
 			expect(second.spec?.ports?.[0]?.nodePort).toBe(nodePort);
 		});
+
+		it("should load balance NodePort traffic across selected pods", async () => {
+			const firstText = "echo-one";
+			const secondText = "echo-two";
+			await createEchoPod("http-echo-one", firstText);
+			await createEchoPod("http-echo-two", secondText);
+
+			const service = await createService({
+				metadata: {
+					name: "http-echo-lb",
+				},
+				spec: {
+					type: "NodePort",
+					selector: { app: "http-echo-lb" },
+					ports: [{ name: "http", port: 80, targetPort: "http" }],
+				},
+			});
+			const nodePort = service.spec?.ports?.[0]?.nodePort;
+			if (nodePort === undefined) {
+				throw new Error("Expected Service to allocate a NodePort");
+			}
+
+			await vi.waitFor(
+				async () => {
+					expectPodReady(await api.readNamespacedPod({ name: "http-echo-one", namespace }));
+					expectPodReady(await api.readNamespacedPod({ name: "http-echo-two", namespace }));
+				},
+				{ timeout: 10_000, interval: 500 },
+			);
+
+			const bodies = new Set<string>();
+			await vi.waitFor(
+				async () => {
+					for (let attempt = 0; attempt < 8; attempt++) {
+						const response = await options.sendNodePortRequest(nodePort, { path: "/" });
+						expect(response.status).toBe(200);
+						if (response.body) {
+							bodies.add(response.body.trim());
+						}
+					}
+					expect(bodies).toEqual(new Set([firstText, secondText]));
+				},
+				{ timeout: 20_000, interval: 500 },
+			);
+		});
 	});
+}
+
+function expectPodReady(pod: V1Pod): void {
+	expect(pod.spec?.nodeName).toBeTruthy();
+	expect(pod.status?.phase).toBe("Running");
+	expect(pod.status?.podIP).toBeTruthy();
+	expect(pod.status?.containerStatuses?.[0]?.ready).toBe(true);
 }

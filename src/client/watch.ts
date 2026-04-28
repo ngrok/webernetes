@@ -1,7 +1,13 @@
 import { KubeConfig } from "./config";
 import { labelsMatch, parseLabelSelector } from "./labels";
-import { NodeStore, PodStore, Storable, Store } from "../cluster/storage";
-import { Etcd } from "../cluster/etcd";
+import {
+	EndpointSliceStore,
+	NodeStore,
+	PodStore,
+	ServiceStore,
+	Storable,
+	Store,
+} from "../cluster/storage";
 
 type WatchCallback = (phase: string, apiObj: unknown, watchObj?: unknown) => void;
 type DoneCallback = (err: unknown) => void;
@@ -14,7 +20,7 @@ class AbortError extends Error {
 }
 
 function getNamespaceFromPath(path: string): string | undefined {
-	const match = /^\/api\/v1\/namespaces\/([^/]+)/.exec(path);
+	const match = /^\/(?:api\/v1|apis\/discovery\.k8s\.io\/v1)\/namespaces\/([^/]+)/.exec(path);
 	if (!match) {
 		return undefined;
 	}
@@ -23,7 +29,8 @@ function getNamespaceFromPath(path: string): string | undefined {
 
 function parsePath(path: string): { kind: string; namespace?: string } | undefined {
 	const namespace = getNamespaceFromPath(path);
-	path = path.replace("/api/v1", "");
+	path = path.replace(/^\/api\/v1/, "");
+	path = path.replace(/^\/apis\/discovery\.k8s\.io\/v1/, "");
 	if (namespace) {
 		path = path.replace(`/namespaces/${namespace}`, "");
 	}
@@ -34,10 +41,18 @@ function parsePath(path: string): { kind: string; namespace?: string } | undefin
 	return { kind: decodeURIComponent(match[1] ?? ""), namespace };
 }
 
-function storeFromKind(kind: string, etcd: Etcd): Store<Storable> {
+function storeFromKind(kind: string, config: KubeConfig): Store<Storable> {
+	const etcd = config.cluster.etcd;
 	switch (kind) {
 		case "pods":
 			return new PodStore(etcd);
+		case "services":
+			return new ServiceStore(etcd, {
+				serviceCIDR: config.cluster.serviceCIDR,
+				nodePortRange: config.cluster.nodePortRange,
+			});
+		case "endpointslices":
+			return new EndpointSliceStore(etcd);
 		case "nodes":
 			return new NodeStore(etcd);
 		default:
@@ -64,7 +79,7 @@ export class Watch {
 		}
 
 		const { kind, namespace } = parsed;
-		const store = storeFromKind(kind, this.config.cluster.etcd);
+		const store = storeFromKind(kind, this.config);
 
 		const controller = new AbortController();
 		let doneCalled = false;

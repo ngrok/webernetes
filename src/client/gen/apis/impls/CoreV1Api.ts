@@ -23,6 +23,7 @@ import type {
 	CoreV1ApiReadNamespacedPodRequest,
 	CoreV1ApiReadNamespacedServiceRequest,
 	CoreV1ApiReplaceNamespacedPodRequest,
+	CoreV1ApiReplaceNamespacedPodStatusRequest,
 	CoreV1ApiReplaceNamespacedServiceRequest,
 } from "../types/CoreV1Api";
 import { rethrowApiErrors } from "./errors";
@@ -196,6 +197,20 @@ export class CoreV1Api implements CoreV1ApiInterface {
 			request.body.metadata.name = request.name;
 			request.body.metadata.namespace ??= request.namespace;
 			return await this.pods.update(request.name, request.body);
+		});
+	}
+
+	public async replaceNamespacedPodStatus(
+		request: CoreV1ApiReplaceNamespacedPodStatusRequest,
+	): Promise<V1Pod> {
+		return await rethrowApiErrors(async () => {
+			const pod = await this.pods.get(request.name, request.namespace);
+			if (!pod) {
+				throw new NotFound(`Pod "${request.name}" not found`);
+			}
+
+			pod.status = request.body.status;
+			return await this.pods.update(request.name, pod);
 		});
 	}
 
