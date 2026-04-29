@@ -18,7 +18,7 @@
     "lint:fix": "oxlint --fix .",
     "lint": "oxlint .",
     "prepare": "husky",
-    "test": "pnpm test:node && pnpm test:browser",
+    "test": "node scripts/test.mjs",
     "test:node": "vitest run --config vitest.config.ts",
     "test:browser": "vitest run --config vitest.browser.config.ts",
     "test:all": "pnpm test",

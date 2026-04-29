@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { expect, it } from "vitest";
 
 import { Clock } from "../../clock";
+import { browser } from "../../test/describe";
 import { Etcd } from "../etcd";
 import {
 	AllocatableRange,
@@ -10,7 +11,7 @@ import {
 	PortRange,
 } from "./allocatable";
 
-describe("AllocatableRange", () => {
+browser.describe("AllocatableRange", () => {
 	it("throws an AlreadyAllocated error with the claimed index", async () => {
 		const range = await AllocatableRange.create(new Etcd(new Clock()), "raw", 2);
 		await range.claim(1);
@@ -33,7 +34,7 @@ describe("AllocatableRange", () => {
 	});
 });
 
-describe("PortRange", () => {
+browser.describe("PortRange", () => {
 	it("allocates ports in order and throws when exhausted", async () => {
 		const range = await createPortRange(30000, 30002);
 
@@ -104,7 +105,7 @@ describe("PortRange", () => {
 	});
 });
 
-describe("IpRange", () => {
+browser.describe("IpRange", () => {
 	it("allocates usable addresses from a CIDR range and throws when exhausted", async () => {
 		const range = await createIpRange("10.0.0.0/30");
 

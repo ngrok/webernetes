@@ -46,17 +46,9 @@ export class Cluster {
 		this.network = new ClusterNetwork();
 
 		this.imageRegistry = new ImageRegistry();
-		this.imageRegistry.register("rancher/pause:3.6", new PauseImage());
-		for (const ref of ["busybox", "busybox:latest", "busybox:1.36"]) {
-			this.imageRegistry.register(ref, new BusyBoxImage());
-		}
-		for (const ref of [
-			"hashicorp/http-echo",
-			"hashicorp/http-echo:latest",
-			"hashicorp/http-echo:1.0",
-		]) {
-			this.imageRegistry.register(ref, new HttpEchoImage());
-		}
+		this.imageRegistry.register("registry.k8s.io/pause:3.10", new PauseImage());
+		this.imageRegistry.register("busybox:1.36", new BusyBoxImage());
+		this.imageRegistry.register("hashicorp/http-echo:1.0", new HttpEchoImage());
 
 		this.servers = [
 			new Server(this, { name: "node-1", podCIDR: "10.0.0.0/24" }),

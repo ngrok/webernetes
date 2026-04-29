@@ -1,10 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { expect, it } from "vitest";
 
+import { browser } from "../test/describe";
 import { Clock } from "../clock";
 import { Etcd } from "./etcd";
 import { withLock } from "./lock";
 
-describe("withLock", () => {
+browser.describe("withLock", () => {
 	it("serializes many concurrent writers to shared state", async () => {
 		const clock = new Clock();
 		const etcd = new Etcd(clock);
