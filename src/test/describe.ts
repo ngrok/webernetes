@@ -1,7 +1,6 @@
 // oxlint-disable vitest/no-conditional-tests
 // oxlint-disable vitest/warn-todo
-// oxlint-disable jest/no-disabled-tests
-import { describe as vitestDescribe, it } from "vitest";
+import { describe as vitestDescribe } from "vitest";
 import type { TestOptions } from "vitest";
 
 export type TestEnvironment = "browser" | "node";
@@ -60,7 +59,6 @@ function createDescribeFn(
 		}
 
 		if (mode === "skip" || !shouldRun(target)) {
-			defineSkippedSuite(name, target);
 			return;
 		}
 
@@ -79,12 +77,6 @@ function createDescribeFn(
 
 function shouldRun(target: TestEnvironment | "both"): boolean {
 	return target === "both" || target === currentTestEnvironment;
-}
-
-function defineSkippedSuite(name: string, target: TestEnvironment | "both"): void {
-	vitestDescribe.skip(`${name} [${target}]`, () => {
-		it.skip("skipped in this test environment", () => undefined);
-	});
 }
 
 function isBrowserTestEnvironment(): boolean {
