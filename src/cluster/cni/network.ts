@@ -20,6 +20,29 @@ interface ServiceEndpointRoute {
 	key: string;
 }
 
+class TargetList {
+	targets: string[] = [];
+	private roundRobinIndex = 0;
+
+	setTargets(targets: readonly string[]): void {
+		this.targets = [...targets];
+		if (this.targets.length === 0) {
+			this.roundRobinIndex = 0;
+			return;
+		}
+		this.roundRobinIndex %= this.targets.length;
+	}
+
+	next(): string | undefined {
+		if (this.targets.length === 0) {
+			return undefined;
+		}
+		const target = this.targets[this.roundRobinIndex];
+		this.roundRobinIndex = (this.roundRobinIndex + 1) % this.targets.length;
+		return target;
+	}
+}
+
 function listenerKey(ip: string, port: number): string {
 	return `${ip}:${port}`;
 }
@@ -51,7 +74,7 @@ export class ClusterNetwork {
 	private servicesByClusterIp = new Map<string, ServiceInstance>();
 	private servicesByNodePort = new Map<number, NodePortRoute>();
 	private serviceEndpointRoutes = new Map<string, ServiceEndpointRoute>();
-	private targetsByServicePort = new Map<string, string[]>();
+	private targetListsByServicePort = new Map<string, TargetList>();
 
 	constructor(options: ClusterNetworkOptions) {
 		// TODO: This really shouldn't be here, we should be allocating pod IPs with
@@ -111,7 +134,7 @@ export class ClusterNetwork {
 		for (const port of service.ports) {
 			const routeKey = servicePortKey(service, port);
 			this.serviceEndpointRoutes.set(routeKey, { service, port, key: routeKey });
-			this.targetsByServicePort.set(routeKey, []);
+			this.targetListsByServicePort.set(routeKey, new TargetList());
 			if (port.nodePort !== undefined) {
 				if (this.servicesByNodePort.has(port.nodePort)) {
 					throw new NetworkError(`NodePort ${port.nodePort} is already registered`);
@@ -132,7 +155,7 @@ export class ClusterNetwork {
 		for (const port of service.ports) {
 			const routeKey = servicePortKey(service, port);
 			this.serviceEndpointRoutes.delete(routeKey);
-			this.targetsByServicePort.delete(routeKey);
+			this.targetListsByServicePort.delete(routeKey);
 			if (port.nodePort !== undefined) {
 				this.servicesByNodePort.delete(port.nodePort);
 			}
@@ -145,7 +168,10 @@ export class ClusterNetwork {
 		port: number,
 		targets: readonly string[],
 	): void {
-		this.targetsByServicePort.set(serviceRouteKey(namespace, name, port), [...targets]);
+		const key = serviceRouteKey(namespace, name, port);
+		const targetList = this.targetListsByServicePort.get(key) ?? new TargetList();
+		targetList.setTargets(targets);
+		this.targetListsByServicePort.set(key, targetList);
 	}
 
 	async fetch(target: string, init: HttpRequest = {}): Promise<HttpResponse> {
@@ -242,11 +268,12 @@ export class ClusterNetwork {
 	}
 
 	private selectEndpoint(service: ServiceInstance, port: ServicePort): ServiceEndpoint {
-		const targets = this.targetsByServicePort.get(servicePortKey(service, port)) ?? [];
-		if (targets.length === 0) {
+		const key = servicePortKey(service, port);
+		const target = this.targetListsByServicePort.get(key)?.next();
+		if (!target) {
 			throw new NetworkError(`Service ${service.namespace}/${service.name} has no ready endpoints`);
 		}
-		return parseEndpointTarget(targets[Math.floor(Math.random() * targets.length)]);
+		return parseEndpointTarget(target);
 	}
 
 	private routeEndpoint(endpoint: ServiceEndpoint): ServiceEndpoint {

@@ -263,7 +263,7 @@ export function tests(k8s: K8s, config: KubeConfig, options: ServiceTestOptions)
 			const bodies = new Set<string>();
 			await vi.waitFor(
 				async () => {
-					for (let attempt = 0; attempt < 8; attempt++) {
+					for (let attempt = 0; attempt < 2; attempt++) {
 						const response = await options.sendNodePortRequest(nodePort, { path: "/" });
 						expect(response.status).toBe(200);
 						if (response.body) {

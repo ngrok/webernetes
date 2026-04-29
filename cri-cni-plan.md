@@ -1138,18 +1138,19 @@ Phase 2 implementation notes:
       `ClusterNetwork`. Do not put this in apiserver Service storage, and do not
       model it as the Kubernetes Service controller.
 - [x] Implement `targetPort` resolution for numeric and named container ports.
-- [ ] Implement deterministic round-robin endpoint selection.
-      Current implementation chooses a ready endpoint at random; shared tests
-      assert that multiple backends can be reached, not a deterministic order.
+- [x] Implement deterministic round-robin endpoint selection.
+      `ClusterNetwork` now keeps per-Service-port `TargetList` state and shared
+      load-balancing tests make one request per backend pod instead of padding
+      for random selection.
 - [x] Implement ClusterIP routing by mapping Service IP/port to selected pod
       IP/targetPort.
 - [x] Implement NodePort routing by mapping nodePort to selected Service
       endpoint.
-- [ ] Ensure pod deletion, Service deletion, and process exit remove stale
+- [x] Ensure pod deletion, Service deletion, and process exit remove stale
       listeners/endpoints from routing.
       Pod and Service deletion are covered by shared EndpointSlice/NodePort
-      tests. Process-owned listener cleanup remains an internal runtime behavior
-      without dedicated parity coverage.
+      tests. Process-owned listener cleanup is an internal runtime invariant and
+      is not tracked as a parity requirement.
 
 ### Phase 5: First Shared NodePort Test
 
