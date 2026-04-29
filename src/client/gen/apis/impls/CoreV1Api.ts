@@ -3,7 +3,7 @@ import { NamespaceStore, NodeStore, PodStore, ServiceStore } from "../../../../c
 import { Store } from "../../../../cluster/storage/store";
 import { NotFound } from "../../../errors";
 import { filterByLabels, parseLabelSelector } from "../../../labels";
-import { V1Namespace, V1PodList, V1ServiceList, V1Status } from "../../models";
+import { V1Namespace, V1NodeList, V1PodList, V1ServiceList, V1Status } from "../../models";
 import type { V1Node } from "../../models/V1Node";
 import type { V1Pod } from "../../models/V1Pod";
 import type { V1Service } from "../../models/V1Service";
@@ -16,6 +16,7 @@ import type {
 	CoreV1ApiDeleteNamespacedServiceRequest,
 	CoreV1ApiDeleteNamespaceRequest,
 	CoreV1Api as CoreV1ApiInterface,
+	CoreV1ApiListNodeRequest,
 	CoreV1ApiListPodForAllNamespacesRequest,
 	CoreV1ApiListNamespacedPodRequest,
 	CoreV1ApiListNamespacedServiceRequest,
@@ -109,6 +110,18 @@ export class CoreV1Api implements CoreV1ApiInterface {
 					resourceVersion: "",
 				},
 				items: filterByLabels(await this.services.list(), selector),
+			};
+		});
+	}
+
+	public async listNode(request: CoreV1ApiListNodeRequest = {}): Promise<V1NodeList> {
+		return await rethrowApiErrors(async () => {
+			const selector = parseLabelSelector(request.labelSelector);
+			return {
+				metadata: {
+					resourceVersion: "",
+				},
+				items: filterByLabels(await this.nodes.list(), selector),
 			};
 		});
 	}

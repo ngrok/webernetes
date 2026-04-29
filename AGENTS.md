@@ -25,6 +25,9 @@ General rules for this repository:
   the fake client. Favor changes that make the fake's public exported types line
   up with the real client's public exported types closely enough that unions and
   shared tests work naturally.
+- Unless it is literally impossible to do so, test Kubernetes behavior through
+  the parity tests in `src/client/tests/` so the simulated cluster is checked
+  against real Kubernetes behavior.
 - Do not introduce adapter-only type shims just to paper over mismatches between
   the real and fake clients.
 - Do not introduce interfaces or types with names ending in `Like`.

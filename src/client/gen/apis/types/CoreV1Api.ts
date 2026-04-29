@@ -2,6 +2,7 @@ import {
 	V1DeleteOptions,
 	V1Namespace,
 	V1Node,
+	V1NodeList,
 	V1Pod,
 	V1PodList,
 	V1Service,
@@ -167,6 +168,20 @@ export interface CoreV1ApiCreateNodeRequest {
 	fieldValidation?: string;
 }
 
+export interface CoreV1ApiListNodeRequest {
+	pretty?: string;
+	allowWatchBookmarks?: boolean;
+	_continue?: string;
+	fieldSelector?: string;
+	labelSelector?: string;
+	limit?: number;
+	resourceVersion?: string;
+	resourceVersionMatch?: string;
+	sendInitialEvents?: boolean;
+	timeoutSeconds?: number;
+	watch?: boolean;
+}
+
 export interface CoreV1ApiDeleteNamespaceRequest {
 	name: string;
 	pretty?: string;
@@ -186,6 +201,7 @@ export interface CoreV1Api {
 	deleteNamespacedPod(request: CoreV1ApiDeleteNamespacedPodRequest): Promise<V1Pod>;
 	deleteNamespacedService(request: CoreV1ApiDeleteNamespacedServiceRequest): Promise<V1Service>;
 	deleteNamespace(request: CoreV1ApiDeleteNamespaceRequest): Promise<V1Status>;
+	listNode(request?: CoreV1ApiListNodeRequest): Promise<V1NodeList>;
 	listNamespacedPod(request: CoreV1ApiListNamespacedPodRequest): Promise<V1PodList>;
 	listNamespacedService(request: CoreV1ApiListNamespacedServiceRequest): Promise<V1ServiceList>;
 	listPodForAllNamespaces(request?: CoreV1ApiListPodForAllNamespacesRequest): Promise<V1PodList>;

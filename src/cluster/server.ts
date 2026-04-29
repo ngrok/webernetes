@@ -22,6 +22,7 @@ export class Server {
 			clock: cluster.clock,
 			kubeConfig: cluster.kubeConfig,
 			network: cluster.network,
+			podCIDR: this.podCIDR,
 			imageRegistry: cluster.imageRegistry,
 			idPrefix: `${this.name}-`,
 		});

@@ -69,6 +69,7 @@ export * from "./V1ManagedFieldsEntry";
 export * from "./V1NFSVolumeSource";
 export * from "./V1Node";
 export * from "./V1NodeAffinity";
+export * from "./V1NodeList";
 export * from "./V1NodeSelector";
 export * from "./V1NodeSelectorRequirement";
 export * from "./V1NodeSelectorTerm";

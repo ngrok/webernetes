@@ -5,10 +5,6 @@ import { type HttpHandler, HttpListener, type HttpRequest, type HttpResponse } f
 import type { ServiceEndpoint, ServiceInstance, ServicePort } from "./service";
 import type { PodSandboxInstance } from "../cri/runtime";
 
-export interface ClusterNetworkOptions {
-	podCIDR: string;
-}
-
 interface NodePortRoute {
 	service: ServiceInstance;
 	port: ServicePort;
@@ -18,6 +14,11 @@ interface ServiceEndpointRoute {
 	service: ServiceInstance;
 	port: ServicePort;
 	key: string;
+}
+
+interface PodCIDRAllocator {
+	cidr: CIDR;
+	cursor?: string;
 }
 
 class TargetList {
@@ -64,8 +65,7 @@ function isIpLiteral(host: string): boolean {
 }
 
 export class ClusterNetwork {
-	private readonly podCIDR: CIDR;
-	private podIpCursor: string | undefined;
+	private podIpAllocators = new Map<string, PodCIDRAllocator>();
 	private podsBySandboxId = new Map<string, PodSandboxInstance>();
 	private podsByIp = new Map<string, PodSandboxInstance>();
 	private httpListeners = new Map<string, HttpHandler>();
@@ -76,35 +76,40 @@ export class ClusterNetwork {
 	private serviceEndpointRoutes = new Map<string, ServiceEndpointRoute>();
 	private targetListsByServicePort = new Map<string, TargetList>();
 
-	constructor(options: ClusterNetworkOptions) {
-		// TODO: This really shouldn't be here, we should be allocating pod IPs with
-		// the node podCIDR. This is convenient for now, but wrong.
-		this.podCIDR = new CIDR(options.podCIDR);
-	}
-
-	setupPodSandbox(pod: PodSandboxInstance): NetworkRegistration {
+	setupPodSandbox(pod: PodSandboxInstance, podCIDR: string): NetworkRegistration {
 		if (this.podsBySandboxId.has(pod.id)) {
 			throw new NetworkError(`pod sandbox ${pod.id} is already registered`);
 		}
-		const ip = this.allocatePodIp();
+		const ip = this.allocatePodIp(podCIDR);
 		this.podsBySandboxId.set(pod.id, pod);
 		this.podsByIp.set(ip, pod);
 		return new NetworkRegistration(this, pod.id, pod.uid, ip);
 	}
 
-	private allocatePodIp(): string {
-		let candidate = this.podIpCursor
-			? this.podCIDR.addressAfter(this.podIpCursor)
-			: this.podCIDR.firstAddress();
-		for (const ip of this.podCIDR.addresses()) {
+	private allocatePodIp(podCIDR: string): string {
+		const allocator = this.podIpAllocator(podCIDR);
+		let candidate = allocator.cursor
+			? allocator.cidr.addressAfter(allocator.cursor)
+			: allocator.cidr.firstAddress();
+		for (const ip of allocator.cidr.addresses()) {
 			const selected = candidate ?? ip;
 			if (!this.podsByIp.has(selected)) {
-				this.podIpCursor = selected;
+				allocator.cursor = selected;
 				return selected;
 			}
-			candidate = this.podCIDR.addressAfter(selected);
+			candidate = allocator.cidr.addressAfter(selected);
 		}
-		throw new NetworkError(`no free pod IPs in ${this.podCIDR}`);
+		throw new NetworkError(`no free pod IPs in ${podCIDR}`);
+	}
+
+	private podIpAllocator(podCIDR: string): PodCIDRAllocator {
+		const existing = this.podIpAllocators.get(podCIDR);
+		if (existing) {
+			return existing;
+		}
+		const allocator = { cidr: new CIDR(podCIDR) };
+		this.podIpAllocators.set(podCIDR, allocator);
+		return allocator;
 	}
 
 	unregisterPod(podSandboxId: string): void {

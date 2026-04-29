@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { CIDR } from "../../net";
 import type { V1Pod } from "../gen/models";
 import { K8s, KubeConfig } from "../types";
 
@@ -377,6 +378,57 @@ export function tests(k8s: K8s, config: KubeConfig) {
 				await api.deleteNamespace({
 					name: otherNamespace,
 				});
+			}
+		});
+
+		it("should allocate pod IPs from the scheduled node pod CIDR", async () => {
+			const nodes = (await api.listNode()).items.filter((node) =>
+				Boolean(node.metadata?.name && node.spec?.podCIDR),
+			);
+			expect(nodes.length).toBeGreaterThan(0);
+
+			const createdPods: Array<{ name: string; namespace: string }> = [];
+
+			try {
+				for (const [index, node] of nodes.entries()) {
+					const nodeName = node.metadata?.name;
+					const podCIDR = node.spec?.podCIDR;
+					if (!nodeName || !podCIDR) {
+						continue;
+					}
+					const cidr = new CIDR(podCIDR);
+
+					const name = `node-cidr-${index}`;
+					await api.createNamespacedPod({
+						namespace,
+						body: {
+							metadata: { name },
+							spec: {
+								nodeName,
+								containers: [{ name: "test", image: "rancher/pause:3.6" }],
+							},
+						},
+					});
+					createdPods.push({ name, namespace });
+
+					await vi.waitFor(async () => {
+						const pod = await api.readNamespacedPod({ name, namespace });
+						expect(pod.status?.phase).toBe("Running");
+						expect(pod.status?.podIP).toBeTruthy();
+						expect(cidr.contains(pod.status?.podIP ?? "")).toBe(true);
+					});
+				}
+			} finally {
+				for (const pod of createdPods) {
+					await api.deleteNamespacedPod({
+						name: pod.name,
+						namespace: pod.namespace,
+						gracePeriodSeconds: 0,
+						body: {
+							gracePeriodSeconds: 0,
+						},
+					});
+				}
 			}
 		});
 	});

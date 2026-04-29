@@ -43,9 +43,7 @@ export class Cluster {
 		this.nodePortRange = options.nodePortRange ?? DEFAULT_NODE_PORT_RANGE;
 		this.kubeConfig = new k8s.KubeConfig(this);
 		this.api = this.kubeConfig.makeApiClient(k8s.CoreV1Api);
-		this.network = new ClusterNetwork({
-			podCIDR: "10.0.0.0/16",
-		});
+		this.network = new ClusterNetwork();
 
 		this.imageRegistry = new ImageRegistry();
 		this.imageRegistry.register("rancher/pause:3.6", new PauseImage());

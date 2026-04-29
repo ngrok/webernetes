@@ -80,6 +80,7 @@ export interface RuntimeOptions {
 	clock: Clock;
 	kubeConfig: KubeConfig;
 	network: ClusterNetwork;
+	podCIDR: string;
 	imageRegistry: ImageRegistry;
 	idPrefix?: string;
 }
@@ -203,7 +204,7 @@ export class Runtime {
 			config,
 			this.nowMs(),
 		);
-		sandbox.setNetworkRegistration(this.network.setupPodSandbox(sandbox));
+		sandbox.setNetworkRegistration(this.network.setupPodSandbox(sandbox, this.options.podCIDR));
 		this.sandboxes.set(sandbox.id, sandbox);
 		return sandbox.id;
 	}
