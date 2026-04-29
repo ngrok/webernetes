@@ -1,26 +1,17 @@
-import { afterAll, beforeAll } from "vitest";
+import { afterAll, afterEach, beforeAll } from "vitest";
 
 import { browser } from "../describe";
 import type { SuiteOptions } from "../describe";
 import { Cluster } from "../../cluster";
 import * as fakeK8s from "../../client";
-import type {
-	KubernetesSuiteFactory,
-	KubernetesTestContext,
-	NodePortRequest,
-	NodePortResponse,
-} from "./kubernetes";
+import { createKubernetesRuntimeContext } from "./kubernetes-context";
+import type { KubernetesSuiteFactory, NodePortRequest, NodePortResponse } from "./kubernetes";
 import type { K8s } from "../../client/types";
 
 const cluster = new Cluster();
 let setupPromise: Promise<void> | undefined;
 
-const context: KubernetesTestContext = {
-	k8s: fakeK8s as unknown as K8s,
-	kubeConfig: cluster.kubeConfig,
-	target: "simulator",
-	sendNodePortRequest,
-};
+const k8s = fakeK8s as unknown as K8s;
 
 afterAll(() => {
 	cluster.close();
@@ -43,8 +34,22 @@ export function defineSuite(
 	}
 
 	const suite = () => {
+		const context = createKubernetesRuntimeContext({
+			k8s,
+			kubeConfig: cluster.kubeConfig,
+			target: "simulator",
+			fetchNodePort,
+		});
+
 		beforeAll(async () => {
 			await setupSimulator();
+			await context.initialize();
+		});
+		afterAll(async () => {
+			await context.dispose();
+		});
+		afterEach(async () => {
+			await context.disposeTest();
 		});
 		factory(context);
 	};
@@ -75,7 +80,7 @@ async function setupSimulator(): Promise<void> {
 	await setupPromise;
 }
 
-async function sendNodePortRequest(
+async function fetchNodePort(
 	nodePort: number,
 	request?: NodePortRequest,
 ): Promise<NodePortResponse> {

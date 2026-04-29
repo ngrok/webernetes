@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { expect, it } from "vitest";
 
 import { SortedMap } from "./collections";
+import { browser } from "./test/describe";
 
-describe("SortedMap", () => {
+browser.describe("SortedMap", () => {
 	it("keeps entries sorted by key", () => {
 		const map = new SortedMap<number, string>((left, right) => left - right);
 

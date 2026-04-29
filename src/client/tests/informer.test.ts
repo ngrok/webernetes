@@ -1,42 +1,12 @@
-import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
+import { expect, it, vi } from "vitest";
 import type { V1Pod } from "../gen/models";
 import { kubernetes } from "../../test/harnesses/kubernetes";
 
-kubernetes.describe("Informer", ({ k8s, kubeConfig }) => {
-	let api: InstanceType<typeof k8s.CoreV1Api>;
-	let namespace: string;
-
-	async function createNamespace(generateName: string): Promise<string> {
-		const response = await api.createNamespace({
-			body: {
-				metadata: {
-					generateName,
-				},
-			},
-		});
-
-		if (!response.metadata?.name) {
-			throw new Error("Failed to create namespace");
-		}
-
-		return response.metadata.name;
-	}
-
-	beforeAll(async () => {
-		api = kubeConfig.makeApiClient(k8s.CoreV1Api);
-	});
-
-	beforeEach(async () => {
-		namespace = await createNamespace("informer-test-");
-	});
-
-	afterEach(async () => {
-		await api.deleteNamespace({ name: namespace });
-	});
-
-	async function createPod(pod: Partial<V1Pod>, podNamespace = namespace): Promise<V1Pod> {
-		const response = await api.createNamespacedPod({
-			namespace: podNamespace,
+kubernetes.describe("Informer", ({ core, k8s, kubeConfig, getTestNamespace, createNamespace }) => {
+	async function createPod(pod: Partial<V1Pod>, podNamespace?: string): Promise<V1Pod> {
+		const namespace = podNamespace ?? (await getTestNamespace());
+		const response = await core.createNamespacedPod({
+			namespace,
 			body: {
 				metadata: {
 					name: pod.metadata?.name ?? "test-pod",
@@ -59,18 +29,19 @@ kubernetes.describe("Informer", ({ k8s, kubeConfig }) => {
 	async function replacePod(
 		name: string,
 		mutate: (pod: V1Pod) => void,
-		podNamespace = namespace,
+		podNamespace?: string,
 	): Promise<V1Pod> {
 		let lastError: unknown;
+		const namespace = podNamespace ?? (await getTestNamespace());
 
 		for (let attempt = 0; attempt < 5; attempt++) {
-			const current = await api.readNamespacedPod({ name, namespace: podNamespace });
+			const current = await core.readNamespacedPod({ name, namespace });
 			mutate(current);
 
 			try {
-				return await api.replaceNamespacedPod({
+				return await core.replaceNamespacedPod({
 					name,
-					namespace: podNamespace,
+					namespace,
 					body: current,
 				});
 			} catch (error) {
@@ -89,11 +60,12 @@ kubernetes.describe("Informer", ({ k8s, kubeConfig }) => {
 	it("lists initial objects into the cache on start", async () => {
 		const connected = vi.fn<(err?: unknown) => void>();
 		const added = vi.fn<(obj: V1Pod) => void>();
+		const namespace = await getTestNamespace();
 
 		await createPod({ metadata: { name: "existing-pod" } });
 
 		const informer = k8s.makeInformer(kubeConfig, `/api/v1/namespaces/${namespace}/pods`, () =>
-			api.listNamespacedPod({ namespace }),
+			core.listNamespacedPod({ namespace }),
 		);
 		informer.on("connect", connected);
 		informer.on("add", added);
@@ -139,9 +111,10 @@ kubernetes.describe("Informer", ({ k8s, kubeConfig }) => {
 		const added = vi.fn<(obj: V1Pod) => void>();
 		const updated = vi.fn<(obj: V1Pod) => void>();
 		const deleted = vi.fn<(obj: V1Pod) => void>();
+		const namespace = await getTestNamespace();
 
 		const informer = k8s.makeInformer(kubeConfig, `/api/v1/namespaces/${namespace}/pods`, () =>
-			api.listNamespacedPod({ namespace }),
+			core.listNamespacedPod({ namespace }),
 		);
 		informer.on("change", changed);
 		informer.on("add", added);
@@ -185,7 +158,7 @@ kubernetes.describe("Informer", ({ k8s, kubeConfig }) => {
 			});
 			const changeCallsAfterUpdate = changed.mock.calls.length;
 
-			await api.deleteNamespacedPod({
+			await core.deleteNamespacedPod({
 				name: "change-pod",
 				namespace,
 				gracePeriodSeconds: 0,
@@ -211,7 +184,7 @@ kubernetes.describe("Informer", ({ k8s, kubeConfig }) => {
 					labels: { app: "v2" },
 				};
 			});
-			await api.deleteNamespacedPod({
+			await core.deleteNamespacedPod({
 				name: "second-change-pod",
 				namespace,
 				gracePeriodSeconds: 0,
@@ -256,9 +229,10 @@ kubernetes.describe("Informer", ({ k8s, kubeConfig }) => {
 		const added = vi.fn<(obj: V1Pod) => void>();
 		const updated = vi.fn<(obj: V1Pod) => void>();
 		const deleted = vi.fn<(obj: V1Pod) => void>();
+		const namespace = await getTestNamespace();
 
 		const informer = k8s.makeInformer(kubeConfig, `/api/v1/namespaces/${namespace}/pods`, () =>
-			api.listNamespacedPod({ namespace }),
+			core.listNamespacedPod({ namespace }),
 		);
 		informer.on("add", added);
 		informer.on("update", updated);
@@ -308,7 +282,7 @@ kubernetes.describe("Informer", ({ k8s, kubeConfig }) => {
 				expect(informer.get("informer-pod", namespace)?.metadata?.labels?.app).toBe("v2");
 			});
 
-			await api.deleteNamespacedPod({
+			await core.deleteNamespacedPod({
 				name: "informer-pod",
 				namespace,
 				gracePeriodSeconds: 0,
@@ -332,9 +306,10 @@ kubernetes.describe("Informer", ({ k8s, kubeConfig }) => {
 
 	it("resyncs objects created while stopped after restarting", async () => {
 		const connected = vi.fn<(err?: unknown) => void>();
+		const namespace = await getTestNamespace();
 
 		const informer = k8s.makeInformer(kubeConfig, `/api/v1/namespaces/${namespace}/pods`, () =>
-			api.listNamespacedPod({ namespace }),
+			core.listNamespacedPod({ namespace }),
 		);
 		informer.on("connect", connected);
 
@@ -368,11 +343,16 @@ kubernetes.describe("Informer", ({ k8s, kubeConfig }) => {
 
 	it("supports label selectors via list and watch", async () => {
 		const addedNames: string[] = [];
+		const namespace = await getTestNamespace();
 
 		const informer = k8s.makeInformer(
 			kubeConfig,
 			`/api/v1/namespaces/${namespace}/pods`,
-			() => api.listNamespacedPod({ namespace, labelSelector: "app=selected" }),
+			() =>
+				core.listNamespacedPod({
+					namespace,
+					labelSelector: "app=selected",
+				}),
 			"app=selected",
 		);
 		informer.on("add", (obj) => {
@@ -405,11 +385,16 @@ kubernetes.describe("Informer", ({ k8s, kubeConfig }) => {
 	it("tracks objects entering and leaving a label-selected informer", async () => {
 		const added = vi.fn<(obj: V1Pod) => void>();
 		const deleted = vi.fn<(obj: V1Pod) => void>();
+		const namespace = await getTestNamespace();
 
 		const informer = k8s.makeInformer(
 			kubeConfig,
 			`/api/v1/namespaces/${namespace}/pods`,
-			() => api.listNamespacedPod({ namespace, labelSelector: "app=selected" }),
+			() =>
+				core.listNamespacedPod({
+					namespace,
+					labelSelector: "app=selected",
+				}),
 			"app=selected",
 		);
 		informer.on("add", added);
@@ -469,6 +454,7 @@ kubernetes.describe("Informer", ({ k8s, kubeConfig }) => {
 	});
 
 	it("lists cluster-wide informer objects across namespaces", async () => {
+		const namespace = await getTestNamespace();
 		const otherNamespace = await createNamespace("informer-secondary-");
 		const podName = "shared-name";
 
@@ -476,7 +462,7 @@ kubernetes.describe("Informer", ({ k8s, kubeConfig }) => {
 		await createPod({ metadata: { name: podName } }, otherNamespace);
 
 		const informer = k8s.makeInformer(kubeConfig, "/api/v1/pods", () =>
-			api.listPodForAllNamespaces(),
+			core.listPodForAllNamespaces(),
 		);
 
 		try {
@@ -538,7 +524,7 @@ kubernetes.describe("Informer", ({ k8s, kubeConfig }) => {
 			});
 		} finally {
 			await informer.stop();
-			await api.deleteNamespace({ name: otherNamespace });
+			await core.deleteNamespace({ name: otherNamespace });
 		}
 	});
 });

@@ -1,44 +1,14 @@
-import { afterAll, beforeAll, expect, it, vi } from "vitest";
+import { expect, it, vi } from "vitest";
 import type { V1Pod } from "../gen/models";
 import { kubernetes } from "../../test/harnesses/kubernetes";
 
 const IMAGE = "crccheck/hello-world:latest";
 
-kubernetes.describe("NodePort", ({ k8s, kubeConfig, sendNodePortRequest }) => {
-	let api: InstanceType<typeof k8s.CoreV1Api>;
-	let discoveryApi: InstanceType<typeof k8s.DiscoveryV1Api>;
-	let namespace: string;
-
-	async function createNamespace(generateName: string): Promise<string> {
-		const resp = await api.createNamespace({
-			body: {
-				metadata: {
-					generateName,
-				},
-			},
-		});
-
-		if (!resp.metadata?.name) {
-			throw new Error("Failed to create namespace");
-		}
-
-		return resp.metadata.name;
-	}
-
-	beforeAll(async () => {
-		api = kubeConfig.makeApiClient(k8s.CoreV1Api);
-		discoveryApi = kubeConfig.makeApiClient(k8s.DiscoveryV1Api);
-		namespace = await createNamespace("nodeport-test-");
-	});
-
-	afterAll(async () => {
-		await api.deleteNamespace({
-			name: namespace,
-		});
-	});
-
+kubernetes.describe("NodePort", ({ core, discovery, getSuiteNamespace, fetchNodePort }) => {
 	it("should run a pod and reach it through a NodePort service", async () => {
-		await api.createNamespacedPod({
+		const namespace = await getSuiteNamespace();
+
+		await core.createNamespacedPod({
 			namespace,
 			body: {
 				metadata: {
@@ -57,7 +27,7 @@ kubernetes.describe("NodePort", ({ k8s, kubeConfig, sendNodePortRequest }) => {
 			},
 		});
 
-		const service = await api.createNamespacedService({
+		const service = await core.createNamespacedService({
 			namespace,
 			body: {
 				metadata: {
@@ -77,7 +47,7 @@ kubernetes.describe("NodePort", ({ k8s, kubeConfig, sendNodePortRequest }) => {
 
 		await vi.waitFor(
 			async () => {
-				const pod = await api.readNamespacedPod({
+				const pod = await core.readNamespacedPod({
 					name: "hello-world",
 					namespace,
 				});
@@ -88,7 +58,7 @@ kubernetes.describe("NodePort", ({ k8s, kubeConfig, sendNodePortRequest }) => {
 
 		await vi.waitFor(
 			async () => {
-				const slices = await discoveryApi.listNamespacedEndpointSlice({
+				const slices = await discovery.listNamespacedEndpointSlice({
 					namespace,
 					labelSelector: "kubernetes.io/service-name=hello-world",
 				});
@@ -106,7 +76,7 @@ kubernetes.describe("NodePort", ({ k8s, kubeConfig, sendNodePortRequest }) => {
 
 		await vi.waitFor(
 			async () => {
-				const response = await sendNodePortRequest(nodePort, { path: "/" });
+				const response = await fetchNodePort(nodePort, { path: "/" });
 				expect(response.status).toBe(200);
 				expect(response.body).toContain("Hello World");
 			},
@@ -115,7 +85,9 @@ kubernetes.describe("NodePort", ({ k8s, kubeConfig, sendNodePortRequest }) => {
 	}, 180_000);
 
 	it("should stop routing after a NodePort service is deleted", async () => {
-		await api.createNamespacedPod({
+		const namespace = await getSuiteNamespace();
+
+		await core.createNamespacedPod({
 			namespace,
 			body: {
 				metadata: {
@@ -134,7 +106,7 @@ kubernetes.describe("NodePort", ({ k8s, kubeConfig, sendNodePortRequest }) => {
 			},
 		});
 
-		const service = await api.createNamespacedService({
+		const service = await core.createNamespacedService({
 			namespace,
 			body: {
 				metadata: {
@@ -154,14 +126,14 @@ kubernetes.describe("NodePort", ({ k8s, kubeConfig, sendNodePortRequest }) => {
 
 		await vi.waitFor(
 			async () => {
-				const response = await sendNodePortRequest(nodePort, { path: "/" });
+				const response = await fetchNodePort(nodePort, { path: "/" });
 				expect(response.status).toBe(200);
 				expect(response.body).toContain("Hello World");
 			},
 			{ timeout: 120_000, interval: 500 },
 		);
 
-		await api.deleteNamespacedService({
+		await core.deleteNamespacedService({
 			name: "delete-route",
 			namespace,
 		});
@@ -170,7 +142,7 @@ kubernetes.describe("NodePort", ({ k8s, kubeConfig, sendNodePortRequest }) => {
 			async () => {
 				let rejected = false;
 				try {
-					await sendNodePortRequest(nodePort, { path: "/" });
+					await fetchNodePort(nodePort, { path: "/" });
 				} catch {
 					rejected = true;
 				}

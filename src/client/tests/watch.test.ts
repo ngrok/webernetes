@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
+import { expect, it, vi } from "vitest";
 import type { V1Pod } from "../gen/models";
 import { kubernetes } from "../../test/harnesses/kubernetes";
 
@@ -10,7 +10,7 @@ interface WatchAndWaitOptions<T> {
 	act?: () => Promise<void>;
 }
 
-kubernetes.describe("Watch", ({ k8s, kubeConfig }) => {
+kubernetes.describe("Watch", ({ core, k8s, kubeConfig, getTestNamespace }) => {
 	async function watchAndWait<T>({
 		url,
 		queryParams,
@@ -43,34 +43,9 @@ kubernetes.describe("Watch", ({ k8s, kubeConfig }) => {
 		}
 	}
 
-	let api: InstanceType<typeof k8s.CoreV1Api>;
-	beforeAll(async () => {
-		api = kubeConfig.makeApiClient(k8s.CoreV1Api);
-	});
-
-	let namespace: string;
-	beforeEach(async () => {
-		const resp = await api.createNamespace({
-			body: {
-				metadata: {
-					generateName: "watch-test-",
-				},
-			},
-		});
-
-		if (!resp.metadata?.name) {
-			throw new Error("Failed to create namespace");
-		}
-		namespace = resp.metadata.name;
-	});
-
-	afterEach(async () => {
-		await api.deleteNamespace({ name: namespace });
-	});
-
 	async function createPod(pod: Partial<V1Pod>): Promise<V1Pod> {
-		const resp = await api.createNamespacedPod({
-			namespace,
+		const resp = await core.createNamespacedPod({
+			namespace: await getTestNamespace(),
 			body: {
 				metadata: {
 					name: pod.metadata?.name ?? "test-pod",
@@ -90,13 +65,14 @@ kubernetes.describe("Watch", ({ k8s, kubeConfig }) => {
 
 	async function replacePod(name: string, mutate: (pod: V1Pod) => void): Promise<V1Pod> {
 		let lastError: unknown;
+		const namespace = await getTestNamespace();
 
 		for (let attempt = 0; attempt < 5; attempt++) {
-			const current = await api.readNamespacedPod({ name, namespace });
+			const current = await core.readNamespacedPod({ name, namespace });
 			mutate(current);
 
 			try {
-				return await api.replaceNamespacedPod({
+				return await core.replaceNamespacedPod({
 					name,
 					namespace,
 					body: current,
@@ -116,6 +92,7 @@ kubernetes.describe("Watch", ({ k8s, kubeConfig }) => {
 
 	it("exports Watch and emits ADDED for created pods", async () => {
 		const events: Array<{ phase: string; obj: V1Pod }> = [];
+		const namespace = await getTestNamespace();
 
 		await watchAndWait({
 			url: `/api/v1/namespaces/${namespace}/pods`,
@@ -142,6 +119,7 @@ kubernetes.describe("Watch", ({ k8s, kubeConfig }) => {
 
 	it("passes labelSelector through to watch", async () => {
 		const seenNames: string[] = [];
+		const namespace = await getTestNamespace();
 		await watchAndWait({
 			url: `/api/v1/namespaces/${namespace}/pods`,
 			queryParams: { labelSelector: "app=selected" },
@@ -161,6 +139,7 @@ kubernetes.describe("Watch", ({ k8s, kubeConfig }) => {
 
 	it("emits DELETED for deleted pods", async () => {
 		const events: Array<{ phase: string; obj: V1Pod }> = [];
+		const namespace = await getTestNamespace();
 		await createPod({ metadata: { name: "deleted-pod" } });
 
 		await watchAndWait({
@@ -181,7 +160,7 @@ kubernetes.describe("Watch", ({ k8s, kubeConfig }) => {
 				});
 			},
 			act: async () => {
-				await api.deleteNamespacedPod({
+				await core.deleteNamespacedPod({
 					name: "deleted-pod",
 					namespace,
 					gracePeriodSeconds: 0,
@@ -195,6 +174,7 @@ kubernetes.describe("Watch", ({ k8s, kubeConfig }) => {
 
 	it("emits MODIFIED for replaced pods", async () => {
 		const events: Array<{ phase: string; obj: V1Pod }> = [];
+		const namespace = await getTestNamespace();
 		await createPod({ metadata: { name: "modified-pod", labels: { app: "original" } } });
 
 		await watchAndWait({

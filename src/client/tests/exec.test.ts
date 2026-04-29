@@ -1,41 +1,13 @@
-import { afterAll, beforeAll, expect, it, vi } from "vitest";
+import { expect, it, vi } from "vitest";
 import type { V1Pod, V1Status } from "../gen/models";
 import type { K8s, KubeConfig } from "../types";
 import { kubernetes } from "../../test/harnesses/kubernetes";
 
-kubernetes.describe("Exec", ({ k8s, kubeConfig }) => {
-	let api: InstanceType<typeof k8s.CoreV1Api>;
-	let namespace: string;
-
-	async function createNamespace(generateName: string): Promise<string> {
-		const resp = await api.createNamespace({
-			body: {
-				metadata: {
-					generateName,
-				},
-			},
-		});
-
-		if (!resp.metadata?.name) {
-			throw new Error("Failed to create namespace");
-		}
-
-		return resp.metadata.name;
-	}
-
-	beforeAll(async () => {
-		api = kubeConfig.makeApiClient(k8s.CoreV1Api);
-		namespace = await createNamespace("exec-test-");
-	});
-
-	afterAll(async () => {
-		await api.deleteNamespace({
-			name: namespace,
-		});
-	});
-
+kubernetes.describe("Exec", ({ core, k8s, kubeConfig, getSuiteNamespace }) => {
 	it("should execute commands in a pod with service DNS", async () => {
-		await api.createNamespacedPod({
+		const namespace = await getSuiteNamespace();
+
+		await core.createNamespacedPod({
 			namespace,
 			body: {
 				metadata: {
@@ -54,7 +26,7 @@ kubernetes.describe("Exec", ({ k8s, kubeConfig }) => {
 			},
 		});
 
-		await api.createNamespacedService({
+		await core.createNamespacedService({
 			namespace,
 			body: {
 				metadata: {
@@ -68,7 +40,7 @@ kubernetes.describe("Exec", ({ k8s, kubeConfig }) => {
 			},
 		});
 
-		await api.createNamespacedPod({
+		await core.createNamespacedPod({
 			namespace,
 			body: {
 				metadata: {
@@ -88,13 +60,21 @@ kubernetes.describe("Exec", ({ k8s, kubeConfig }) => {
 
 		await vi.waitFor(
 			async () => {
-				expectPodReady(await api.readNamespacedPod({ name: "hello-world", namespace }));
-				expectPodReady(await api.readNamespacedPod({ name: "busybox", namespace }));
+				expectPodReady(
+					await core.readNamespacedPod({
+						name: "hello-world",
+						namespace,
+					}),
+				);
+				expectPodReady(await core.readNamespacedPod({ name: "busybox", namespace }));
 			},
 			{ timeout: 120_000, interval: 500 },
 		);
 
-		const targetPod = await api.readNamespacedPod({ name: "hello-world", namespace });
+		const targetPod = await core.readNamespacedPod({
+			name: "hello-world",
+			namespace,
+		});
 		const podIp = targetPod.status?.podIP;
 		if (!podIp) {
 			throw new Error("Expected hello-world pod to have an IP address");

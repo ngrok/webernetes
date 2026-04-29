@@ -1,40 +1,11 @@
-import { afterAll, beforeAll, expect, it, vi } from "vitest";
+import { expect, it, vi } from "vitest";
 import type { V1Pod, V1Service } from "../gen/models";
 import { kubernetes } from "../../test/harnesses/kubernetes";
 
-kubernetes.describe("Services", ({ k8s, kubeConfig, sendNodePortRequest }) => {
-	let api: InstanceType<typeof k8s.CoreV1Api>;
-	let namespace: string;
-
-	async function createNamespace(generateName: string): Promise<string> {
-		const resp = await api.createNamespace({
-			body: {
-				metadata: {
-					generateName,
-				},
-			},
-		});
-
-		if (!resp.metadata?.name) {
-			throw new Error("Failed to create namespace");
-		}
-
-		return resp.metadata.name;
-	}
-
-	beforeAll(async () => {
-		api = kubeConfig.makeApiClient(k8s.CoreV1Api);
-		namespace = await createNamespace("service-test-");
-	});
-
-	afterAll(async () => {
-		await api.deleteNamespace({
-			name: namespace,
-		});
-	});
-
+kubernetes.describe("Services", ({ core, getSuiteNamespace, fetchNodePort }) => {
 	async function createService(service: Partial<V1Service>): Promise<V1Service> {
-		return await api.createNamespacedService({
+		const namespace = await getSuiteNamespace();
+		return await core.createNamespacedService({
 			namespace,
 			body: {
 				metadata: {
@@ -50,8 +21,8 @@ kubernetes.describe("Services", ({ k8s, kubeConfig, sendNodePortRequest }) => {
 	}
 
 	async function createEchoPod(name: string, text: string): Promise<void> {
-		await api.createNamespacedPod({
-			namespace,
+		await core.createNamespacedPod({
+			namespace: await getSuiteNamespace(),
 			body: {
 				metadata: {
 					name,
@@ -84,7 +55,7 @@ kubernetes.describe("Services", ({ k8s, kubeConfig, sendNodePortRequest }) => {
 		});
 
 		const nodePort = service.spec?.ports?.[0]?.nodePort;
-		expect(service.metadata?.namespace).toBe(namespace);
+		expect(service.metadata?.namespace).toBe(await getSuiteNamespace());
 		expect(service.spec?.type).toBe("NodePort");
 		expect(service.spec?.clusterIP).toBeTruthy();
 		expect(service.spec?.clusterIP).not.toBe("None");
@@ -104,7 +75,8 @@ kubernetes.describe("Services", ({ k8s, kubeConfig, sendNodePortRequest }) => {
 			},
 		});
 
-		const replaced = await api.replaceNamespacedService({
+		const namespace = await getSuiteNamespace();
+		const replaced = await core.replaceNamespacedService({
 			name: "node-port-replace",
 			namespace,
 			body: {
@@ -138,13 +110,14 @@ kubernetes.describe("Services", ({ k8s, kubeConfig, sendNodePortRequest }) => {
 			},
 		});
 
-		const read = await api.readNamespacedService({
+		const namespace = await getSuiteNamespace();
+		const read = await core.readNamespacedService({
 			name: "read-list-service",
 			namespace,
 		});
 		expect(read.metadata?.name).toBe("read-list-service");
 
-		const namespaced = await api.listNamespacedService({
+		const namespaced = await core.listNamespacedService({
 			namespace,
 			labelSelector: "app=read-list",
 		});
@@ -152,7 +125,7 @@ kubernetes.describe("Services", ({ k8s, kubeConfig, sendNodePortRequest }) => {
 			"read-list-service",
 		);
 
-		const all = await api.listServiceForAllNamespaces({
+		const all = await core.listServiceForAllNamespaces({
 			labelSelector: "app=read-list",
 		});
 		expect(
@@ -175,14 +148,15 @@ kubernetes.describe("Services", ({ k8s, kubeConfig, sendNodePortRequest }) => {
 			},
 		});
 
-		const deleted = await api.deleteNamespacedService({
+		const namespace = await getSuiteNamespace();
+		const deleted = await core.deleteNamespacedService({
 			name: "delete-service",
 			namespace,
 		});
 
 		expect(deleted.metadata?.name).toBe(service.metadata?.name);
 		await expect(
-			api.readNamespacedService({
+			core.readNamespacedService({
 				name: "delete-service",
 				namespace,
 			}),
@@ -205,9 +179,9 @@ kubernetes.describe("Services", ({ k8s, kubeConfig, sendNodePortRequest }) => {
 			throw new Error("Expected Service allocations");
 		}
 
-		await api.deleteNamespacedService({
+		await core.deleteNamespacedService({
 			name: "release-allocations-first",
-			namespace,
+			namespace: await getSuiteNamespace(),
 		});
 
 		const second = await createService({
@@ -248,8 +222,18 @@ kubernetes.describe("Services", ({ k8s, kubeConfig, sendNodePortRequest }) => {
 
 		await vi.waitFor(
 			async () => {
-				expectPodReady(await api.readNamespacedPod({ name: "http-echo-one", namespace }));
-				expectPodReady(await api.readNamespacedPod({ name: "http-echo-two", namespace }));
+				expectPodReady(
+					await core.readNamespacedPod({
+						name: "http-echo-one",
+						namespace: await getSuiteNamespace(),
+					}),
+				);
+				expectPodReady(
+					await core.readNamespacedPod({
+						name: "http-echo-two",
+						namespace: await getSuiteNamespace(),
+					}),
+				);
 			},
 			{ timeout: 10_000, interval: 500 },
 		);
@@ -258,7 +242,7 @@ kubernetes.describe("Services", ({ k8s, kubeConfig, sendNodePortRequest }) => {
 		await vi.waitFor(
 			async () => {
 				for (let attempt = 0; attempt < 2; attempt++) {
-					const response = await sendNodePortRequest(nodePort, { path: "/" });
+					const response = await fetchNodePort(nodePort, { path: "/" });
 					expect(response.status).toBe(200);
 					if (response.body) {
 						bodies.add(response.body.trim());

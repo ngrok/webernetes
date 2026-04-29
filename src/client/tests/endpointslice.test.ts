@@ -1,31 +1,14 @@
-import { afterAll, beforeAll, expect, it, vi } from "vitest";
+import { expect, it, vi } from "vitest";
 import type { V1Endpoint, V1EndpointSlice, V1Pod } from "../gen/models";
 import { kubernetes } from "../../test/harnesses/kubernetes";
 
 const READY_IMAGE = "crccheck/hello-world:latest";
 
-kubernetes.describe("EndpointSlices", ({ k8s, kubeConfig }) => {
-	let coreApi: InstanceType<typeof k8s.CoreV1Api>;
-	let discoveryApi: InstanceType<typeof k8s.DiscoveryV1Api>;
-	let namespace: string;
-
-	async function createNamespace(generateName: string): Promise<string> {
-		const resp = await coreApi.createNamespace({
-			body: {
-				metadata: {
-					generateName,
-				},
-			},
-		});
-
-		if (!resp.metadata?.name) {
-			throw new Error("Failed to create namespace");
-		}
-
-		return resp.metadata.name;
-	}
-
-	function endpointSlice(overrides: Partial<V1EndpointSlice> = {}): V1EndpointSlice {
+kubernetes.describe("EndpointSlices", ({ core, discovery, getSuiteNamespace }) => {
+	function endpointSlice(
+		namespace: string,
+		overrides: Partial<V1EndpointSlice> = {},
+	): V1EndpointSlice {
 		return {
 			apiVersion: "discovery.k8s.io/v1",
 			kind: "EndpointSlice",
@@ -55,7 +38,8 @@ kubernetes.describe("EndpointSlices", ({ k8s, kubeConfig }) => {
 	}
 
 	async function serviceEndpointSlice(serviceName: string): Promise<V1EndpointSlice | undefined> {
-		const slices = await discoveryApi.listNamespacedEndpointSlice({
+		const namespace = await getSuiteNamespace();
+		const slices = await discovery.listNamespacedEndpointSlice({
 			namespace,
 			labelSelector: `kubernetes.io/service-name=${serviceName}`,
 		});
@@ -72,7 +56,8 @@ kubernetes.describe("EndpointSlices", ({ k8s, kubeConfig }) => {
 		serviceName: string,
 		address: string,
 	): Promise<V1EndpointSlice | undefined> {
-		const slices = await discoveryApi.listNamespacedEndpointSlice({
+		const namespace = await getSuiteNamespace();
+		const slices = await discovery.listNamespacedEndpointSlice({
 			namespace,
 			labelSelector: `kubernetes.io/service-name=${serviceName}`,
 		});
@@ -98,8 +83,8 @@ kubernetes.describe("EndpointSlices", ({ k8s, kubeConfig }) => {
 		image = "registry.k8s.io/pause:3.10",
 		containerPort = 8080,
 	): Promise<void> {
-		await coreApi.createNamespacedPod({
-			namespace,
+		await core.createNamespacedPod({
+			namespace: await getSuiteNamespace(),
 			body: {
 				metadata: {
 					name,
@@ -119,7 +104,7 @@ kubernetes.describe("EndpointSlices", ({ k8s, kubeConfig }) => {
 	}
 
 	async function podIp(name: string): Promise<string> {
-		const pod = await coreApi.readNamespacedPod({ name, namespace });
+		const pod = await core.readNamespacedPod({ name, namespace: await getSuiteNamespace() });
 		const ip = pod.status?.podIP;
 		if (!ip) {
 			throw new Error(`Expected pod ${name} to have an IP address`);
@@ -128,8 +113,9 @@ kubernetes.describe("EndpointSlices", ({ k8s, kubeConfig }) => {
 	}
 
 	async function markPodNotReady(name: string): Promise<V1Pod> {
-		const pod = await coreApi.readNamespacedPod({ name, namespace });
-		return await coreApi.replaceNamespacedPodStatus({
+		const namespace = await getSuiteNamespace();
+		const pod = await core.readNamespacedPod({ name, namespace });
+		return await core.replaceNamespacedPodStatus({
 			name,
 			namespace,
 			body: {
@@ -150,22 +136,11 @@ kubernetes.describe("EndpointSlices", ({ k8s, kubeConfig }) => {
 		});
 	}
 
-	beforeAll(async () => {
-		coreApi = kubeConfig.makeApiClient(k8s.CoreV1Api);
-		discoveryApi = kubeConfig.makeApiClient(k8s.DiscoveryV1Api);
-		namespace = await createNamespace("endpointslice-test-");
-	});
-
-	afterAll(async () => {
-		await coreApi.deleteNamespace({
-			name: namespace,
-		});
-	});
-
 	it("should create, read, list, replace, and delete endpoint slices", async () => {
-		const created = await discoveryApi.createNamespacedEndpointSlice({
+		const namespace = await getSuiteNamespace();
+		const created = await discovery.createNamespacedEndpointSlice({
 			namespace,
-			body: endpointSlice(),
+			body: endpointSlice(namespace),
 		});
 
 		expect(created.metadata?.name).toBe("manual");
@@ -178,19 +153,19 @@ kubernetes.describe("EndpointSlices", ({ k8s, kubeConfig }) => {
 			protocol: "TCP",
 		});
 
-		const read = await discoveryApi.readNamespacedEndpointSlice({
+		const read = await discovery.readNamespacedEndpointSlice({
 			name: "manual",
 			namespace,
 		});
 		expect(read.metadata?.name).toBe("manual");
 
-		const namespaced = await discoveryApi.listNamespacedEndpointSlice({
+		const namespaced = await discovery.listNamespacedEndpointSlice({
 			namespace,
 			labelSelector: `testNamespace=${namespace}`,
 		});
 		expect(namespaced.items.map((slice) => slice.metadata?.name)).toContain("manual");
 
-		const all = await discoveryApi.listEndpointSliceForAllNamespaces({
+		const all = await discovery.listEndpointSliceForAllNamespaces({
 			labelSelector: `testNamespace=${namespace}`,
 		});
 		expect(
@@ -199,7 +174,7 @@ kubernetes.describe("EndpointSlices", ({ k8s, kubeConfig }) => {
 			),
 		).toBeTruthy();
 
-		const replaced = await discoveryApi.replaceNamespacedEndpointSlice({
+		const replaced = await discovery.replaceNamespacedEndpointSlice({
 			name: "manual",
 			namespace,
 			body: {
@@ -209,14 +184,14 @@ kubernetes.describe("EndpointSlices", ({ k8s, kubeConfig }) => {
 		});
 		expect(replaced.endpoints[0]?.addresses).toEqual(["10.0.0.11"]);
 
-		const deleted = await discoveryApi.deleteNamespacedEndpointSlice({
+		const deleted = await discovery.deleteNamespacedEndpointSlice({
 			name: "manual",
 			namespace,
 		});
 		expect(deleted.status).toBe("Success");
 
 		await expect(
-			discoveryApi.readNamespacedEndpointSlice({
+			discovery.readNamespacedEndpointSlice({
 				name: "manual",
 				namespace,
 			}),
@@ -228,8 +203,8 @@ kubernetes.describe("EndpointSlices", ({ k8s, kubeConfig }) => {
 		const podName = "selected-pod";
 		const app = "endpoint-slice-selected";
 
-		await coreApi.createNamespacedService({
-			namespace,
+		await core.createNamespacedService({
+			namespace: await getSuiteNamespace(),
 			body: {
 				metadata: {
 					name: serviceName,
@@ -276,8 +251,8 @@ kubernetes.describe("EndpointSlices", ({ k8s, kubeConfig }) => {
 		const firstPod = "multi-pod-one";
 		const secondPod = "multi-pod-two";
 
-		await coreApi.createNamespacedService({
-			namespace,
+		await core.createNamespacedService({
+			namespace: await getSuiteNamespace(),
 			body: {
 				metadata: {
 					name: serviceName,
@@ -305,9 +280,9 @@ kubernetes.describe("EndpointSlices", ({ k8s, kubeConfig }) => {
 			{ timeout: 10000, interval: 500 },
 		);
 
-		await coreApi.deleteNamespacedPod({
+		await core.deleteNamespacedPod({
 			name: firstPod,
-			namespace,
+			namespace: await getSuiteNamespace(),
 			gracePeriodSeconds: 0,
 			body: {
 				gracePeriodSeconds: 0,
@@ -329,8 +304,8 @@ kubernetes.describe("EndpointSlices", ({ k8s, kubeConfig }) => {
 		const app = "endpoint-slice-not-ready";
 		const podName = "not-ready-pod";
 
-		await coreApi.createNamespacedService({
-			namespace,
+		await core.createNamespacedService({
+			namespace: await getSuiteNamespace(),
 			body: {
 				metadata: {
 					name: serviceName,
@@ -355,10 +330,9 @@ kubernetes.describe("EndpointSlices", ({ k8s, kubeConfig }) => {
 			{ timeout: 10000, interval: 500 },
 		);
 
-		await markPodNotReady(podName);
-
 		await vi.waitFor(
 			async () => {
+				await markPodNotReady(podName);
 				const slice = await serviceEndpointSliceWithAddress(serviceName, ip);
 				const endpoint = endpointForPod(slice, podName);
 				expect(endpoint?.addresses).toContain(ip);

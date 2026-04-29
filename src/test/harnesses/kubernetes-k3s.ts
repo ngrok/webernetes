@@ -1,15 +1,11 @@
-import { beforeAll } from "vitest";
+import { afterAll, afterEach, beforeAll } from "vitest";
 import { K3sContainer, type StartedK3sContainer } from "@testcontainers/k3s";
 import * as realK8s from "@kubernetes/client-node";
 
 import { node } from "../describe";
 import type { SuiteOptions } from "../describe";
-import type {
-	KubernetesSuiteFactory,
-	KubernetesTestContext,
-	NodePortRequest,
-	NodePortResponse,
-} from "./kubernetes";
+import { createKubernetesRuntimeContext } from "./kubernetes-context";
+import type { KubernetesSuiteFactory, NodePortRequest, NodePortResponse } from "./kubernetes";
 import type { K8s, KubeConfig } from "../../client/types";
 
 let containerPromise: Promise<StartedK3sContainer> | undefined;
@@ -19,12 +15,7 @@ const k8s = realK8s as unknown as K8s;
 const realKubeConfig = new realK8s.KubeConfig();
 const kubeConfig = realKubeConfig as unknown as KubeConfig;
 
-const context: KubernetesTestContext = {
-	k8s,
-	kubeConfig,
-	target: "k3s",
-	sendNodePortRequest,
-};
+await setupK3s();
 
 export function defineSuite(name: string, factory: KubernetesSuiteFactory): void;
 export function defineSuite(
@@ -43,8 +34,22 @@ export function defineSuite(
 	}
 
 	const suite = () => {
+		const context = createKubernetesRuntimeContext({
+			k8s,
+			kubeConfig,
+			target: "k3s",
+			fetchNodePort,
+		});
+
 		beforeAll(async () => {
 			await setupK3s();
+			await context.initialize();
+		});
+		afterAll(async () => {
+			await context.dispose();
+		});
+		afterEach(async () => {
+			await context.disposeTest();
 		});
 		factory(context);
 	};
@@ -73,7 +78,7 @@ async function getK3sContainer(): Promise<StartedK3sContainer> {
 	return await containerPromise;
 }
 
-async function sendNodePortRequest(
+async function fetchNodePort(
 	nodePort: number,
 	request?: NodePortRequest,
 ): Promise<NodePortResponse> {

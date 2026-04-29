@@ -1,44 +1,15 @@
-import { afterAll, beforeAll, expect, it, vi } from "vitest";
+import { expect, it, vi } from "vitest";
 import { CIDR } from "../../net";
 import type { V1Pod } from "../gen/models";
 import { kubernetes } from "../../test/harnesses/kubernetes";
 
-kubernetes.describe("Pods", ({ k8s, kubeConfig }) => {
-	let api: InstanceType<typeof k8s.CoreV1Api>;
-	let namespace: string;
+kubernetes.describe("Pods", ({ core, getSuiteNamespace, createNamespace }) => {
 	const podImage = "registry.k8s.io/pause:3.10";
 
-	async function createNamespace(generateName: string): Promise<string> {
-		const resp = await api.createNamespace({
-			body: {
-				metadata: {
-					generateName,
-				},
-			},
-		});
-
-		if (!resp.metadata?.name) {
-			throw new Error("Failed to create namespace");
-		}
-
-		return resp.metadata.name;
-	}
-
-	beforeAll(async () => {
-		api = kubeConfig.makeApiClient(k8s.CoreV1Api);
-
-		namespace = await createNamespace("test-");
-	});
-
-	afterAll(async () => {
-		await api.deleteNamespace({
-			name: namespace,
-		});
-	});
-
-	async function createPod(pod: Partial<V1Pod>, podNamespace = namespace): Promise<V1Pod> {
-		return await api.createNamespacedPod({
-			namespace: podNamespace,
+	async function createPod(pod: Partial<V1Pod>, podNamespace?: string): Promise<V1Pod> {
+		const namespace = podNamespace ?? (await getSuiteNamespace());
+		return await core.createNamespacedPod({
+			namespace,
 			body: {
 				metadata: {
 					...pod.metadata,
@@ -54,13 +25,14 @@ kubernetes.describe("Pods", ({ k8s, kubeConfig }) => {
 
 	async function replacePod(name: string, mutate: (pod: V1Pod) => void): Promise<V1Pod> {
 		let lastError: unknown;
+		const namespace = await getSuiteNamespace();
 
 		for (let attempt = 0; attempt < 5; attempt++) {
-			const current = await api.readNamespacedPod({ name, namespace });
+			const current = await core.readNamespacedPod({ name, namespace });
 			mutate(current);
 
 			try {
-				return await api.replaceNamespacedPod({
+				return await core.replaceNamespacedPod({
 					name,
 					namespace,
 					body: current,
@@ -89,7 +61,7 @@ kubernetes.describe("Pods", ({ k8s, kubeConfig }) => {
 
 	it("should not be able to create a pod in a namespace that does not exist", async () => {
 		await expect(
-			api.createNamespacedPod({
+			core.createNamespacedPod({
 				namespace: "non-existent-namespace",
 				body: {
 					metadata: {
@@ -106,8 +78,9 @@ kubernetes.describe("Pods", ({ k8s, kubeConfig }) => {
 
 	it("should be able to delete a pod", async () => {
 		await createPod({ metadata: { name: "delete-test" } });
+		const namespace = await getSuiteNamespace();
 
-		const deleted = await api.deleteNamespacedPod({
+		const deleted = await core.deleteNamespacedPod({
 			name: "delete-test",
 			namespace,
 			gracePeriodSeconds: 0,
@@ -119,15 +92,16 @@ kubernetes.describe("Pods", ({ k8s, kubeConfig }) => {
 		expect(deleted.metadata?.name).toBe("delete-test");
 
 		await vi.waitFor(async () => {
-			const pods = await api.listNamespacedPod({ namespace });
+			const pods = await core.listNamespacedPod({ namespace });
 			expect(pods.items.find((pod) => pod.metadata?.name === "delete-test")).toBeUndefined();
 		});
 	});
 
 	it("should be able to read a pod", async () => {
 		await createPod({ metadata: { name: "read-test" } });
+		const namespace = await getSuiteNamespace();
 
-		const pod = await api.readNamespacedPod({
+		const pod = await core.readNamespacedPod({
 			name: "read-test",
 			namespace,
 		});
@@ -152,7 +126,8 @@ kubernetes.describe("Pods", ({ k8s, kubeConfig }) => {
 
 		expect(replaced.metadata?.labels?.app).toBe("replaced");
 
-		const pods = await api.listNamespacedPod({ namespace });
+		const namespace = await getSuiteNamespace();
+		const pods = await core.listNamespacedPod({ namespace });
 		expect(
 			pods.items.find((pod) => pod.metadata?.name === "replace-test")?.metadata?.labels?.app,
 		).toBe("replaced");
@@ -166,7 +141,8 @@ kubernetes.describe("Pods", ({ k8s, kubeConfig }) => {
 			},
 		});
 
-		const stale = await api.readNamespacedPod({
+		const namespace = await getSuiteNamespace();
+		const stale = await core.readNamespacedPod({
 			name: "replace-conflict-test",
 			namespace,
 		});
@@ -182,7 +158,7 @@ kubernetes.describe("Pods", ({ k8s, kubeConfig }) => {
 		});
 
 		await expect(
-			api.replaceNamespacedPod({
+			core.replaceNamespacedPod({
 				name: "replace-conflict-test",
 				namespace,
 				body: {
@@ -195,7 +171,7 @@ kubernetes.describe("Pods", ({ k8s, kubeConfig }) => {
 			}),
 		).rejects.toThrow(/HTTP-Code: 409/);
 
-		const current = await api.readNamespacedPod({
+		const current = await core.readNamespacedPod({
 			name: "replace-conflict-test",
 			namespace,
 		});
@@ -203,7 +179,7 @@ kubernetes.describe("Pods", ({ k8s, kubeConfig }) => {
 	});
 
 	it("should default pods without metadata.namespace to the default namespace", async () => {
-		const pod = await api.createNamespacedPod({
+		const pod = await core.createNamespacedPod({
 			namespace: "default",
 			body: {
 				metadata: {
@@ -222,14 +198,14 @@ kubernetes.describe("Pods", ({ k8s, kubeConfig }) => {
 		try {
 			expect(pod.metadata.namespace).toBe("default");
 
-			const current = await api.readNamespacedPod({
+			const current = await core.readNamespacedPod({
 				name: pod.metadata.name,
 				namespace: "default",
 			});
 
 			expect(current.metadata?.namespace).toBe("default");
 		} finally {
-			await api.deleteNamespacedPod({
+			await core.deleteNamespacedPod({
 				name: pod.metadata.name,
 				namespace: "default",
 				gracePeriodSeconds: 0,
@@ -241,6 +217,7 @@ kubernetes.describe("Pods", ({ k8s, kubeConfig }) => {
 	});
 
 	it("should list pods across namespaces", async () => {
+		const namespace = await getSuiteNamespace();
 		const otherNamespace = await createNamespace("list-all-namespaces-");
 		const podName = "list-all-primary";
 		const otherPodName = "list-all-secondary";
@@ -249,7 +226,7 @@ kubernetes.describe("Pods", ({ k8s, kubeConfig }) => {
 		await createPod({ metadata: { name: otherPodName } }, otherNamespace);
 
 		try {
-			const pods = await api.listPodForAllNamespaces();
+			const pods = await core.listPodForAllNamespaces();
 
 			expect(pods.items).toEqual(
 				expect.arrayContaining([
@@ -268,7 +245,7 @@ kubernetes.describe("Pods", ({ k8s, kubeConfig }) => {
 				]),
 			);
 		} finally {
-			await api.deleteNamespacedPod({
+			await core.deleteNamespacedPod({
 				name: otherPodName,
 				namespace: otherNamespace,
 				gracePeriodSeconds: 0,
@@ -276,7 +253,7 @@ kubernetes.describe("Pods", ({ k8s, kubeConfig }) => {
 					gracePeriodSeconds: 0,
 				},
 			});
-			await api.deleteNamespacedPod({
+			await core.deleteNamespacedPod({
 				name: podName,
 				namespace,
 				gracePeriodSeconds: 0,
@@ -284,13 +261,14 @@ kubernetes.describe("Pods", ({ k8s, kubeConfig }) => {
 					gracePeriodSeconds: 0,
 				},
 			});
-			await api.deleteNamespace({
+			await core.deleteNamespace({
 				name: otherNamespace,
 			});
 		}
 	});
 
 	it("should support label selectors when listing pods across namespaces", async () => {
+		const namespace = await getSuiteNamespace();
 		const otherNamespace = await createNamespace("list-all-selected-");
 		const selectedPodName = "list-all-selected-primary";
 		const otherSelectedPodName = "list-all-selected-secondary";
@@ -322,7 +300,7 @@ kubernetes.describe("Pods", ({ k8s, kubeConfig }) => {
 		);
 
 		try {
-			const pods = await api.listPodForAllNamespaces({
+			const pods = await core.listPodForAllNamespaces({
 				labelSelector: "app=selected",
 			});
 
@@ -355,7 +333,7 @@ kubernetes.describe("Pods", ({ k8s, kubeConfig }) => {
 				),
 			).toBeUndefined();
 		} finally {
-			await api.deleteNamespacedPod({
+			await core.deleteNamespacedPod({
 				name: ignoredPodName,
 				namespace: otherNamespace,
 				gracePeriodSeconds: 0,
@@ -363,7 +341,7 @@ kubernetes.describe("Pods", ({ k8s, kubeConfig }) => {
 					gracePeriodSeconds: 0,
 				},
 			});
-			await api.deleteNamespacedPod({
+			await core.deleteNamespacedPod({
 				name: otherSelectedPodName,
 				namespace: otherNamespace,
 				gracePeriodSeconds: 0,
@@ -371,7 +349,7 @@ kubernetes.describe("Pods", ({ k8s, kubeConfig }) => {
 					gracePeriodSeconds: 0,
 				},
 			});
-			await api.deleteNamespacedPod({
+			await core.deleteNamespacedPod({
 				name: selectedPodName,
 				namespace,
 				gracePeriodSeconds: 0,
@@ -379,14 +357,15 @@ kubernetes.describe("Pods", ({ k8s, kubeConfig }) => {
 					gracePeriodSeconds: 0,
 				},
 			});
-			await api.deleteNamespace({
+			await core.deleteNamespace({
 				name: otherNamespace,
 			});
 		}
 	});
 
 	it("should allocate pod IPs from the scheduled node pod CIDR", async () => {
-		const nodes = (await api.listNode()).items.filter((node) =>
+		const namespace = await getSuiteNamespace();
+		const nodes = (await core.listNode()).items.filter((node) =>
 			Boolean(node.metadata?.name && node.spec?.podCIDR),
 		);
 		expect(nodes.length).toBeGreaterThan(0);
@@ -403,7 +382,7 @@ kubernetes.describe("Pods", ({ k8s, kubeConfig }) => {
 				const cidr = new CIDR(podCIDR);
 
 				const name = `node-cidr-${index}`;
-				await api.createNamespacedPod({
+				await core.createNamespacedPod({
 					namespace,
 					body: {
 						metadata: { name },
@@ -418,7 +397,7 @@ kubernetes.describe("Pods", ({ k8s, kubeConfig }) => {
 
 				await vi.waitFor(
 					async () => {
-						const pod = await api.readNamespacedPod({ name, namespace });
+						const pod = await core.readNamespacedPod({ name, namespace });
 						expect(pod.status?.phase).toBe("Running");
 						expect(pod.status?.podIP).toBeTruthy();
 						expect(cidr.contains(pod.status?.podIP ?? "")).toBe(true);
@@ -428,7 +407,7 @@ kubernetes.describe("Pods", ({ k8s, kubeConfig }) => {
 			}
 		} finally {
 			for (const pod of createdPods) {
-				await api.deleteNamespacedPod({
+				await core.deleteNamespacedPod({
 					name: pod.name,
 					namespace: pod.namespace,
 					gracePeriodSeconds: 0,

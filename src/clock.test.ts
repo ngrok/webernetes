@@ -1,6 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 import { Clock, MockedDate } from "./clock";
+import { browser } from "./test/describe";
 
 function wait(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
@@ -23,7 +24,7 @@ function diffTimes(times: Date[]): number[] {
 	return result;
 }
 
-describe("Clock", () => {
+browser.describe("Clock", () => {
 	let clock: Clock;
 	beforeEach(() => {
 		clock = new Clock();

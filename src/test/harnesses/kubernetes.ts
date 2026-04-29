@@ -1,12 +1,18 @@
 import { browser, currentTestEnvironment, node } from "../describe";
 import type { SuiteOptions } from "../describe";
+import type { CoreV1Api, DiscoveryV1Api } from "../../client/gen/apis/types";
 import type { K8s, KubeConfig } from "../../client/types";
 
 export interface KubernetesTestContext {
 	k8s: K8s;
 	kubeConfig: KubeConfig;
+	core: CoreV1Api;
+	discovery: DiscoveryV1Api;
 	target: KubernetesTestTarget;
-	sendNodePortRequest: SendNodePortRequest;
+	fetchNodePort: FetchNodePort;
+	getSuiteNamespace(): Promise<string>;
+	getTestNamespace(): Promise<string>;
+	createNamespace(generateName: string): Promise<string>;
 }
 
 export interface NodePortRequest {
@@ -24,7 +30,7 @@ export interface NodePortResponse {
 
 export type KubernetesTestTarget = "k3s" | "simulator";
 
-export type SendNodePortRequest = (
+export type FetchNodePort = (
 	nodePort: number,
 	request?: NodePortRequest,
 ) => Promise<NodePortResponse>;
