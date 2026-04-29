@@ -68,18 +68,21 @@ Implement first:
 - threshold handling
 - startup gating of readiness/liveness
 - readiness updates in Pod status
-- liveness/startup failure feeding into kubelet sync logic so kubelet restarts
-  the failed container
+- liveness/startup failure feeding into kubelet sync logic so kubelet kills the
+  failed container and restarts it when restart policy allows
+- regular-container restart policy behavior for missing, exited, probe-failed,
+  unknown, and spec-changed containers
 
 Defer:
 
 - gRPC probes
-- all init container probing, including restartable init containers
-- all ephemeral container probing
 - probe metrics/events
-- container restart policy edge cases beyond the current simulator subset
 - kubelet restart grace-period behavior
 - probe-level `terminationGracePeriodSeconds`
+
+Do not implement init container or ephemeral container probing in this
+iteration. Keep probe workers, status mutation, and container restart actions
+scoped to regular containers.
 
 ## Proposed Files
 
@@ -108,8 +111,26 @@ Use these local concepts:
 - `get(containerId): ProbeResult | undefined`
 - `set(containerId, result, pod): void`
 - `remove(containerId): void`
+- `updates(): AsyncIterable<ProbeUpdate>`
 
-The `pod` argument is mostly for parity with upstream and future event hooks.
+`ProbeUpdate = { containerId: string; result: ProbeResult; podUid: string }`.
+The `pod` argument is used the same way upstream uses it: the result cache is
+keyed only by container ID, but result changes publish the owning pod UID so the
+kubelet can queue a pod sync.
+
+Match upstream result-manager semantics:
+
+- `set` publishes an update only when the container ID has no cached result or
+  the new result differs from the cached result.
+- `remove` deletes the cached result and does not publish an update.
+- A single kubelet consumer is sufficient. Use a buffered in-process async queue
+  so workers are not normally blocked by result updates.
+
+Do not add pod-wide result cleanup to `ResultsManager`. Upstream cleanup is
+worker-owned: when a worker observes a new container ID, it removes the old
+container ID from its result manager; when a worker exits, it removes its current
+container ID. `removePod` should stop workers and let each worker perform that
+cleanup.
 
 ## Kubelet Integration
 
@@ -134,6 +155,22 @@ keep or restart an existing container. This mirrors upstream
 `computePodActions`: liveness/startup probe failures are not acted on directly by
 workers; they become desired actions during the next sync.
 
+Kubelet should consume result-manager updates like upstream `syncLoopIteration`:
+
+- liveness: if the update result is failure, queue a sync for the pod
+- readiness: update status through normal kubelet status generation and queue a
+  sync for the pod
+- startup: update status through normal kubelet status generation and queue a
+  sync for the pod
+
+Use a kubelet-owned `queuePodSync(podUid)`/`queuePodSync(pod)` helper rather
+than letting workers call `syncPod` directly. Match upstream pod-worker
+coalescing: keep at most one active sync and one pending update per pod key.
+When a pod is already syncing, replace/coalesce the pending update with the
+latest desired pod object. When the current sync completes, immediately run the
+pending update before marking the pod idle. Do not drop probe-triggered sync
+requests just because the pod key is currently pending.
+
 Status rules:
 
 - A running container without a startup probe is `started: true`.
@@ -145,6 +182,22 @@ Status rules:
 - Non-running containers are not ready and not started.
 - Pod `ContainersReady` and `Ready` should be derived after probe manager status
   mutation.
+- `ContainersReady` is true only when all regular containers have ready
+  statuses.
+- `Ready` mirrors `ContainersReady` unless `spec.readinessGates` is present; if
+  readiness gates are present, every referenced pod condition must exist with
+  status `True`.
+- Recompute container `ready`, `started`, `Ready`, and `ContainersReady` on every
+  status write. Do not preserve previous readiness/condition values once probing
+  owns the state.
+
+Implementation detail from upstream `UpdatePodStatus`: if a running container is
+started and there is no readiness worker for it, it is ready. If a readiness
+worker exists and the readiness result is not success or has not run yet, it is
+not ready, and the manager triggers an immediate readiness probe run with a
+non-blocking worker signal. If a manual run is already queued, do not enqueue
+another. A manual run resets the periodic schedule so the next periodic probe is
+`periodSeconds` after the manual run.
 
 ## Worker Timing
 
@@ -153,10 +206,13 @@ small scheduling abstraction:
 
 - one timeout for initial jitter if we choose to model it
 - one interval-like loop using `clock.wait(periodMs)`
-- one cancellation signal per worker
+- one cancellation flag per worker
+- one non-blocking manual trigger path for readiness probes
 
 Initial implementation can skip Kubernetes’ startup jitter if tests do not need
 it, but the worker loop should still be structured so jitter can be added.
+Upstream probes immediately before waiting on the first ticker, except for the
+optional startup jitter used after kubelet restart.
 
 Default probe values must match Kubernetes API defaults when fields are absent:
 
@@ -177,6 +233,9 @@ use success threshold `1` in Kubernetes validation.
 - Success when exit code is `0`.
 - Failure when exit code is non-zero or timeout returns the simulator timeout
   code.
+- Expand static environment-variable references in exec commands if the fake
+  client already has or adds a local helper for it; upstream expands static
+  container env references before running exec probes.
 
 `httpGet`
 
@@ -184,26 +243,39 @@ use success threshold `1` in Kubernetes validation.
   - numeric `port` directly
   - named `port` from `container.ports`
 - Default host to pod IP when `httpGet.host` is absent.
+- When `httpGet.host` is present, still route the simulator request to the pod
+  IP, but set the request `Host` header to `<host>`. This keeps probes
+  node/kubelet-originated while allowing tests to observe the configured host.
 - Build request path, scheme, and headers from `V1HTTPGetAction`.
+- Preserve duplicate `httpHeaders` by representing headers as
+  `Record<string, string[]>` internally or by another structure that does not
+  collapse repeated names before dispatch.
+- Apply Kubernetes' default probe headers unless explicitly overridden:
+  `User-Agent: kube-probe/...` and `Accept: */*`. If `Accept` is explicitly set
+  to an empty value, omit it.
 - Support `HTTP` only. Do not implement `HTTPS` for this project.
-- Use `ClusterNetwork.fetch` directly for pod-IP targets.
+- Use `ClusterNetwork.fetch` directly against the routed pod-IP target.
 - Success for HTTP status `200 <= status < 400`, matching Kubernetes HTTP probe
   semantics.
+- Treat 3xx statuses as successful probe results for readiness/liveness
+  decisions, even though upstream records them as warning results internally.
 - Failure for reachable non-success status.
-- Unknown for malformed probe config or unsupported scheme.
+- Failure for malformed probe config or unsupported scheme in this simulator
+  scope, without throwing out the result before threshold handling.
 
 `tcpSocket`
 
 - Resolve port like HTTP.
 - Default host to pod IP.
-- Inspect raw listener presence in `ClusterNetwork`; do not expose a new
-  protocol-neutral listener abstraction.
+- Add `ClusterNetwork.canConnect(host, port): boolean`.
+- `canConnect` should check for an HTTP listener at the routed endpoint and
+  return true when one exists, false otherwise.
 - Success if a listener exists at the routed endpoint.
 - Failure if no listener exists.
 
 `grpc`
 
-- Defer. Return unknown or reject unsupported config until implemented. Add tests
+- Defer. Treat as a failed probe until implemented. Add tests
   only when implementing.
 
 ## Liveness And Startup Failure Handling
@@ -220,14 +292,49 @@ Implement the upstream-shaped path:
 4. `Kubelet.syncPod` computes actions from current runtime status plus probe
    result managers.
 5. If a running container has a failed liveness probe, kubelet stops/removes that
-   container and starts a replacement.
+   container and starts a replacement if the pod/container restart policy allows
+   restarting.
 6. If a running container has a failed startup probe, kubelet follows the same
-   restart path. Startup success is also required before readiness/liveness
-   should affect the container.
+   restart-policy-aware path. Startup success is also required before
+   readiness/liveness should affect the container.
 
 Do not recreate the whole sandbox for ordinary liveness/startup probe failures.
 Upstream restarts the failed container unless sandbox state/spec changes require
 pod sandbox recreation.
+
+Restart count should follow upstream container start behavior: for a replacement
+container, find the previous status for the same container name and set the new
+container config attempt/restart count to `previous.restartCount + 1`. For a
+container name with no previous status, use `0`.
+
+Implement regular-container action computation close to upstream
+`computePodActions`:
+
+- if no sandbox exists, or the existing sandbox is not ready or lacks a pod IP,
+  create/recreate the sandbox;
+- if sandbox recreation is required and pod restart policy is `Never` after a
+  previous attempt with recorded container statuses, kill the old sandbox but do
+  not create a replacement sandbox;
+- when creating a fresh sandbox, start all regular containers except containers
+  that already succeeded under `restartPolicy: OnFailure`;
+- for a missing or non-running regular container, start it only when Kubernetes'
+  restart policy rules say it should restart: `Always` restarts, `OnFailure`
+  restarts non-zero exits, and `Never` does not restart exited containers;
+- always start containers that have never had a status;
+- always restart `Created`/`Unknown` containers and kill `Unknown` containers
+  before replacement to avoid duplicate running instances;
+- if a running container's spec has changed, kill and restart it regardless of
+  restart policy;
+- if a running container has a failed liveness or startup result, kill it and
+  restart it only when restart policy allows restart;
+- if no regular containers are kept and none will be started, kill the pod
+  sandbox rather than leaving an empty running pod.
+
+Keep the ordering close to upstream `SyncPod`: compute all actions first; if the
+sandbox must be killed, stop/remove sandbox contents in one pod-level path;
+otherwise stop/remove selected containers first, then create/start selected
+containers in the existing sandbox. Do not have probe workers call runtime
+stop/remove APIs.
 
 Needed runtime support:
 
@@ -259,7 +366,7 @@ This is enough to model the Kubernetes docs' common exec-probe pattern:
 
 The filesystem should be per container attempt. When kubelet restarts a
 container, the replacement gets a fresh empty `Map`, matching the practical
-behavior needed for probe tests without introducing volumes yet.
+behavior needed for probe tests without introducing persistent filesystem state.
 
 ## Tests
 
@@ -280,16 +387,27 @@ Preferred real-cluster image:
 - Use Kubernetes' own `registry.k8s.io/e2e-test-images/agnhost:2.40` first. The
   official probe docs use it for HTTP liveness examples, and its `netexec`
   command includes `/shell`, `/echo`, `/healthz`, and `/readyz` endpoints.
-- For dynamically controlled HTTP readiness, use `agnhost netexec` with an HTTP
-  readiness probe against `/shell?cmd=test%20-f%20/tmp/ready`. The endpoint
-  returns success when the command succeeds and a non-2xx status when it fails.
-  Tests can flip readiness by execing `touch /tmp/ready` or `rm -f /tmp/ready`
-  in the running container.
-- Mirror that behavior in the simulator with a registered agnhost-like test
-  image rather than depending on `hashicorp/http-echo`.
+- Do not rely on `agnhost netexec` `/shell` returning a non-2xx status for failed
+  commands. Upstream source for current and v1.26-v1.28-era agnhost records the
+  shell error in JSON but does not set an HTTP failure status for command
+  failure. Use `/healthz`, `/readyz`, `/echo?code=...`, `/redirect`, and exec
+  probes for parity tests unless a specific agnhost image version is verified to
+  differ.
+- Mirror that behavior in the simulator with a registered
+  `registry.k8s.io/e2e-test-images/agnhost:2.40` image rather than depending on
+  `hashicorp/http-echo`.
+- The simulator agnhost image should implement the subset used by these tests:
+  `netexec` starts an HTTP listener; `/healthz` and `/readyz` return success;
+  `/echo` returns a simple success body and supports a `code` query parameter;
+  `/shell?cmd=...` executes a small supported command subset against the
+  container filesystem and returns a JSON body with `output` and/or `error`.
+  Keep these shell commands local to the simulator agnhost image for now.
+  Support at least `test -f`, `touch`, `rm -f`, and `cat` for probe tests.
 
 Additional test shapes:
 
+- Set probe `periodSeconds: 1` and explicit low thresholds in parity tests so
+  k3s tests do not wait for Kubernetes' 10-second default period.
 - Exec liveness can follow the Kubernetes docs pattern using the simulator's
   minimal per-container filesystem: create `/tmp/healthy`, later remove it, and
   expect kubelet to restart the container.
@@ -309,23 +427,58 @@ Additional test shapes:
 3. Wire `ProbeManager.updatePodStatus` into kubelet status generation.
 4. Implement exec probes.
 5. Implement HTTP probes.
-6. Implement TCP probes and any needed network helper.
-7. Implement liveness/startup restart handling.
-8. Add parity tests and browser tests.
-9. Run:
-   - `pnpm typecheck`
-   - focused probe tests in node and browser
-   - affected pod/service/exec/endpointslice tests
+6. Implement `ClusterNetwork.canConnect` and TCP probes.
+7. Implement regular-container action computation and restart-policy-aware
+   liveness/startup restart handling.
+8. Add the minimal container filesystem and simulator agnhost `netexec` subset.
+9. Add parity tests and browser tests.
+10. Run:
 
-## Open Questions
+- `pnpm typecheck`
+- focused probe tests in node and browser
+- affected pod/service/exec/endpointslice tests
 
-Source-backed decisions:
+## Source-Backed Decisions
 
 - Liveness/startup failures restart the failed container, not the whole sandbox,
   unless sandbox recreation is independently required. This follows
   `computePodActions`, which adds failed containers to `ContainersToKill` and
-  `ContainersToStart` while leaving `KillPod` false for ordinary probe failures.
+  conditionally to `ContainersToStart` while leaving `KillPod` false for
+  ordinary probe failures. The conditional start is controlled by restart policy:
+  `Always` restarts, `OnFailure` restarts non-zero exits and probe-killed
+  running containers, and `Never` does not restart probe-killed containers.
 - Readiness changes should be written through kubelet status generation.
   Workers store results and request resync/manual readiness probing; they do not
   directly patch Pod status.
-- TCP probes inspect raw listener presence in the simulator network.
+- Probe result cache keys are container IDs. The pod UID is carried on update
+  events so the kubelet can find the current pod and queue a sync. Duplicate
+  result sets do not publish updates; removals do not publish updates.
+- Worker cleanup removes cached results for the worker's last known container ID
+  when the container ID changes or the worker exits.
+- Startup success gates readiness and liveness. In status generation, a running
+  container with a startup worker but no successful startup result is
+  `started: false`; without a startup worker it is `started: true`.
+- Restart count for a newly created replacement container is based on the prior
+  status for the same container name plus one.
+- `UpdatePodStatus` triggers readiness workers immediately and non-blockingly
+  when a running, started container has a readiness worker but no successful
+  readiness result.
+- Probe workers probe once immediately, then wait for either the periodic tick,
+  a manual trigger, or stop. A manual trigger resets the next periodic interval.
+- Probe execution retries handler execution errors up to Kubernetes'
+  `maxProbeRetries` value of 3. Success maps to `success`; warning maps to
+  `success`; failure maps to `failure`; unknown without an execution error maps
+  to `failure`.
+- HTTP probes set `req.Host` from an explicit `Host` header. `httpGet.host`
+  selects the URL host upstream; in this simulator we route to pod IP but use the
+  configured host as the request `Host` header so the request remains
+  kubelet-originated in the fake network.
+- HTTP status `200 <= status < 400` is successful. Upstream reports 3xx as an
+  internal warning but the prober manager treats warning as success.
+- TCP probes are successful when a TCP connection can be opened and failures
+  when connection/open times out or is refused. The simulator's first TCP support
+  maps this to HTTP listener presence.
+- `agnhost netexec` `/shell` should not be used as a real-cluster HTTP
+  readiness endpoint unless the exact image version is verified to return
+  non-2xx on command failure. Current upstream and v1.26-v1.28 source do not set
+  HTTP failure status for command failure.

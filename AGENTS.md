@@ -17,6 +17,9 @@ General rules for this repository:
 - Prefer preserving the broad structure of the real
   `kubernetes-client/javascript` repository where that helps compatibility, but
   keep the fake implementation human-readable and editable.
+- The simulator is not currently trying to support init containers, ephemeral
+  containers, or Kubernetes' volumes / CSI subsystem. Keep new simulator work
+  scoped to regular containers unless a task explicitly changes that scope.
 - In cluster simulation code, do not call global timer/time APIs such as
   `setTimeout`, `setInterval`, or `Date.now` directly. Route timeout, interval,
   and current-time behavior through the cluster `Clock` instance so the
