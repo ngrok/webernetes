@@ -10,6 +10,9 @@ import type {
 	ContainerPort,
 	ContainerStatus,
 	ExecResult,
+	ImageSpec,
+	PodSandboxStatus,
+	PortMapping,
 	PodSandboxConfig,
 } from "./cri";
 import { Server } from "./server";
@@ -148,17 +151,33 @@ export class Kubelet {
 		const sandboxConfig = this.podSandboxConfig(pod);
 		const sandboxId = await this.server.runtime.runPodSandbox(sandboxConfig);
 		this.runningPods.set(key, { sandboxId });
+		const sandboxStatus = this.server.runtime.podSandboxStatus(sandboxId);
+		await this.updatePodStatus(pod, sandboxId, sandboxStatus);
 
 		for (const container of pod.spec?.containers ?? []) {
-			const containerId = await this.server.runtime.createContainer(
-				sandboxId,
-				this.containerConfig(container),
-				sandboxConfig,
-			);
-			await this.server.runtime.startContainer(containerId);
+			await this.startContainer(sandboxId, sandboxConfig, container);
 		}
 
-		await this.updatePodStatus(pod, sandboxId);
+		await this.updatePodStatus(pod, sandboxId, sandboxStatus);
+	}
+
+	private async startContainer(
+		sandboxId: string,
+		sandboxConfig: PodSandboxConfig,
+		container: V1Container,
+	): Promise<void> {
+		const image = this.containerImage(container);
+		const imageRef = await this.server.runtime.pullImage(image);
+		const containerId = await this.server.runtime.createContainer(
+			sandboxId,
+			this.containerConfig(container, imageRef),
+			sandboxConfig,
+		);
+		await this.server.runtime.startContainer(containerId);
+	}
+
+	private containerImage(container: V1Container): ImageSpec {
+		return { image: container.image ?? "" };
 	}
 
 	private podSandboxConfig(pod: V1Pod): PodSandboxConfig {
@@ -178,17 +197,30 @@ export class Kubelet {
 			},
 			labels: pod.metadata?.labels,
 			annotations: pod.metadata?.annotations,
+			portMappings: this.podPortMappings(pod),
 		};
 	}
 
-	private containerConfig(container: V1Container): ContainerConfig {
+	private podPortMappings(pod: V1Pod): PortMapping[] | undefined {
+		const portMappings = (pod.spec?.containers ?? []).flatMap((container) =>
+			(container.ports ?? []).map((port) => ({
+				hostIp: port.hostIP,
+				hostPort: port.hostPort,
+				containerPort: port.containerPort,
+				protocol: runtimeProtocol(port.protocol),
+			})),
+		);
+		return portMappings.length > 0 ? portMappings : undefined;
+	}
+
+	private containerConfig(container: V1Container, imageRef: string): ContainerConfig {
 		return {
 			metadata: {
 				name: container.name,
 				attempt: 0,
 			},
 			image: {
-				image: container.image ?? "",
+				image: imageRef,
 			},
 			command: container.command,
 			args: container.args,
@@ -205,13 +237,17 @@ export class Kubelet {
 		};
 	}
 
-	private async updatePodStatus(pod: V1Pod, sandboxId: string): Promise<void> {
+	private async updatePodStatus(
+		pod: V1Pod,
+		sandboxId: string,
+		sandboxStatus?: PodSandboxStatus,
+	): Promise<void> {
 		const name = pod.metadata?.name;
 		const namespace = pod.metadata?.namespace;
 		if (!name) {
 			return;
 		}
-		const sandbox = this.server.runtime.podSandboxStatus(sandboxId);
+		const sandbox = sandboxStatus ?? this.server.runtime.podSandboxStatus(sandboxId);
 		const containers = this.server.runtime.getPodSandbox(sandboxId)
 			? [...(this.server.runtime.getPodSandbox(sandboxId)?.containers.values() ?? [])]
 			: [];
