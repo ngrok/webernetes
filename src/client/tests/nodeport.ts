@@ -136,6 +136,72 @@ export function tests(k8s: K8s, config: KubeConfig, options: NodePortTestOptions
 				{ timeout: 120_000, interval: 500 },
 			);
 		}, 180_000);
+
+		it("should stop routing after a NodePort service is deleted", async () => {
+			await api.createNamespacedPod({
+				namespace,
+				body: {
+					metadata: {
+						name: "delete-route",
+						labels: { app: "delete-route" },
+					},
+					spec: {
+						containers: [
+							{
+								name: "delete-route",
+								image: IMAGE,
+								ports: [{ name: "http", containerPort: 8000 }],
+							},
+						],
+					},
+				},
+			});
+
+			const service = await api.createNamespacedService({
+				namespace,
+				body: {
+					metadata: {
+						name: "delete-route",
+					},
+					spec: {
+						type: "NodePort",
+						selector: { app: "delete-route" },
+						ports: [{ name: "http", port: 80, targetPort: "http" }],
+					},
+				},
+			});
+			const nodePort = service.spec?.ports?.[0]?.nodePort;
+			if (nodePort === undefined) {
+				throw new Error("Expected Service to allocate a NodePort");
+			}
+
+			await vi.waitFor(
+				async () => {
+					const response = await options.sendNodePortRequest(nodePort, { path: "/" });
+					expect(response.status).toBe(200);
+					expect(response.body).toContain("Hello World");
+				},
+				{ timeout: 120_000, interval: 500 },
+			);
+
+			await api.deleteNamespacedService({
+				name: "delete-route",
+				namespace,
+			});
+
+			await vi.waitFor(
+				async () => {
+					let rejected = false;
+					try {
+						await options.sendNodePortRequest(nodePort, { path: "/" });
+					} catch {
+						rejected = true;
+					}
+					expect(rejected).toBe(true);
+				},
+				{ timeout: 120_000, interval: 500 },
+			);
+		}, 180_000);
 	});
 }
 

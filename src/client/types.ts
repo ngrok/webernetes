@@ -1,5 +1,5 @@
 import type { CoreV1Api, DiscoveryV1Api } from "./gen/apis/types";
-import type { V1ListMeta, V1ObjectMeta } from "./gen/models";
+import type { V1ListMeta, V1ObjectMeta, V1Status } from "./gen/models";
 
 export interface KubernetesObject {
 	apiVersion?: string;
@@ -27,6 +27,31 @@ export interface Watch {
 	): Promise<AbortController>;
 }
 
+export interface ExecWritable {
+	write(chunk: unknown): unknown;
+	end?(): unknown;
+}
+
+export interface ExecReadable {}
+
+export interface ExecWebSocket {
+	close(): void;
+}
+
+export interface Exec {
+	exec(
+		namespace: string,
+		podName: string,
+		containerName: string,
+		command: string | string[],
+		stdout: ExecWritable | null,
+		stderr: ExecWritable | null,
+		stdin: ExecReadable | null,
+		tty: boolean,
+		statusCallback?: (status: V1Status) => void,
+	): Promise<ExecWebSocket>;
+}
+
 export interface KubeConfig {
 	makeApiClient<T extends ApiType>(api: ApiConstructor<T>): T;
 }
@@ -48,6 +73,7 @@ export interface Informer<T extends KubernetesObject> extends ObjectCache<T> {
 export interface K8s {
 	CoreV1Api: ApiConstructor<CoreV1Api>;
 	DiscoveryV1Api: ApiConstructor<DiscoveryV1Api>;
+	Exec: ApiConstructor<Exec>;
 	Watch: ApiConstructor<Watch>;
 	makeInformer<T extends KubernetesObject>(
 		kubeconfig: KubeConfig,

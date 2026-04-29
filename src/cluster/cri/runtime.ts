@@ -1,6 +1,8 @@
 import type { Clock } from "../../clock";
 import type { KubeConfig } from "../../client/types";
+import { ipToNumber } from "../../net";
 import type { DnsHandler, DnsListener, DnsRecordType, DnsResponse } from "../cni/dns";
+import { NetworkError } from "../cni/error";
 import type { HttpHandler, HttpListener, HttpRequest, HttpResponse } from "../cni/http";
 import { ClusterNetwork, type NetworkRegistration } from "../cni/network";
 import type { ImageDefinition } from "./image";
@@ -70,6 +72,8 @@ export interface ExecOptions {
 
 export interface ExecResult {
 	exitCode: number;
+	stdout: string;
+	stderr: string;
 }
 
 export interface RuntimeOptions {
@@ -125,6 +129,27 @@ function uniqueStrings(values: readonly string[]): string[] {
 		seen.add(value);
 		return true;
 	});
+}
+
+function parseHttpUrl(target: string): URL {
+	let url: URL;
+	try {
+		url = new URL(target);
+	} catch (error) {
+		throw new NetworkError(`invalid HTTP target ${target}`, { cause: error });
+	}
+	if (url.protocol !== "http:") {
+		throw new NetworkError(`unsupported protocol ${url.protocol}`);
+	}
+	return url;
+}
+
+function withHostHeader(request: HttpRequest, host: string): HttpRequest {
+	const headers = { ...request.headers };
+	if (!Object.keys(headers).some((key) => key.toLowerCase() === "host")) {
+		headers.host = host;
+	}
+	return { ...request, headers };
 }
 
 export type ContainerState = "Created" | "Running" | "Exited";
@@ -301,7 +326,7 @@ export class Runtime {
 	): Promise<ExecResult> {
 		const process = this.containerOrThrow(containerId).exec(argv, options);
 		const exitCode = await this.waitForProcess(process, options.timeoutMs);
-		return { exitCode };
+		return { exitCode, stdout: process.stdout, stderr: process.stderr };
 	}
 
 	createProcess(
@@ -449,7 +474,6 @@ export class PodSandboxInstance {
 	setReady(ready: boolean): void {
 		// TODO(probes): derive Pod readiness from container readiness and probe status.
 		this.ready = ready;
-		this.registration?.updateEndpoints(this);
 	}
 
 	status(): PodSandboxStatus {
@@ -462,15 +486,6 @@ export class PodSandboxInstance {
 			network,
 			labels: Object.fromEntries(this.labels),
 			annotations: Object.fromEntries(this.annotations),
-		};
-	}
-
-	networkPeer() {
-		return {
-			namespace: this.namespace,
-			podName: this.name,
-			podUid: this.uid,
-			ip: this.ip,
 		};
 	}
 }
@@ -582,6 +597,8 @@ export class ProcessInstance {
 	private finishedAtMs: number | undefined;
 	private processExitCode: number | undefined;
 	private killedExitCode: number | undefined;
+	private stdoutBuffer = "";
+	private stderrBuffer = "";
 	private readonly abortController = new AbortController();
 	private readonly listeners: Array<{ close(): void }> = [];
 	private resolveWait: (code: number) => void = () => {};
@@ -625,6 +642,14 @@ export class ProcessInstance {
 		return this.killedExitCode ?? this.processExitCode ?? 143;
 	}
 
+	get stdout(): string {
+		return this.stdoutBuffer;
+	}
+
+	get stderr(): string {
+		return this.stderrBuffer;
+	}
+
 	start(): void {
 		if (this.processState !== "Created") {
 			throw new Error(`process ${this.pid} was already started`);
@@ -658,6 +683,14 @@ export class ProcessInstance {
 
 	trackListener(listener: { close(): void }): void {
 		this.listeners.push(listener);
+	}
+
+	writeStdout(chunk: string): void {
+		this.stdoutBuffer += chunk;
+	}
+
+	writeStderr(chunk: string): void {
+		this.stderrBuffer += chunk;
 	}
 
 	waitUntilKilled(): Promise<number> {
@@ -724,6 +757,14 @@ export class ProcessContext {
 		return this.process.container.exec(argv, options);
 	}
 
+	writeStdout(chunk: string): void {
+		this.process.writeStdout(chunk);
+	}
+
+	writeStderr(chunk: string): void {
+		this.process.writeStderr(chunk);
+	}
+
 	listenHttp(port: number, handler: HttpHandler): HttpListener {
 		const listener = this.process.container.pod.networkRegistration().bindHttp(port, handler);
 		this.process.trackListener(listener);
@@ -737,7 +778,19 @@ export class ProcessContext {
 	}
 
 	async fetch(target: string, init?: HttpRequest): Promise<HttpResponse> {
-		return await this.runtime.network.fetch(this.process.container.pod.networkPeer(), target, init);
+		const url = parseHttpUrl(target);
+		const request = init ?? {};
+		if (ipToNumber(url.hostname) !== undefined) {
+			return await this.runtime.network.fetch(url.toString(), request);
+		}
+
+		const originalHost = url.host;
+		const resolved = await this.resolveHostname(url.hostname);
+		if (!resolved) {
+			throw new NetworkError(`could not resolve ${url.hostname}`);
+		}
+		url.hostname = resolved;
+		return await this.runtime.network.fetch(url.toString(), withHostHeader(request, originalHost));
 	}
 
 	async resolveDns(name: string, type: DnsRecordType = "A"): Promise<DnsResponse> {
@@ -747,19 +800,21 @@ export class ProcessContext {
 			return { rcode: "NXDOMAIN", answers: [] };
 		}
 		for (const candidate of dnsLookupCandidates(name, dnsConfig.searches, dnsConfig.options)) {
-			const response = await this.runtime.network.resolveDns(
-				this.process.container.pod.networkPeer(),
-				serverIp,
-				{
-					name: candidate,
-					type,
-				},
-			);
+			const response = await this.runtime.network.sendDns(`${serverIp}:53`, {
+				name: candidate,
+				type,
+			});
 			if (response.rcode !== "NXDOMAIN" || response.answers.length > 0) {
 				return response;
 			}
 		}
 		return { rcode: "NXDOMAIN", answers: [] };
+	}
+
+	private async resolveHostname(name: string): Promise<string | undefined> {
+		const response = await this.resolveDns(name, "A");
+		const answer = response.answers.find((value) => value.type === "A");
+		return answer?.type === "A" ? answer.address : undefined;
 	}
 
 	sleep(ms: number): Promise<void> {

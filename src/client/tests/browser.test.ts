@@ -1,6 +1,7 @@
 import * as pod from "./pod";
 import * as service from "./service";
 import * as endpointslice from "./endpointslice";
+import * as exec from "./exec";
 import * as nodeport from "./nodeport";
 import * as informer from "./informer";
 import * as watch from "./watch";
@@ -39,6 +40,7 @@ const nodePortOptions = {
 pod.tests(k8s, cluster.kubeConfig);
 service.tests(k8s, cluster.kubeConfig, nodePortOptions);
 endpointslice.tests(k8s, cluster.kubeConfig);
+exec.tests(k8s, cluster.kubeConfig);
 nodeport.tests(k8s, cluster.kubeConfig, nodePortOptions);
 informer.tests(k8s, cluster.kubeConfig);
 watch.tests(k8s, cluster.kubeConfig);

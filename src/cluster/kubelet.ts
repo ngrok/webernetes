@@ -5,7 +5,13 @@ import type {
 	V1Pod,
 	V1PodStatus,
 } from "../client";
-import type { ContainerConfig, ContainerPort, ContainerStatus, PodSandboxConfig } from "./cri";
+import type {
+	ContainerConfig,
+	ContainerPort,
+	ContainerStatus,
+	ExecResult,
+	PodSandboxConfig,
+} from "./cri";
 import { Server } from "./server";
 import { PodStore } from "./storage";
 import type { Watcher } from "./storage/watch";
@@ -101,6 +107,36 @@ export class Kubelet {
 		void this.server.runtime.removePodSandbox(running.sandboxId);
 	}
 
+	async execPodContainer(
+		namespace: string,
+		podName: string,
+		containerName: string | undefined,
+		argv: string[],
+	): Promise<ExecResult> {
+		const running = this.runningPods.get(`${namespace}/${podName}`);
+		if (!running) {
+			throw new Error(`pod ${namespace}/${podName} is not running on node ${this.server.name}`);
+		}
+		const sandbox = this.server.runtime.getPodSandbox(running.sandboxId);
+		if (!sandbox) {
+			throw new Error(`pod sandbox ${running.sandboxId} not found`);
+		}
+		const containers = [...sandbox.containers.values()];
+		const container = containerName
+			? containers.find((candidate) => candidate.name === containerName)
+			: containers.length === 1
+				? containers[0]
+				: undefined;
+		if (!container) {
+			throw new Error(
+				containerName
+					? `container ${containerName} not found in pod ${namespace}/${podName}`
+					: `container name is required for pod ${namespace}/${podName}`,
+			);
+		}
+		return await this.server.runtime.execSync(container.id, argv);
+	}
+
 	private async syncPod(pod: V1Pod): Promise<void> {
 		const key = podKey(pod);
 		const existing = this.runningPods.get(key);
@@ -136,7 +172,7 @@ export class Kubelet {
 			},
 			hostname: pod.spec?.hostname ?? pod.metadata?.name,
 			dnsConfig: {
-				servers: [],
+				servers: [this.server.cluster.dnsServiceIp],
 				searches: [`${namespace}.svc.cluster.local`, "svc.cluster.local", "cluster.local"],
 				options: ["ndots:5"],
 			},

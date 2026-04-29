@@ -90,9 +90,9 @@ export class ListWatch<T extends KubernetesObject> implements ObjectCache<T>, In
 		cb: ObjectCallback<T> | ErrorCallback,
 	): void {
 		if (verb === CHANGE) {
-			this.on(ADD, cb as ObjectCallback<T>);
-			this.on(UPDATE, cb as ObjectCallback<T>);
-			this.on(DELETE, cb as ObjectCallback<T>);
+			this.on(ADD, cb);
+			this.on(UPDATE, cb);
+			this.on(DELETE, cb);
 			return;
 		}
 
@@ -105,7 +105,7 @@ export class ListWatch<T extends KubernetesObject> implements ObjectCache<T>, In
 			return;
 		}
 
-		this.callbackCache[verb].push(cb as ObjectCallback<T>);
+		this.callbackCache[verb].push(cb);
 	}
 
 	public off(
@@ -124,9 +124,9 @@ export class ListWatch<T extends KubernetesObject> implements ObjectCache<T>, In
 		cb: ObjectCallback<T> | ErrorCallback,
 	): void {
 		if (verb === CHANGE) {
-			this.off(ADD, cb as ObjectCallback<T>);
-			this.off(UPDATE, cb as ObjectCallback<T>);
-			this.off(DELETE, cb as ObjectCallback<T>);
+			this.off(ADD, cb);
+			this.off(UPDATE, cb);
+			this.off(DELETE, cb);
 			return;
 		}
 

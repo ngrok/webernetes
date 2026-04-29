@@ -5,6 +5,7 @@ import * as k8s from "@kubernetes/client-node";
 import * as pod from "./pod";
 import * as service from "./service";
 import * as endpointslice from "./endpointslice";
+import * as exec from "./exec";
 import * as nodeport from "./nodeport";
 import * as informer from "./informer";
 import * as watch from "./watch";
@@ -75,6 +76,7 @@ const nodePortOptions = {
 pod.tests(k8s, kc);
 service.tests(k8s, kc, nodePortOptions);
 endpointslice.tests(k8s, kc);
+exec.tests(k8s, kc);
 nodeport.tests(k8s, kc, nodePortOptions);
 informer.tests(k8s, kc);
 watch.tests(k8s, kc);

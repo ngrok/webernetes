@@ -30,18 +30,20 @@ Kubernetes Services.
 
 ## Core Concepts
 
-The simulator should use instance-oriented names instead of CRI-specific names:
+The simulator mostly uses instance-oriented names, with the pod network object
+now intentionally named after the CRI sandbox boundary:
 
-- `PodInstance`: the running pod-level environment.
+- `PodSandboxInstance`: the running pod-level network/sandbox environment.
 - `ContainerInstance`: one running container definition inside a pod.
 - `ProcessInstance`: one running invocation inside a container.
 - `ImageDefinition`: a fake image implementation.
 - `ImageRegistry`: a fake image registry, similar to a minimal Docker Hub.
 - `ClusterNetwork`: the in-memory HTTP/DNS network and routing table.
 
-The Kubernetes/CRI concept of a pod sandbox maps to `PodInstance`. We should
-avoid exposing `PodSandbox` as a primary concept unless later CRI compatibility
-requires it.
+The Kubernetes/CRI concept of a pod sandbox maps to `PodSandboxInstance` in the
+implementation. This changed from the original `PodInstance` wording because
+the sandbox owns pod IP and network registration, and CRI allows multiple
+sandbox attempts for the same pod UID.
 
 ## Code Layout
 
@@ -69,7 +71,7 @@ Recommended `src/cluster/cri/` files:
   process-owned listener cleanup.
 - `container.ts`: `ContainerInstance`, container status, command/argv
   resolution, and exec handling.
-- `pod.ts`: `PodInstance` and pod-level lifecycle state.
+- `pod.ts`: `PodSandboxInstance` and pod-level lifecycle state.
 - `runtime.ts`: kubelet-facing `Runtime` implementation that owns pod/container
   maps and delegates networking to `src/cluster/cni/`.
 - `index.ts`: public exports for the runtime package.
@@ -93,13 +95,17 @@ implementations.
 
 Recommended controller/runtime-adjacent files:
 
-- `src/cluster/scheduler.ts`: minimal scheduler that assigns unscheduled pods to
-  a `Server` by setting `spec.nodeName`.
-- `src/cluster/controllers/proxy.ts`: kube-proxy-style reconciler that watches
-  Services and EndpointSlices and registers routing state in `ClusterNetwork`.
-- `src/cluster/controllers/endpointslice.ts`: minimal EndpointSlice reconciler
-  that mirrors Kubernetes' EndpointSlice controller: watch Services and Pods,
-  select matching ready pods, and write EndpointSlice objects.
+- `src/cluster/images/scheduler.ts`: minimal scheduler image that assigns
+  unscheduled pods to a `Server` by setting `spec.nodeName`.
+- `src/cluster/images/proxy.ts`: kube-proxy-style control-plane image that
+  watches Services and EndpointSlices and registers routing state in
+  `ClusterNetwork`.
+- `src/cluster/images/endpointslice-controller.ts`: minimal EndpointSlice
+  controller image that mirrors Kubernetes' EndpointSlice controller: watch
+  Services and Pods, select matching ready pods, and write EndpointSlice
+  objects.
+- `src/cluster/images/coredns.ts`: fake CoreDNS image that watches Services and
+  answers Service A records.
 - `src/cluster/controllers/deployment.ts` and
   `src/cluster/controllers/replicaset.ts`: eventual workload controllers if the
   shared tests create Deployments rather than raw Pods.
@@ -115,8 +121,8 @@ Additional pieces likely needed:
   registers/unregisters routing state in `ClusterNetwork`. This is not the
   Kubernetes Service controller; the real Service controller is mostly about
   cloud LoadBalancer lifecycle.
-- A scheduler or simple scheduling hook that assigns pods to `Server`s. The
-  kubelet should only run pods assigned to its server.
+- A scheduler control-plane pod that assigns pods to `Server`s. The kubelet
+  should only run pods assigned to its server.
 - Service ClusterIP and NodePort allocation should happen on Service
   create/update, matching Kubernetes apiserver storage behavior. Do not defer
   allocation to request time.
@@ -175,7 +181,7 @@ What this plan intentionally simplifies:
   first increment.
 - No real kube-proxy packet programming. `ClusterNetwork` directly implements
   the observable Service routing behavior.
-- No real CRI or CNI protobuf/plugin implementation. `PodInstance`,
+- No real CRI or CNI protobuf/plugin implementation. `PodSandboxInstance`,
   `ContainerInstance`, `ProcessInstance`, and `ClusterNetwork` are sufficient
   for the browser-friendly simulator.
 
@@ -198,14 +204,14 @@ Additional gaps to track:
 - Downward API, ConfigMaps, Secrets, and volumes: defer until a fake image or
   controller test actually needs them.
 
-## Why PodInstance Exists
+## Why PodSandboxInstance Exists
 
 A pod-level object is still useful even though this simulator is not modeling
 real namespaces. In Kubernetes, pod-level state survives individual container
 restarts and is shared by every container in the pod. That same separation keeps
 the simulator coherent.
 
-Put state on `PodInstance` when it belongs to the pod:
+Put state on `PodSandboxInstance` when it belongs to the pod sandbox:
 
 - pod UID, name, namespace, and labels
 - pod IP
@@ -242,7 +248,7 @@ and target port.
 Expected pod startup flow:
 
 1. Kubelet observes a scheduled pod.
-2. Runtime creates a `PodInstance`.
+2. Runtime creates a `PodSandboxInstance`.
 3. `ClusterNetwork` allocates/registers a pod IP.
 4. Runtime resolves image refs through `ImageRegistry`.
 5. Runtime creates one `ContainerInstance` per pod container.
@@ -307,13 +313,18 @@ network.
 
 ```ts
 export interface Runtime {
-	createPod(pod: PodRuntimeSpec): Promise<PodInstance>;
-	deletePod(podUid: string): Promise<void>;
-	getPod(podUid: string): PodInstance | undefined;
-	listPods(): PodInstance[];
+	runPodSandbox(config: PodSandboxConfig): Promise<string>;
+	stopPodSandbox(podSandboxId: string): Promise<void>;
+	removePodSandbox(podSandboxId: string): Promise<void>;
+	getPodSandbox(podSandboxId: string): PodSandboxInstance | undefined;
+	listPodSandboxes(): PodSandboxInstance[];
 
 	pullImage(imageRef: string): Promise<void>;
-	createContainer(podUid: string, spec: ContainerRuntimeSpec): Promise<ContainerInstance>;
+	createContainer(
+		podSandboxId: string,
+		config: ContainerRuntimeSpec,
+		sandboxConfig: PodSandboxConfig,
+	): Promise<string>;
 	startContainer(containerId: string): Promise<ProcessInstance>;
 	stopContainer(containerId: string, gracePeriodMs?: number): Promise<void>;
 	removeContainer(containerId: string): Promise<void>;
@@ -328,7 +339,7 @@ The runtime owns live pod and container maps. It should use `ImageRegistry` to
 resolve fake images and `ClusterNetwork` to register pods and dispatch HTTP.
 
 ```ts
-export interface PodRuntimeSpec {
+export interface PodSandboxConfig {
 	uid: string;
 	name: string;
 	namespace: string;
@@ -358,45 +369,42 @@ export interface ExecOptions {
 }
 
 export interface ExecResult {
-	stdout: Uint8Array;
-	stderr: Uint8Array;
+	stdout: string;
+	stderr: string;
 	exitCode: number;
 }
 ```
 
-`PodRuntimeSpec.uid` comes from Kubernetes object metadata. Real pods are
+`PodSandboxConfig.metadata.uid` comes from Kubernetes object metadata. Real pods are
 created by the apiserver with `metadata.uid`; the simulator should preserve that
-UID when the kubelet/runtime creates the corresponding `PodInstance`. Tests that
-construct pods directly should assign stable synthetic UIDs.
+UID when the kubelet/runtime creates the corresponding `PodSandboxInstance`.
+Tests that construct pods directly should assign stable synthetic UIDs.
 
 Even though `ContainerPort.protocol` allows Kubernetes protocol names, the
 initial implementation should only dispatch application-level HTTP and DNS. The
 protocol field is retained because Kubernetes pod and Service specs include it.
 TCP/UDP packet semantics are still out of scope.
 
-## PodInstance
+## PodSandboxInstance
 
-`PodInstance` is the running pod-level environment. It is the simulator's
-equivalent of a CRI pod sandbox, but should be named for the project rather than
-for CRI.
+`PodSandboxInstance` is the running pod-level environment. The implementation
+uses the CRI term because this object owns the pod network namespace/IP and can
+exist in multiple attempts for the same Kubernetes Pod UID.
 
 ```ts
-export interface PodInstance {
+export interface PodSandboxInstance {
 	readonly uid: string;
 	readonly name: string;
 	readonly namespace: string;
 	readonly labels: ReadonlyMap<string, string>;
 	readonly annotations: ReadonlyMap<string, string>;
 	readonly ip: string;
-	readonly phase: PodInstancePhase;
 	readonly containers: ReadonlyMap<string, ContainerInstance>;
 
 	isReady(): boolean;
 	setReady(ready: boolean): void;
-	networkPeer(): NetworkPeer;
+	status(): PodSandboxStatus;
 }
-
-export type PodInstancePhase = "Pending" | "Running" | "Succeeded" | "Failed";
 ```
 
 Implementation notes:
@@ -419,7 +427,7 @@ export interface ContainerInstance {
 	readonly id: string;
 	readonly name: string;
 	readonly imageRef: string;
-	readonly pod: PodInstance;
+	readonly pod: PodSandboxInstance;
 	readonly command: readonly string[];
 	readonly args: readonly string[];
 	readonly env: ReadonlyMap<string, string>;
@@ -459,7 +467,7 @@ Implementation notes:
   process is running/started. Add `TODO(probes)` comments where that shortcut
   should later be replaced.
 - Restarting a container should create a new main `ProcessInstance` but keep the
-  same `PodInstance` and pod IP.
+  same `PodSandboxInstance` and pod IP.
 
 ## ProcessInstance
 
@@ -495,7 +503,7 @@ export interface ProcessContext {
 	readonly argv: readonly string[];
 	readonly env: ReadonlyMap<string, string>;
 	readonly container: ContainerInstance;
-	readonly pod: PodInstance;
+	readonly pod: PodSandboxInstance;
 	readonly kubeConfig: KubeConfig;
 
 	exec(argv: string[], options?: ExecOptions): ProcessInstance;
@@ -594,22 +602,25 @@ Default request behavior:
 
 ## ClusterNetwork
 
-`ClusterNetwork` is the simulated dataplane. It allocates pod and Service IPs,
-tracks HTTP and DNS listeners, stores Services, resolves request targets, and
-dispatches in-cluster HTTP and DNS calls through map lookups.
+`ClusterNetwork` is the simulated dataplane. It allocates pod IPs, tracks HTTP
+and DNS listeners, stores Service VIP routing state, and dispatches IP-literal
+HTTP/DNS calls through map lookups. Service IP and NodePort allocation remains
+in apiserver Service storage. Service DNS name resolution is owned by
+`ProcessContext` plus the fake CoreDNS pod; the network does not parse Service
+DNS names.
 
 ```ts
 export interface Network {
-	registerPod(pod: PodInstance): NetworkRegistration;
-	unregisterPod(podUid: string): void;
+	setupPodSandbox(pod: PodSandboxInstance): NetworkRegistration;
+	unregisterPod(podSandboxId: string): void;
 
 	registerService(service: ServiceInstance): void;
 	unregisterService(namespace: string, name: string): void;
 
-	resolveName(from: NetworkPeer, name: string): NetworkEndpoint[];
-	fetch(from: NetworkPeer, target: string, init?: HttpRequest): Promise<HttpResponse>;
+	setServiceTargets(namespace: string, name: string, port: number, targets: string[]): void;
+	fetch(target: string, init?: HttpRequest): Promise<HttpResponse>;
 	fetchNodePort(nodePort: number, init?: HttpRequest): Promise<HttpResponse>;
-	resolveDns(from: NetworkPeer, request: DnsRequest): Promise<DnsResponse>;
+	sendDns(target: string, request: DnsRequest): Promise<DnsResponse>;
 }
 
 export interface NetworkRegistration {
@@ -619,37 +630,21 @@ export interface NetworkRegistration {
 	bindDns(port: number, handler: DnsHandler): DnsListener;
 	unregister(): void;
 }
-
-export interface NetworkPeer {
-	namespace: string;
-	podName: string;
-	podUid: string;
-	ip: string;
-}
-
-export interface NetworkEndpoint {
-	namespace: string;
-	name: string;
-	uid?: string;
-	ip: string;
-	port?: number;
-	kind: "pod" | "service";
-}
 ```
 
 Recommended internal state:
 
 ```ts
 class ClusterNetwork implements Network {
-	private podsByUid = new Map<string, PodInstance>();
-	private podsByIp = new Map<string, PodInstance>();
-	private podUidsByDnsName = new Map<string, Set<string>>();
+	private podsBySandboxId = new Map<string, PodSandboxInstance>();
+	private podsByIp = new Map<string, PodSandboxInstance>();
 	private httpListeners = new Map<string, HttpHandler>();
 	private dnsListeners = new Map<string, DnsHandler>();
 
 	private servicesByKey = new Map<string, ServiceInstance>();
 	private servicesByClusterIp = new Map<string, ServiceInstance>();
-	private serviceKeysByDnsName = new Map<string, string>();
+	private servicesByNodePort = new Map<number, NodePortRoute>();
+	private targetsByServicePort = new Map<string, string[]>();
 }
 ```
 
@@ -660,31 +655,10 @@ const listenerKey = `${ip}:${port}`;
 const namespacedNameKey = `${namespace}/${name}`;
 ```
 
-`NetworkPeer` represents an in-cluster pod. Node-originated and external traffic
-should use explicit methods such as `fetchNodePort()` rather than pretending the
-node is an in-cluster workload peer.
-
 Do not model pod DNS records in the first implementation. Only Service DNS names
-matter for now.
-
-Service DNS names can follow the common Kubernetes forms:
-
-```ts
-function serviceDnsNames(service: ServiceInstance): string[] {
-	return [
-		service.name,
-		`${service.name}.${service.namespace}`,
-		`${service.name}.${service.namespace}.svc`,
-		`${service.name}.${service.namespace}.svc.cluster.local`,
-	];
-}
-```
-
-When resolving a short name like `api`, follow Kubernetes Service DNS search
-behavior and prefer Services in the caller's namespace. In practice, a pod with
-namespace `default` searches names like `api.default.svc.cluster.local` before
-less-specific cluster domains. This means a short name should resolve as a
-Service name. Do not resolve short names to pods.
+matter for now. Search-path behavior belongs in `ProcessContext.resolveDns()`;
+fake CoreDNS only needs to answer full Service FQDNs such as
+`api.default.svc.cluster.local`.
 
 ## Fake CoreDNS
 
@@ -695,7 +669,7 @@ Recommended cluster bootstrapping:
 
 1. Create a `kube-system` namespace.
 2. Create a `kube-dns` or `coredns` Service with a stable cluster IP.
-3. Start a fake CoreDNS `PodInstance` in `kube-system`.
+3. Start a fake CoreDNS `PodSandboxInstance` in `kube-system`.
 4. The CoreDNS process calls `listenDns(53, handler)`.
 5. Pod DNS config points at the DNS Service IP.
 6. `ProcessContext.resolveDns()` sends a DNS request to that Service.
@@ -713,8 +687,9 @@ For this simulator, copy that model:
 
 - Boot CoreDNS from a fake `ImageDefinition`.
 - Give it the existing project `KubeConfig` from `src/client/types.ts`.
-- Have the CoreDNS process watch/list Services and EndpointSlices through the
-  fake client API.
+- Have the CoreDNS process watch/list Services through the fake client API.
+  EndpointSlice watching can be added later if headless Service or endpoint
+  record tests require it.
 - Have it answer Service `A` records from Service ClusterIPs.
 
 The CoreDNS ConfigMap/Corefile can be modeled later if tests need to change DNS
@@ -818,7 +793,7 @@ Endpoint selection:
 ```ts
 export interface ServiceEndpoint {
 	service: ServiceInstance;
-	pod: PodInstance;
+	pod: PodSandboxInstance;
 	port: number;
 	targetPort: number;
 }
@@ -839,7 +814,7 @@ Endpoint computation should be driven by EndpointSlices:
 This is worth modeling early. Real kube-proxy and CoreDNS both consume
 EndpointSlices. If shared tests ever inspect EndpointSlices or rely on CoreDNS
 watching the realistic resource path, direct endpoint computation from
-`PodInstance`s will be the wrong seam.
+`PodSandboxInstance`s will be the wrong seam.
 
 `targetPort` resolution:
 
@@ -898,7 +873,7 @@ readiness shortcuts. Probe behavior can later build on the existing
 
 The cleanup path should be explicit and deterministic.
 
-Deleting a `PodInstance` should:
+Deleting a `PodSandboxInstance` should:
 
 - stop all container processes
 - close all HTTP listeners for the pod
@@ -1058,12 +1033,11 @@ and richer controllers should come after that first signal.
       Implemented minimal defaulting for Service type, port protocol, targetPort,
       clusterIPs, and NodePort/ClusterIP validation needed by the current shared
       Service tests.
-- [ ] Add a cluster-level NodePort fetch helper, exposed from `Cluster` or
+- [x] Add a cluster-level NodePort fetch helper, exposed from `Cluster` or
       `ClusterNetwork`. It should match the existing fetch-style boundary:
       accept a NodePort and `HttpRequest`, then return `Promise<HttpResponse>`.
-      Deferred until the networking primitives exist, so this helper can route
-      through the same model as pod networking, endpoints, and kube-proxy-style
-      Service behavior.
+      Implemented as `Cluster.fetchNodePort()` delegating to
+      `ClusterNetwork.fetchNodePort()`, with shared browser/k3s NodePort tests.
 
 ### Phase 2: Runtime And Network Primitives
 
@@ -1074,12 +1048,13 @@ and richer controllers should come after that first signal.
       registration, process-owned HTTP listener binding, listener cleanup, and
       direct HTTP dispatch by IP/port.
 - [x] Add `ImageRegistry` and `ImageDefinition` in `src/cluster/cri/image.ts`.
-- [x] Add `PodInstance`, `ContainerInstance`, and `ProcessInstance` in
+- [x] Add `PodSandboxInstance`, `ContainerInstance`, and `ProcessInstance` in
       `src/cluster/cri/`, including argv handling and `Promise<number>` process
       exits.
 - [x] Add `ProcessContext.listenHttp()` and `ProcessContext.fetch()` for IP and
-      Service/NodePort paths needed by the first test. `listenDns()` and
-      `resolveDns()` can wait until the DNS phase.
+      Service paths needed by the first tests. `ProcessContext.fetch()` now
+      resolves hostnames through pod DNS config and fake CoreDNS before handing
+      IP-literal requests to `ClusterNetwork`.
 - [x] Add the kubelet-facing runtime in `src/cluster/cri/runtime.ts`, owning
       live pod/container maps and delegating listener/fetch work to
       `ClusterNetwork`.
@@ -1113,10 +1088,10 @@ Phase 2 implementation notes:
   resources are reclaimed.
 - The CRI-shaped config/status objects were intentionally trimmed after the
   first pass. Fields copied from CRI but not used by the simulator were removed,
-  including image/runtime handler plumbing, exec stdout/stderr modeling,
-  container working directory/log/stdin/TTY fields, status `imageId`, and
-  additional pod IP status. The goal is kubelet control-flow alignment, not
-  inert CRI field parity.
+  including image/runtime handler plumbing, container working directory/log/stdin
+  /TTY fields, status `imageId`, and additional pod IP status. Exec now captures
+  stdout/stderr strings for the Kubernetes client `Exec` helper and shared
+  parity tests.
 - `src/cluster/cri/AGENTS.md` now records the local rules for this directory,
   with `CLAUDE.md` symlinked to it. It names the upstream kubelet, kuberuntime,
   and CRI source files/types to inspect before changing the runtime boundary.
@@ -1124,82 +1099,90 @@ Phase 2 implementation notes:
   `ProcessContext.signal` and `ProcessContext.waitUntilKilled()`. This avoids
   the earlier non-resolving promise pattern in fake images, while still keeping
   the simulator browser-friendly.
-- DNS listener types exist, but DNS routing and realistic `resolveDns()` behavior
-  remain deferred to the DNS phase.
-- Current coverage is focused unit coverage for the in-memory runtime and
-  network primitives. There is not yet parity coverage against a real kubelet or
-  real Kubernetes CRI behavior, so this phase should be treated as a foundation
-  rather than proof that lifecycle behavior is fully kubelet-compatible.
+- DNS listener types, `ProcessContext.listenDns()`, `ProcessContext.resolveDns()`,
+  and fake CoreDNS-backed Service DNS are now implemented.
+- The original simulator-only runtime unit test was removed after the observable
+  pod, Service, DNS, NodePort, EndpointSlice, and exec behaviors were covered by
+  shared parity tests against both k3s and the simulator.
 
 ### Phase 3: Scheduling And Kubelet Startup
 
-- [ ] Add a minimal scheduler that watches unscheduled pods and assigns
+- [x] Add a minimal scheduler that watches unscheduled pods and assigns
       `spec.nodeName` to a `Server`. A simple deterministic first-fit or
       round-robin policy is enough. This is intentionally much simpler than the
       real Kubernetes scheduler; it only exists to create the observable
       `spec.nodeName` binding that kubelet relies on.
-- [ ] Wire `Cluster` to own `ImageRegistry` and `ClusterNetwork`.
-- [ ] Wire each `Server` to own a runtime and pass it to `Kubelet`.
-- [ ] Teach `Kubelet` to watch pods assigned to its server, create
-      `PodInstance`s, create/start container instances from image refs, and stop
+- [x] Wire `Cluster` to own `ImageRegistry` and `ClusterNetwork`.
+- [x] Wire each `Server` to own a runtime and pass it to `Kubelet`.
+- [x] Teach `Kubelet` to watch pods assigned to its server, create
+      `PodSandboxInstance`s, create/start container instances from image refs, and stop
       runtime state when pods are deleted. Keep this flow aligned with the real
       kubelet source as much as practical, especially the desired-pod watch,
       pod-worker style reconciliation, runtime delegation, and status update
       boundaries.
-- [ ] Update Pod status from kubelet with at least phase, pod IP, and container
+- [x] Update Pod status from kubelet with at least phase, pod IP, and container
       state fields needed by Service endpoint selection and shared tests.
-- [ ] Add `TODO(probes)` comments to readiness defaults. Until probes exist,
+- [x] Add `TODO(probes)` comments to readiness defaults. Until probes exist,
       containers without readiness probes can become ready when their main
       process is running/started. Do not infer readiness from listener binding.
 
 ### Phase 4: Services And NodePort Routing
 
-- [ ] Add minimal EndpointSlice generated/client/storage types needed for
+- [x] Add minimal EndpointSlice generated/client/storage types needed for
       internal controllers and shared tests.
-- [ ] Add an EndpointSlice reconciler that watches Services and Pods, uses
+- [x] Add an EndpointSlice reconciler that watches Services and Pods, uses
       Service selectors to choose ready pod endpoints, and writes EndpointSlice
       objects.
-- [ ] Add a kube-proxy-style network controller that watches Services and
+- [x] Add a kube-proxy-style network controller that watches Services and
       EndpointSlices and registers/unregisters Service routing state in
       `ClusterNetwork`. Do not put this in apiserver Service storage, and do not
       model it as the Kubernetes Service controller.
-- [ ] Implement `targetPort` resolution for numeric and named container ports.
+- [x] Implement `targetPort` resolution for numeric and named container ports.
 - [ ] Implement deterministic round-robin endpoint selection.
-- [ ] Implement ClusterIP routing by mapping Service IP/port to selected pod
+      Current implementation chooses a ready endpoint at random; shared tests
+      assert that multiple backends can be reached, not a deterministic order.
+- [x] Implement ClusterIP routing by mapping Service IP/port to selected pod
       IP/targetPort.
-- [ ] Implement NodePort routing by mapping nodePort to selected Service
+- [x] Implement NodePort routing by mapping nodePort to selected Service
       endpoint.
 - [ ] Ensure pod deletion, Service deletion, and process exit remove stale
       listeners/endpoints from routing.
+      Pod and Service deletion are covered by shared EndpointSlice/NodePort
+      tests. Process-owned listener cleanup remains an internal runtime behavior
+      without dedicated parity coverage.
 
 ### Phase 5: First Shared NodePort Test
 
-- [ ] Choose a small, trusted Docker Hub image with an HTTP endpoint, likely
+- [x] Choose a small, trusted Docker Hub image with an HTTP endpoint, likely
       `crccheck/hello-world` if it is still appropriate at implementation time.
-- [ ] Write one shared test that creates a Pod or simple Deployment plus a
+- [x] Write one shared test that creates a raw Pod plus a
       NodePort Service through the Kubernetes client API.
-- [ ] Make the real-cluster version call the real NodePort endpoint.
-- [ ] Register the same image reference in the simulator's `ImageRegistry`.
-- [ ] Replicate only the image behavior needed by the test in the fake image.
-- [ ] Make the simulator version call the simulator NodePort fetch helper.
-- [ ] Treat this test passing in both environments as the first completion
+- [x] Make the real-cluster version call the real NodePort endpoint.
+- [x] Register the same image reference in the simulator's `ImageRegistry`.
+- [x] Replicate only the image behavior needed by the test in the fake image.
+- [x] Make the simulator version call the simulator NodePort fetch helper.
+- [x] Treat this test passing in both environments as the first completion
       signal for the runtime/network stack.
 
 ### Phase 6: Service DNS And Fake CoreDNS
 
-- [ ] Add DNS request/response types in `src/cluster/cni/dns.ts`.
-- [ ] Add `ProcessContext.listenDns()` and `ProcessContext.resolveDns()`.
-- [ ] Bootstrap `kube-system`, a `kube-dns`/`coredns` Service with a stable
+- [x] Add DNS request/response types in `src/cluster/cni/dns.ts`.
+- [x] Add `ProcessContext.listenDns()` and `ProcessContext.resolveDns()`.
+- [x] Bootstrap `kube-system`, a `kube-dns`/`coredns` Service with a stable
       ClusterIP, and a fake CoreDNS image/pod.
-- [ ] Have fake CoreDNS use the existing project `KubeConfig` from
-      `src/client/types.ts` to list/watch Services and EndpointSlices.
-- [ ] Answer Service `A` records from Service ClusterIPs.
-- [ ] Update `ProcessContext.fetch()` to resolve Service hostnames through fake
+- [x] Have fake CoreDNS use the existing project `KubeConfig` from
+      `src/client/types.ts` to list/watch Services.
+- [x] Answer Service `A` records from Service ClusterIPs.
+- [x] Update `ProcessContext.fetch()` to resolve Service hostnames through fake
       CoreDNS before HTTP dispatch.
-- [ ] Add shared tests for in-cluster Service DNS after the NodePort test works.
+- [x] Add shared tests for in-cluster Service DNS after the NodePort test works.
+      The shared exec parity test uses `busybox:1.36` to `wget` direct pod IPs
+      and Service DNS names from inside the cluster.
 
 ### Phase 7: Kubernetes Compatibility Increments
 
+- [x] Add a Kubernetes client-compatible `Exec` helper and simulator exec path
+      sufficient for shared tests to run `busybox wget` inside a pod.
 - [ ] Add Deployment and ReplicaSet controllers when shared tests move from raw
       Pods to Deployments.
 - [ ] Add default ServiceAccount behavior and in-cluster controller identity
@@ -1251,13 +1234,15 @@ multi-endpoint tests after this first test works.
 
 Coverage should come from user-visible Kubernetes behavior:
 
-- Creating a Pod/Deployment starts fake image processes.
+- Creating a raw Pod starts fake image processes. Deployment/ReplicaSet support
+  remains a later compatibility increment.
 - Creating a Service allocates a ClusterIP.
 - Creating a NodePort Service exposes traffic to the test harness.
 - Service DNS resolves through the fake CoreDNS pod.
 - Service traffic routes to matching ready pods.
 - Numeric and named `targetPort` values both work.
-- Restarting a container keeps the pod IP stable.
+- Exec into a Pod works through the Kubernetes client `Exec` helper in both k3s
+  and the simulator.
 
 ## Kubernetes Source Notes
 
@@ -1285,8 +1270,9 @@ boundaries:
 - CoreDNS's Kubernetes plugin handles Service records under `.svc`.
 - CoreDNS is not updated for each Service by a separate configuration
   controller. The Kubernetes plugin watches the Kubernetes API directly.
-- CoreDNS watches Services, EndpointSlices, and Namespaces for the Service DNS
-  behavior this simulator needs.
+- Real CoreDNS watches Services, EndpointSlices, and Namespaces for the full
+  Kubernetes DNS feature set. The simulator currently watches Services only,
+  which is enough for normal ClusterIP Service A records.
 - CoreDNS returns ClusterIP records for normal ClusterIP Services. It does not
   select a backend pod for those Services.
 - kube-proxy selects backend endpoints when traffic reaches the Service IP.
@@ -1339,13 +1325,13 @@ Relevant source references:
 ## Open Decisions
 
 - Whether readiness should live only on containers or also be summarized on
-  `PodInstance`; defer this until probe work.
+  `PodSandboxInstance`; defer this until probe work.
 
 ## Design Principles
 
 - Keep Kubernetes semantics where they make tests and behavior clearer.
 - Avoid real CRI/CNI shapes unless they directly help implementation.
-- Put pod-level state on `PodInstance`.
+- Put pod-level state on `PodSandboxInstance`.
 - Put image/env/command/restart state on `ContainerInstance`.
 - Put one-execution state on `ProcessInstance`.
 - Keep networking application-protocol-only and map-backed.

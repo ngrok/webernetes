@@ -5,22 +5,6 @@ import { type HttpHandler, HttpListener, type HttpRequest, type HttpResponse } f
 import type { ServiceEndpoint, ServiceInstance, ServicePort } from "./service";
 import type { PodSandboxInstance } from "../cri/runtime";
 
-export interface NetworkPeer {
-	namespace: string;
-	podName: string;
-	podUid: string;
-	ip: string;
-}
-
-export interface NetworkEndpoint {
-	namespace: string;
-	name: string;
-	uid?: string;
-	ip: string;
-	port?: number;
-	kind: "pod" | "service";
-}
-
 export interface ClusterNetworkOptions {
 	podCIDR: string;
 }
@@ -56,23 +40,6 @@ function isIpLiteral(host: string): boolean {
 	return ipToNumber(host) !== undefined;
 }
 
-function parseServiceName(name: string): { namespace: string; name: string } | undefined {
-	const parts = name.split(".");
-	if (parts.length < 2) {
-		return undefined;
-	}
-	if (parts.length === 2) {
-		return { name: parts[0], namespace: parts[1] };
-	}
-	if (parts.length === 3 && parts[2] === "svc") {
-		return { name: parts[0], namespace: parts[1] };
-	}
-	if (parts.length === 5 && parts[2] === "svc" && parts[3] === "cluster" && parts[4] === "local") {
-		return { name: parts[0], namespace: parts[1] };
-	}
-	return undefined;
-}
-
 export class ClusterNetwork {
 	private readonly podCIDR: CIDR;
 	private podIpCursor: string | undefined;
@@ -87,6 +54,8 @@ export class ClusterNetwork {
 	private targetsByServicePort = new Map<string, string[]>();
 
 	constructor(options: ClusterNetworkOptions) {
+		// TODO: This really shouldn't be here, we should be allocating pod IPs with
+		// the node podCIDR. This is convenient for now, but wrong.
 		this.podCIDR = new CIDR(options.podCIDR);
 	}
 
@@ -179,47 +148,16 @@ export class ClusterNetwork {
 		this.targetsByServicePort.set(serviceRouteKey(namespace, name, port), [...targets]);
 	}
 
-	updatePodEndpoints(_pod: PodSandboxInstance): void {
-		// kube-proxy owns endpoint bookkeeping. This hook remains so runtime
-		// readiness transitions can call it until the runtime no longer knows about
-		// service endpoint updates.
-	}
-
-	resolveName(from: NetworkPeer, name: string): NetworkEndpoint[] {
-		const service = this.resolveServiceByName(from, name);
-		if (service) {
-			return service.ports.map((port) => ({
-				namespace: service.namespace,
-				name: service.name,
-				uid: service.uid,
-				ip: service.clusterIp,
-				port: port.port,
-				kind: "service",
-			}));
-		}
-		return [];
-	}
-
-	async fetch(from: NetworkPeer, target: string, init: HttpRequest = {}): Promise<HttpResponse> {
+	async fetch(target: string, init: HttpRequest = {}): Promise<HttpResponse> {
 		const url = this.parseHttpTarget(target);
-		if (isIpLiteral(url.hostname)) {
-			const service = this.servicesByClusterIp.get(url.hostname);
-			const port = this.parseTargetPort(url, service);
-			if (service) {
-				return await this.dispatchService(service, port, url, init);
-			}
-			return await this.dispatchHttp(url.hostname, port, url, init);
+		if (!isIpLiteral(url.hostname)) {
+			throw new NetworkError(`network fetch target ${url.hostname} must be an IP address`);
 		}
 
-		// TODO(coredns): this is temporary shortcutting. Real pods resolve Service
-		// names through their configured DNS server, typically CoreDNS behind the
-		// kube-dns Service IP, and then connect to the returned ClusterIP.
-		const service = this.resolveServiceByName(from, url.hostname);
-		if (!service) {
-			throw new NetworkError(`could not resolve ${url.hostname}`);
-		}
+		const service = this.servicesByClusterIp.get(url.hostname);
 		const port = this.parseTargetPort(url, service);
-		return await this.dispatchService(service, port, url, init);
+		const endpoint = this.routeEndpoint({ ip: url.hostname, port });
+		return await this.dispatchHttp(endpoint.ip, endpoint.port, url, init);
 	}
 
 	async fetchNodePort(nodePort: number, init: HttpRequest = {}): Promise<HttpResponse> {
@@ -231,14 +169,11 @@ export class ClusterNetwork {
 		throw new NetworkError(`no Service for NodePort ${nodePort}`);
 	}
 
-	async resolveDns(
-		_from: NetworkPeer,
-		serverIp: string,
-		request: DnsRequest,
-	): Promise<DnsResponse> {
-		const listener = this.dnsListeners.get(listenerKey(serverIp, 53));
+	async sendDns(target: string, request: DnsRequest): Promise<DnsResponse> {
+		const endpoint = this.routeEndpoint(parseEndpointTarget(target));
+		const listener = this.dnsListeners.get(listenerKey(endpoint.ip, endpoint.port));
 		if (!listener) {
-			return { rcode: "NXDOMAIN", answers: [] };
+			throw new NetworkError(`no DNS listener on ${endpoint.ip}:${endpoint.port}`);
 		}
 		try {
 			return await listener(request);
@@ -306,42 +241,26 @@ export class ClusterNetwork {
 		return port;
 	}
 
-	private resolveServiceByName(from: NetworkPeer, name: string): ServiceInstance | undefined {
-		// TODO(coredns): keep this parser only while HTTP fetches are allowed to
-		// resolve Service names directly. Fake CoreDNS should eventually own these
-		// DNS forms and return Service ClusterIPs.
-		if (!name.includes(".")) {
-			return this.servicesByKey.get(namespacedNameKey(from.namespace, name));
-		}
-		const serviceName = parseServiceName(name);
-		if (!serviceName) {
-			return undefined;
-		}
-		return this.servicesByKey.get(namespacedNameKey(serviceName.namespace, serviceName.name));
-	}
-
-	private async dispatchService(
-		service: ServiceInstance,
-		portNumber: number,
-		url: URL | undefined,
-		init: HttpRequest,
-	): Promise<HttpResponse> {
-		const port = service.ports.find((candidate) => candidate.port === portNumber);
-		if (!port) {
-			throw new NetworkError(
-				`Service ${service.namespace}/${service.name} has no port ${portNumber}`,
-			);
-		}
-		const endpoint = this.selectEndpoint(service, port);
-		return await this.dispatchHttp(endpoint.ip, endpoint.port, url, init);
-	}
-
 	private selectEndpoint(service: ServiceInstance, port: ServicePort): ServiceEndpoint {
 		const targets = this.targetsByServicePort.get(servicePortKey(service, port)) ?? [];
 		if (targets.length === 0) {
 			throw new NetworkError(`Service ${service.namespace}/${service.name} has no ready endpoints`);
 		}
 		return parseEndpointTarget(targets[Math.floor(Math.random() * targets.length)]);
+	}
+
+	private routeEndpoint(endpoint: ServiceEndpoint): ServiceEndpoint {
+		const service = this.servicesByClusterIp.get(endpoint.ip);
+		if (!service) {
+			return endpoint;
+		}
+		const port = service.ports.find((candidate) => candidate.port === endpoint.port);
+		if (!port) {
+			throw new NetworkError(
+				`Service ${service.namespace}/${service.name} has no port ${endpoint.port}`,
+			);
+		}
+		return this.selectEndpoint(service, port);
 	}
 
 	private async dispatchHttp(
@@ -384,10 +303,6 @@ export class NetworkRegistration {
 
 	bindDns(port: number, handler: DnsHandler): DnsListener {
 		return this.network.bindDns(this.podSandboxId, this.ip, port, handler);
-	}
-
-	updateEndpoints(pod: PodSandboxInstance): void {
-		this.network.updatePodEndpoints(pod);
 	}
 
 	unregister(): void {

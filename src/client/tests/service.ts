@@ -95,7 +95,7 @@ export function tests(k8s: K8s, config: KubeConfig, options: ServiceTestOptions)
 			expect(service.spec?.clusterIP).toBeTruthy();
 			expect(service.spec?.clusterIP).not.toBe("None");
 			expect(service.spec?.clusterIPs?.[0]).toBe(service.spec?.clusterIP);
-			expect(nodePort).toBeUndefined();
+			expect(nodePort).toBeGreaterThan(0);
 		});
 
 		it("should preserve allocated service values across replace", async () => {
