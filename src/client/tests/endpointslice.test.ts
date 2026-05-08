@@ -1,6 +1,7 @@
-import { expect, it, vi } from "vitest";
+import { expect, it } from "vitest";
 import type { V1Endpoint, V1EndpointSlice, V1Pod } from "../gen/models";
 import { kubernetes } from "../../test/harnesses/kubernetes";
+import { waitFor } from "../../test/wait";
 
 const READY_IMAGE = "crccheck/hello-world:latest";
 
@@ -216,34 +217,28 @@ kubernetes.describe("EndpointSlices", ({ core, discovery, getSuiteNamespace }) =
 			},
 		});
 
-		await vi.waitFor(
-			async () => {
-				const slice = await serviceEndpointSlice(serviceName);
-				expect(slice).toBeTruthy();
-				expect(slice?.ports ?? []).toEqual([]);
-				expect(slice?.endpoints ?? []).toEqual([]);
-			},
-			{ timeout: 10000, interval: 500 },
-		);
+		await waitFor(async () => {
+			const slice = await serviceEndpointSlice(serviceName);
+			expect(slice).toBeTruthy();
+			expect(slice?.ports ?? []).toEqual([]);
+			expect(slice?.endpoints ?? []).toEqual([]);
+		});
 
 		await createSelectedPod(podName, app, READY_IMAGE);
 
-		await vi.waitFor(
-			async () => {
-				const ip = await podIp(podName);
-				const slice = await serviceEndpointSlice(serviceName);
-				expect(slice?.ports?.[0]).toMatchObject({
-					name: "http",
-					port: 8080,
-					protocol: "TCP",
-				});
-				expect((slice?.endpoints ?? []).some((endpoint) => endpoint.addresses.includes(ip))).toBe(
-					true,
-				);
-			},
-			{ timeout: 10000, interval: 500 },
-		);
-	}, 30000);
+		await waitFor(async () => {
+			const ip = await podIp(podName);
+			const slice = await serviceEndpointSlice(serviceName);
+			expect(slice?.ports?.[0]).toMatchObject({
+				name: "http",
+				port: 8080,
+				protocol: "TCP",
+			});
+			expect((slice?.endpoints ?? []).some((endpoint) => endpoint.addresses.includes(ip))).toBe(
+				true,
+			);
+		});
+	});
 
 	it("should update endpoint slices when selected pods are added and removed", async () => {
 		const serviceName = "multi-pod-service";
@@ -269,16 +264,13 @@ kubernetes.describe("EndpointSlices", ({ core, discovery, getSuiteNamespace }) =
 
 		let firstIp = "";
 		let secondIp = "";
-		await vi.waitFor(
-			async () => {
-				firstIp = await podIp(firstPod);
-				secondIp = await podIp(secondPod);
+		await waitFor(async () => {
+			firstIp = await podIp(firstPod);
+			secondIp = await podIp(secondPod);
 
-				const addresses = endpointAddresses(await serviceEndpointSlice(serviceName));
-				expect(addresses).toEqual(expect.arrayContaining([firstIp, secondIp]));
-			},
-			{ timeout: 10000, interval: 500 },
-		);
+			const addresses = endpointAddresses(await serviceEndpointSlice(serviceName));
+			expect(addresses).toEqual(expect.arrayContaining([firstIp, secondIp]));
+		});
 
 		await core.deleteNamespacedPod({
 			name: firstPod,
@@ -289,15 +281,12 @@ kubernetes.describe("EndpointSlices", ({ core, discovery, getSuiteNamespace }) =
 			},
 		});
 
-		await vi.waitFor(
-			async () => {
-				const addresses = endpointAddresses(await serviceEndpointSlice(serviceName));
-				expect(addresses).toContain(secondIp);
-				expect(addresses).not.toContain(firstIp);
-			},
-			{ timeout: 10000, interval: 500 },
-		);
-	}, 10000);
+		await waitFor(async () => {
+			const addresses = endpointAddresses(await serviceEndpointSlice(serviceName));
+			expect(addresses).toContain(secondIp);
+			expect(addresses).not.toContain(firstIp);
+		});
+	});
 
 	it("should mark endpoints not ready when selected pods become not ready", async () => {
 		const serviceName = "not-ready-service";
@@ -320,26 +309,20 @@ kubernetes.describe("EndpointSlices", ({ core, discovery, getSuiteNamespace }) =
 		await createSelectedPod(podName, app, READY_IMAGE, 8000);
 
 		let ip = "";
-		await vi.waitFor(
-			async () => {
-				ip = await podIp(podName);
-				const slice = await serviceEndpointSliceWithAddress(serviceName, ip);
-				expect(readyEndpointAddresses(slice)).toContain(ip);
-				expect(endpointForPod(slice, podName)?.conditions?.ready).not.toBe(false);
-			},
-			{ timeout: 10000, interval: 500 },
-		);
+		await waitFor(async () => {
+			ip = await podIp(podName);
+			const slice = await serviceEndpointSliceWithAddress(serviceName, ip);
+			expect(readyEndpointAddresses(slice)).toContain(ip);
+			expect(endpointForPod(slice, podName)?.conditions?.ready).not.toBe(false);
+		});
 
-		await vi.waitFor(
-			async () => {
-				await markPodNotReady(podName);
-				const slice = await serviceEndpointSliceWithAddress(serviceName, ip);
-				const endpoint = endpointForPod(slice, podName);
-				expect(endpoint?.addresses).toContain(ip);
-				expect(endpoint?.conditions?.ready).toBe(false);
-				expect(readyEndpointAddresses(slice)).not.toContain(ip);
-			},
-			{ timeout: 10000, interval: 500 },
-		);
-	}, 30000);
+		await waitFor(async () => {
+			await markPodNotReady(podName);
+			const slice = await serviceEndpointSliceWithAddress(serviceName, ip);
+			const endpoint = endpointForPod(slice, podName);
+			expect(endpoint?.addresses).toContain(ip);
+			expect(endpoint?.conditions?.ready).toBe(false);
+			expect(readyEndpointAddresses(slice)).not.toContain(ip);
+		});
+	});
 });

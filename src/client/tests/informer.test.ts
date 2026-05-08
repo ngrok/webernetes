@@ -1,8 +1,13 @@
 import { expect, it, vi } from "vitest";
 import type { V1Pod } from "../gen/models";
 import { kubernetes } from "../../test/harnesses/kubernetes";
+import { waitFor } from "../../test/wait";
+import { retryConflicts } from "../../retry-update";
+import { Clock } from "../../clock";
 
 kubernetes.describe("Informer", ({ core, k8s, kubeConfig, getTestNamespace, createNamespace }) => {
+	const retryClock = new Clock();
+
 	async function createPod(pod: Partial<V1Pod>, podNamespace?: string): Promise<V1Pod> {
 		const namespace = podNamespace ?? (await getTestNamespace());
 		const response = await core.createNamespacedPod({
@@ -31,30 +36,20 @@ kubernetes.describe("Informer", ({ core, k8s, kubeConfig, getTestNamespace, crea
 		mutate: (pod: V1Pod) => void,
 		podNamespace?: string,
 	): Promise<V1Pod> {
-		let lastError: unknown;
 		const namespace = podNamespace ?? (await getTestNamespace());
 
-		for (let attempt = 0; attempt < 5; attempt++) {
-			const current = await core.readNamespacedPod({ name, namespace });
-			mutate(current);
-
-			try {
+		return await retryConflicts(
+			async () => {
+				const current = await core.readNamespacedPod({ name, namespace });
+				mutate(current);
 				return await core.replaceNamespacedPod({
 					name,
 					namespace,
 					body: current,
 				});
-			} catch (error) {
-				if (error instanceof Error && error.message.includes("HTTP-Code: 409")) {
-					lastError = error;
-					await new Promise((resolve) => setTimeout(resolve, 50));
-					continue;
-				}
-				throw error;
-			}
-		}
-
-		throw lastError ?? new Error(`Failed to replace pod ${name}`);
+			},
+			{ clock: retryClock },
+		);
 	}
 
 	it("lists initial objects into the cache on start", async () => {
@@ -73,7 +68,7 @@ kubernetes.describe("Informer", ({ core, k8s, kubeConfig, getTestNamespace, crea
 		try {
 			await informer.start();
 
-			await vi.waitFor(() => {
+			await waitFor(() => {
 				expect(connected).toHaveBeenCalledTimes(1);
 				expect(added).toHaveBeenCalledWith(
 					expect.objectContaining({
@@ -125,7 +120,7 @@ kubernetes.describe("Informer", ({ core, k8s, kubeConfig, getTestNamespace, crea
 			await informer.start();
 
 			await createPod({ metadata: { name: "change-pod", labels: { app: "v1" } } });
-			await vi.waitFor(() => {
+			await waitFor(() => {
 				expect(changed).toHaveBeenCalledWith(
 					expect.objectContaining({
 						metadata: expect.objectContaining({
@@ -143,7 +138,7 @@ kubernetes.describe("Informer", ({ core, k8s, kubeConfig, getTestNamespace, crea
 					labels: { app: "v2" },
 				};
 			});
-			await vi.waitFor(() => {
+			await waitFor(() => {
 				expect(changed.mock.calls.length).toBeGreaterThan(changeCallsAfterAdd);
 				expect(changed).toHaveBeenCalledWith(
 					expect.objectContaining({
@@ -165,7 +160,7 @@ kubernetes.describe("Informer", ({ core, k8s, kubeConfig, getTestNamespace, crea
 				body: { gracePeriodSeconds: 0 },
 			});
 
-			await vi.waitFor(() => {
+			await waitFor(() => {
 				expect(changed.mock.calls.length).toBeGreaterThan(changeCallsAfterUpdate);
 			});
 
@@ -191,7 +186,7 @@ kubernetes.describe("Informer", ({ core, k8s, kubeConfig, getTestNamespace, crea
 				body: { gracePeriodSeconds: 0 },
 			});
 
-			await vi.waitFor(() => {
+			await waitFor(() => {
 				expect(added).toHaveBeenCalledWith(
 					expect.objectContaining({
 						metadata: expect.objectContaining({
@@ -242,7 +237,7 @@ kubernetes.describe("Informer", ({ core, k8s, kubeConfig, getTestNamespace, crea
 			await informer.start();
 
 			await createPod({ metadata: { name: "informer-pod", labels: { app: "v1" } } });
-			await vi.waitFor(() => {
+			await waitFor(() => {
 				expect(added).toHaveBeenCalledWith(
 					expect.objectContaining({
 						metadata: expect.objectContaining({
@@ -268,7 +263,7 @@ kubernetes.describe("Informer", ({ core, k8s, kubeConfig, getTestNamespace, crea
 					labels: { app: "v2" },
 				};
 			});
-			await vi.waitFor(() => {
+			await waitFor(() => {
 				expect(updated).toHaveBeenCalledWith(
 					expect.objectContaining({
 						metadata: expect.objectContaining({
@@ -288,7 +283,7 @@ kubernetes.describe("Informer", ({ core, k8s, kubeConfig, getTestNamespace, crea
 				gracePeriodSeconds: 0,
 				body: { gracePeriodSeconds: 0 },
 			});
-			await vi.waitFor(() => {
+			await waitFor(() => {
 				expect(deleted).toHaveBeenCalledWith(
 					expect.objectContaining({
 						metadata: expect.objectContaining({
@@ -316,7 +311,7 @@ kubernetes.describe("Informer", ({ core, k8s, kubeConfig, getTestNamespace, crea
 		try {
 			await informer.start();
 
-			await vi.waitFor(() => {
+			await waitFor(() => {
 				expect(connected).toHaveBeenCalledTimes(1);
 			});
 
@@ -325,7 +320,7 @@ kubernetes.describe("Informer", ({ core, k8s, kubeConfig, getTestNamespace, crea
 
 			await informer.start();
 
-			await vi.waitFor(() => {
+			await waitFor(() => {
 				expect(connected).toHaveBeenCalledTimes(2);
 				expect(informer.get("created-while-stopped", namespace)).toEqual(
 					expect.objectContaining({
@@ -365,7 +360,7 @@ kubernetes.describe("Informer", ({ core, k8s, kubeConfig, getTestNamespace, crea
 
 			await informer.start();
 
-			await vi.waitFor(() => {
+			await waitFor(() => {
 				expect(informer.get("selected-pod", namespace)).toEqual(
 					expect.objectContaining({
 						metadata: expect.objectContaining({
@@ -413,7 +408,7 @@ kubernetes.describe("Informer", ({ core, k8s, kubeConfig, getTestNamespace, crea
 				};
 			});
 
-			await vi.waitFor(() => {
+			await waitFor(() => {
 				expect(added).toHaveBeenCalledWith(
 					expect.objectContaining({
 						metadata: expect.objectContaining({
@@ -437,7 +432,7 @@ kubernetes.describe("Informer", ({ core, k8s, kubeConfig, getTestNamespace, crea
 				};
 			});
 
-			await vi.waitFor(() => {
+			await waitFor(() => {
 				expect(deleted).toHaveBeenCalledWith(
 					expect.objectContaining({
 						metadata: expect.objectContaining({
@@ -468,7 +463,7 @@ kubernetes.describe("Informer", ({ core, k8s, kubeConfig, getTestNamespace, crea
 		try {
 			await informer.start();
 
-			await vi.waitFor(() => {
+			await waitFor(() => {
 				expect(informer.get(podName, namespace)).toEqual(
 					expect.objectContaining({
 						metadata: expect.objectContaining({

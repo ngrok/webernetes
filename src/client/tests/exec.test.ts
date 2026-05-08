@@ -1,7 +1,8 @@
-import { expect, it, vi } from "vitest";
+import { expect, it } from "vitest";
 import type { V1Pod, V1Status } from "../gen/models";
 import type { K8s, KubeConfig } from "../types";
 import { kubernetes } from "../../test/harnesses/kubernetes";
+import { waitFor } from "../../test/wait";
 
 kubernetes.describe("Exec", ({ core, k8s, kubeConfig, getSuiteNamespace }) => {
 	it("should execute commands in a pod with service DNS", async () => {
@@ -58,18 +59,15 @@ kubernetes.describe("Exec", ({ core, k8s, kubeConfig, getSuiteNamespace }) => {
 			},
 		});
 
-		await vi.waitFor(
-			async () => {
-				expectPodReady(
-					await core.readNamespacedPod({
-						name: "hello-world",
-						namespace,
-					}),
-				);
-				expectPodReady(await core.readNamespacedPod({ name: "busybox", namespace }));
-			},
-			{ timeout: 120_000, interval: 500 },
-		);
+		await waitFor(async () => {
+			expectPodReady(
+				await core.readNamespacedPod({
+					name: "hello-world",
+					namespace,
+				}),
+			);
+			expectPodReady(await core.readNamespacedPod({ name: "busybox", namespace }));
+		});
 
 		const targetPod = await core.readNamespacedPod({
 			name: "hello-world",
@@ -96,7 +94,7 @@ kubernetes.describe("Exec", ({ core, k8s, kubeConfig, getSuiteNamespace }) => {
 			expect(result.stderr).toBe("");
 			expect(result.stdout).toContain("Hello World");
 		}
-	}, 180_000);
+	});
 });
 
 interface ExecCommandResult {

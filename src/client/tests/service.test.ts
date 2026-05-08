@@ -1,6 +1,7 @@
-import { expect, it, vi } from "vitest";
+import { expect, it } from "vitest";
 import type { V1Pod, V1Service } from "../gen/models";
 import { kubernetes } from "../../test/harnesses/kubernetes";
+import { waitFor } from "../../test/wait";
 
 kubernetes.describe("Services", ({ core, getSuiteNamespace, fetchNodePort }) => {
 	async function createService(service: Partial<V1Service>): Promise<V1Service> {
@@ -220,38 +221,32 @@ kubernetes.describe("Services", ({ core, getSuiteNamespace, fetchNodePort }) => 
 			throw new Error("Expected Service to allocate a NodePort");
 		}
 
-		await vi.waitFor(
-			async () => {
-				expectPodReady(
-					await core.readNamespacedPod({
-						name: "http-echo-one",
-						namespace: await getSuiteNamespace(),
-					}),
-				);
-				expectPodReady(
-					await core.readNamespacedPod({
-						name: "http-echo-two",
-						namespace: await getSuiteNamespace(),
-					}),
-				);
-			},
-			{ timeout: 10_000, interval: 500 },
-		);
+		await waitFor(async () => {
+			expectPodReady(
+				await core.readNamespacedPod({
+					name: "http-echo-one",
+					namespace: await getSuiteNamespace(),
+				}),
+			);
+			expectPodReady(
+				await core.readNamespacedPod({
+					name: "http-echo-two",
+					namespace: await getSuiteNamespace(),
+				}),
+			);
+		});
 
 		const bodies = new Set<string>();
-		await vi.waitFor(
-			async () => {
-				for (let attempt = 0; attempt < 2; attempt++) {
-					const response = await fetchNodePort(nodePort, { path: "/" });
-					expect(response.status).toBe(200);
-					if (response.body) {
-						bodies.add(response.body.trim());
-					}
+		await waitFor(async () => {
+			for (let attempt = 0; attempt < 2; attempt++) {
+				const response = await fetchNodePort(nodePort, { path: "/" });
+				expect(response.status).toBe(200);
+				if (response.body) {
+					bodies.add(response.body.trim());
 				}
-				expect(bodies).toEqual(new Set([firstText, secondText]));
-			},
-			{ timeout: 20_000, interval: 500 },
-		);
+			}
+			expect(bodies).toEqual(new Set([firstText, secondText]));
+		});
 	});
 });
 

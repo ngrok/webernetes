@@ -1,6 +1,7 @@
-import type { ImageDefinition, ProcessContext } from "../cri";
+import type { ProcessContext } from "../cri";
+import { BaseImage } from "./base";
 
-export class HttpEchoImage implements ImageDefinition {
+export class HttpEchoImage extends BaseImage {
 	async start(context: ProcessContext, argv: readonly string[]): Promise<number> {
 		const options = parseOptions(argv);
 		const text = options.text ?? context.env.get("ECHO_TEXT");
@@ -24,10 +25,6 @@ export class HttpEchoImage implements ImageDefinition {
 			};
 		});
 		return await context.waitUntilKilled();
-	}
-
-	async exec(_context: ProcessContext, _argv: readonly string[]): Promise<number> {
-		return 0;
 	}
 }
 

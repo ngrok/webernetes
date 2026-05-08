@@ -191,6 +191,11 @@ export class ClusterNetwork {
 		return await this.dispatchHttp(endpoint.ip, endpoint.port, url, init);
 	}
 
+	canConnect(host: string, port: number): boolean {
+		const endpoint = this.routeEndpoint({ ip: host, port });
+		return this.httpListeners.has(listenerKey(endpoint.ip, endpoint.port));
+	}
+
 	async fetchNodePort(nodePort: number, init: HttpRequest = {}): Promise<HttpResponse> {
 		const route = this.servicesByNodePort.get(nodePort);
 		if (route) {

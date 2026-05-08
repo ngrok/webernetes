@@ -193,6 +193,11 @@ export interface CoreV1ApiDeleteNamespaceRequest {
 	body?: V1DeleteOptions;
 }
 
+export interface CoreV1ApiReadNamespaceRequest {
+	name: string;
+	pretty?: string;
+}
+
 export interface CoreV1Api {
 	createNamespace(request: CoreV1ApiCreateNamespaceRequest): Promise<V1Namespace>;
 	createNode(request: CoreV1ApiCreateNodeRequest): Promise<V1Node>;
@@ -210,6 +215,7 @@ export interface CoreV1Api {
 	): Promise<V1ServiceList>;
 	readNamespacedPod(request: CoreV1ApiReadNamespacedPodRequest): Promise<V1Pod>;
 	readNamespacedService(request: CoreV1ApiReadNamespacedServiceRequest): Promise<V1Service>;
+	readNamespace(request: CoreV1ApiReadNamespaceRequest): Promise<V1Namespace>;
 	replaceNamespacedPod(request: CoreV1ApiReplaceNamespacedPodRequest): Promise<V1Pod>;
 	replaceNamespacedPodStatus(request: CoreV1ApiReplaceNamespacedPodStatusRequest): Promise<V1Pod>;
 	replaceNamespacedService(request: CoreV1ApiReplaceNamespacedServiceRequest): Promise<V1Service>;

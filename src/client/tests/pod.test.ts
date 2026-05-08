@@ -1,9 +1,10 @@
-import { expect, it, vi } from "vitest";
+import { expect, it } from "vitest";
 import { CIDR } from "../../net";
 import type { V1Pod } from "../gen/models";
 import { kubernetes } from "../../test/harnesses/kubernetes";
+import { waitFor } from "../../test/wait";
 
-kubernetes.describe("Pods", ({ core, getSuiteNamespace, createNamespace }) => {
+kubernetes.describe("Pods", ({ core, getSuiteNamespace, createNamespace, target }) => {
 	const podImage = "registry.k8s.io/pause:3.10";
 
 	async function createPod(pod: Partial<V1Pod>, podNamespace?: string): Promise<V1Pod> {
@@ -91,9 +92,49 @@ kubernetes.describe("Pods", ({ core, getSuiteNamespace, createNamespace }) => {
 
 		expect(deleted.metadata?.name).toBe("delete-test");
 
-		await vi.waitFor(async () => {
+		await waitFor(async () => {
 			const pods = await core.listNamespacedPod({ namespace });
 			expect(pods.items.find((pod) => pod.metadata?.name === "delete-test")).toBeUndefined();
+		});
+	});
+
+	it("should keep a pod while graceful deletion is in progress", async () => {
+		if (target !== "simulator") {
+			return;
+		}
+
+		await createPod({
+			metadata: { name: "graceful-delete-test" },
+			spec: {
+				containers: [{ name: "test", image: podImage }],
+				terminationGracePeriodSeconds: 1,
+			},
+		});
+		const namespace = await getSuiteNamespace();
+
+		const deleted = await core.deleteNamespacedPod({
+			name: "graceful-delete-test",
+			namespace,
+			gracePeriodSeconds: 1,
+			body: {
+				gracePeriodSeconds: 1,
+			},
+		});
+
+		expect(deleted.metadata?.deletionTimestamp).toBeDefined();
+		expect(deleted.metadata?.deletionGracePeriodSeconds).toBe(1);
+
+		const terminating = await core.readNamespacedPod({
+			name: "graceful-delete-test",
+			namespace,
+		});
+		expect(terminating.metadata?.deletionTimestamp).toBeDefined();
+
+		await waitFor(async () => {
+			const pods = await core.listNamespacedPod({ namespace });
+			expect(
+				pods.items.find((pod) => pod.metadata?.name === "graceful-delete-test"),
+			).toBeUndefined();
 		});
 	});
 
@@ -395,15 +436,12 @@ kubernetes.describe("Pods", ({ core, getSuiteNamespace, createNamespace }) => {
 				});
 				createdPods.push({ name, namespace });
 
-				await vi.waitFor(
-					async () => {
-						const pod = await core.readNamespacedPod({ name, namespace });
-						expect(pod.status?.phase).toBe("Running");
-						expect(pod.status?.podIP).toBeTruthy();
-						expect(cidr.contains(pod.status?.podIP ?? "")).toBe(true);
-					},
-					{ timeout: 10_000, interval: 500 },
-				);
+				await waitFor(async () => {
+					const pod = await core.readNamespacedPod({ name, namespace });
+					expect(pod.status?.phase).toBe("Running");
+					expect(pod.status?.podIP).toBeTruthy();
+					expect(cidr.contains(pod.status?.podIP ?? "")).toBe(true);
+				});
 			}
 		} finally {
 			for (const pod of createdPods) {

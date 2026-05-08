@@ -1,6 +1,9 @@
-import { expect, it, vi } from "vitest";
+import { expect, it } from "vitest";
 import type { V1Pod } from "../gen/models";
 import { kubernetes } from "../../test/harnesses/kubernetes";
+import { waitFor } from "../../test/wait";
+import { retryConflicts } from "../../retry-update";
+import { Clock } from "../../clock";
 
 interface WatchAndWaitOptions<T> {
 	url: string;
@@ -11,6 +14,8 @@ interface WatchAndWaitOptions<T> {
 }
 
 kubernetes.describe("Watch", ({ core, k8s, kubeConfig, getTestNamespace }) => {
+	const retryClock = new Clock();
+
 	async function watchAndWait<T>({
 		url,
 		queryParams,
@@ -37,7 +42,7 @@ kubernetes.describe("Watch", ({ core, k8s, kubeConfig, getTestNamespace }) => {
 
 		try {
 			await act?.();
-			await vi.waitFor(assert);
+			await waitFor(assert);
 		} finally {
 			controller?.abort();
 		}
@@ -64,30 +69,20 @@ kubernetes.describe("Watch", ({ core, k8s, kubeConfig, getTestNamespace }) => {
 	}
 
 	async function replacePod(name: string, mutate: (pod: V1Pod) => void): Promise<V1Pod> {
-		let lastError: unknown;
 		const namespace = await getTestNamespace();
 
-		for (let attempt = 0; attempt < 5; attempt++) {
-			const current = await core.readNamespacedPod({ name, namespace });
-			mutate(current);
-
-			try {
+		return await retryConflicts(
+			async () => {
+				const current = await core.readNamespacedPod({ name, namespace });
+				mutate(current);
 				return await core.replaceNamespacedPod({
 					name,
 					namespace,
 					body: current,
 				});
-			} catch (error) {
-				if (error instanceof Error && error.message.includes("HTTP-Code: 409")) {
-					lastError = error;
-					await new Promise((resolve) => setTimeout(resolve, 50));
-					continue;
-				}
-				throw error;
-			}
-		}
-
-		throw lastError ?? new Error(`Failed to replace pod ${name}`);
+			},
+			{ clock: retryClock },
+		);
 	}
 
 	it("exports Watch and emits ADDED for created pods", async () => {

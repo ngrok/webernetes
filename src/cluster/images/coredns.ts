@@ -1,6 +1,7 @@
 import * as k8s from "../../client";
 import type { DnsRequest, DnsResponse } from "../cni";
-import type { ImageDefinition, ProcessContext } from "../cri";
+import type { ProcessContext } from "../cri";
+import { BaseImage } from "./base";
 
 const SERVICE_TTL_SECONDS = 30;
 
@@ -8,12 +9,13 @@ export interface CoreDNSOptions {
 	kubeConfig: k8s.KubeConfig;
 }
 
-export class CoreDNS implements ImageDefinition {
+export class CoreDNS extends BaseImage {
 	private readonly api: k8s.CoreV1Api;
 	private serviceInformer: k8s.Informer<k8s.V1Service> | undefined;
 	private readonly services = new Map<string, k8s.V1Service>();
 
 	constructor(private readonly options: CoreDNSOptions) {
+		super();
 		this.api = options.kubeConfig.makeApiClient(k8s.CoreV1Api);
 	}
 
@@ -25,10 +27,6 @@ export class CoreDNS implements ImageDefinition {
 		} finally {
 			await this.close();
 		}
-	}
-
-	async exec(_context: ProcessContext, _argv: readonly string[]): Promise<number> {
-		return 0;
 	}
 
 	private async close(): Promise<void> {

@@ -184,6 +184,19 @@ export interface ContainerStatus {
 	ready: boolean;
 }
 
+export interface RuntimePod {
+	id: string;
+	name: string;
+	namespace: string;
+	createdAt: number;
+	sandboxes: PodSandboxInstance[];
+}
+
+export interface PodRuntimeStatus {
+	ip?: string;
+	containerStatuses: ContainerStatus[];
+}
+
 export class Runtime {
 	readonly network: ClusterNetwork;
 	readonly imageRegistry: ImageRegistry;
@@ -256,6 +269,32 @@ export class Runtime {
 			);
 	}
 
+	getPod(podUid: string): RuntimePod | undefined {
+		const sandboxes = this.getPodSandboxesByPodUid(podUid);
+		const latest = sandboxes[0];
+		if (!latest) {
+			return undefined;
+		}
+		return {
+			id: podUid,
+			name: latest.name,
+			namespace: latest.namespace,
+			createdAt: latest.createdAt,
+			sandboxes,
+		};
+	}
+
+	getPodStatus(pod: RuntimePod): PodRuntimeStatus {
+		const sandbox = pod.sandboxes[0];
+		const sandboxStatus = sandbox?.status();
+		return {
+			ip: sandboxStatus?.network?.ip,
+			containerStatuses: pod.sandboxes.flatMap((sandbox) =>
+				[...sandbox.containers.values()].map((container) => container.status()),
+			),
+		};
+	}
+
 	async createContainer(
 		podSandboxId: string,
 		config: ContainerConfig,
@@ -320,6 +359,16 @@ export class Runtime {
 		return this.containerOrThrow(containerId).status();
 	}
 
+	findContainer(podSandboxId: string, containerName: string): ContainerInstance | undefined {
+		const sandbox = this.sandboxes.get(podSandboxId);
+		if (!sandbox) {
+			return undefined;
+		}
+		return [...sandbox.containers.values()]
+			.filter((container) => container.name === containerName)
+			.toSorted((left, right) => right.createdAt - left.createdAt)[0];
+	}
+
 	async execSync(
 		containerId: string,
 		argv: string[],
@@ -375,6 +424,10 @@ export class Runtime {
 
 	nowMs(): number {
 		return this.options.clock.nowMs();
+	}
+
+	get clock(): Clock {
+		return this.options.clock;
 	}
 
 	kubeConfig(): KubeConfig {
@@ -498,6 +551,7 @@ export class ContainerInstance {
 	readonly ports: readonly ContainerPort[];
 	readonly restartCount: number;
 	readonly createdAt: number;
+	readonly fs = new ContainerFileSystem();
 	private state: ContainerState = "Created";
 	private mainProcess: ProcessInstance | undefined;
 	private startedAtMs: number | undefined;
@@ -742,12 +796,32 @@ export class ProcessContext {
 		return this.process.container;
 	}
 
+	fsRead(path: string): string | undefined {
+		return this.process.container.fs.read(path);
+	}
+
+	fsWrite(path: string, contents = ""): void {
+		this.process.container.fs.write(path, contents);
+	}
+
+	fsDelete(path: string): boolean {
+		return this.process.container.fs.delete(path);
+	}
+
+	fsHas(path: string): boolean {
+		return this.process.container.fs.has(path);
+	}
+
 	get pod(): PodSandboxInstance {
 		return this.process.container.pod;
 	}
 
 	get kubeConfig(): KubeConfig {
 		return this.runtime.kubeConfig();
+	}
+
+	get clock(): Clock {
+		return this.runtime.clock;
 	}
 
 	get signal(): AbortSignal {
@@ -828,5 +902,25 @@ export class ProcessContext {
 
 	exit(code = 0): never {
 		return this.process.exit(code);
+	}
+}
+
+export class ContainerFileSystem {
+	private readonly files = new Map<string, string>();
+
+	read(path: string): string | undefined {
+		return this.files.get(path);
+	}
+
+	write(path: string, contents = ""): void {
+		this.files.set(path, contents);
+	}
+
+	delete(path: string): boolean {
+		return this.files.delete(path);
+	}
+
+	has(path: string): boolean {
+		return this.files.has(path);
 	}
 }

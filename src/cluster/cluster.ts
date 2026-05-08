@@ -7,6 +7,7 @@ import { ImageRegistry, type ExecResult } from "./cri";
 import { CoreDNS } from "./images/coredns";
 import { BusyBoxImage } from "./images/busybox";
 import { HttpEchoImage } from "./images/http-echo";
+import { AgnhostImage } from "./images/agnhost";
 import { EndpointSliceController } from "./images/endpointslice-controller";
 import { PauseImage } from "./images/pause";
 import { KubeProxy } from "./images/proxy";
@@ -49,6 +50,7 @@ export class Cluster {
 		this.imageRegistry.register("registry.k8s.io/pause:3.10", new PauseImage());
 		this.imageRegistry.register("busybox:1.36", new BusyBoxImage());
 		this.imageRegistry.register("hashicorp/http-echo:1.0", new HttpEchoImage());
+		this.imageRegistry.register("registry.k8s.io/e2e-test-images/agnhost:2.40", new AgnhostImage());
 
 		this.servers = [
 			new Server(this, { name: "node-1", podCIDR: "10.0.0.0/24" }),
@@ -159,7 +161,7 @@ export class Cluster {
 		return await this.network.fetchNodePort(nodePort, request);
 	}
 
-	public async execPodContainer(
+	public async exec(
 		namespace: string,
 		podName: string,
 		containerName: string | undefined,
@@ -174,7 +176,7 @@ export class Cluster {
 		if (!server) {
 			throw new Error(`node ${nodeName} not found`);
 		}
-		return await server.kubelet.execPodContainer(namespace, podName, containerName, argv);
+		return await server.kubelet.exec(namespace, podName, containerName, argv);
 	}
 
 	public close() {

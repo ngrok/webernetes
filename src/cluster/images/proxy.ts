@@ -1,13 +1,14 @@
 import * as k8s from "../../client";
 import type { ClusterNetwork, ServiceInstance } from "../cni";
-import type { ImageDefinition, ProcessContext } from "../cri";
+import type { ProcessContext } from "../cri";
+import { BaseImage } from "./base";
 
 export interface KubeProxyOptions {
 	kubeConfig: k8s.KubeConfig;
 	network: ClusterNetwork;
 }
 
-export class KubeProxy implements ImageDefinition {
+export class KubeProxy extends BaseImage {
 	private readonly coreApi: k8s.CoreV1Api;
 	private readonly discoveryApi: k8s.DiscoveryV1Api;
 	private serviceInformer: k8s.Informer<k8s.V1Service> | undefined;
@@ -17,6 +18,7 @@ export class KubeProxy implements ImageDefinition {
 	private readonly endpointSliceKeysByService = new Map<string, Set<string>>();
 
 	constructor(private readonly options: KubeProxyOptions) {
+		super();
 		this.coreApi = options.kubeConfig.makeApiClient(k8s.CoreV1Api);
 		this.discoveryApi = options.kubeConfig.makeApiClient(k8s.DiscoveryV1Api);
 	}
@@ -28,10 +30,6 @@ export class KubeProxy implements ImageDefinition {
 		} finally {
 			await this.close();
 		}
-	}
-
-	async exec(_context: ProcessContext, _argv: readonly string[]): Promise<number> {
-		return 0;
 	}
 
 	private async close(): Promise<void> {

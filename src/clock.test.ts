@@ -3,10 +3,6 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { Clock, MockedDate } from "./clock";
 import { browser } from "./test/describe";
 
-function wait(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 function diffMs(time1: Date, time2: Date): number {
 	return time1.getTime() - time2.getTime();
 }
@@ -26,18 +22,21 @@ function diffTimes(times: Date[]): number[] {
 
 browser.describe("Clock", () => {
 	let clock: Clock;
+
 	beforeEach(() => {
+		vi.useFakeTimers();
 		clock = new Clock();
 	});
 
 	afterEach(() => {
 		clock.clear();
+		vi.useRealTimers();
 	});
 
 	it("should get the current time", () => {
 		const fakeNow = clock.now();
 		const realNow = new Date();
-		expect(diffMs(fakeNow, realNow)).toBeLessThan(3);
+		expect(diffMs(fakeNow, realNow)).toBe(0);
 	});
 
 	it("should give out MockedDates", () => {
@@ -52,7 +51,7 @@ browser.describe("Clock", () => {
 		expect(clock.isPaused()).toBe(true);
 
 		const time1 = clock.now();
-		await wait(20);
+		await vi.advanceTimersByTimeAsync(20);
 		const time2 = clock.now();
 
 		expect(diffMs(time1, time2)).toBe(0);
@@ -63,20 +62,13 @@ browser.describe("Clock", () => {
 
 		for (let i = 0; i < 5; i++) {
 			clock.pause();
-			await wait(10);
+			await vi.advanceTimersByTimeAsync(10);
 			clock.resume();
-			await wait(10);
+			await vi.advanceTimersByTimeAsync(10);
 			diffs.push(diffMs(new Date(), clock.now()));
 		}
 
-		for (let i = 1; i < diffs.length; i++) {
-			const previous = diffs[i - 1];
-			const current = diffs[i];
-			if (previous === undefined || current === undefined) {
-				throw new Error("Expected adjacent diffs");
-			}
-			expect(current).toBeGreaterThan(previous);
-		}
+		expect(diffs).toEqual([10, 20, 30, 40, 50]);
 	});
 
 	it("should not complete timeouts when paused", async () => {
@@ -85,9 +77,10 @@ browser.describe("Clock", () => {
 			if (completed) {
 				throw new Error("already completed");
 			}
+			completed = true;
 		}, 10);
 		clock.pause();
-		await wait(20);
+		await vi.advanceTimersByTimeAsync(20);
 		expect(completed).toBe(false);
 	});
 
@@ -100,15 +93,14 @@ browser.describe("Clock", () => {
 			completed = true;
 		}, 10);
 		clock.pause();
-		await wait(20);
+		await vi.advanceTimersByTimeAsync(20);
 		expect(completed).toBe(false);
+
 		clock.resume();
-		await vi.waitFor(
-			() => {
-				expect(completed).toBe(true);
-			},
-			{ timeout: 100, interval: 5 },
-		);
+		await vi.advanceTimersByTimeAsync(9);
+		expect(completed).toBe(false);
+		await vi.advanceTimersByTimeAsync(1);
+		expect(completed).toBe(true);
 	});
 
 	it("should complete resumed timeouts at the correct time", async () => {
@@ -122,27 +114,22 @@ browser.describe("Clock", () => {
 			fakeCompletedAt = clock.now();
 		}, 10);
 		const now = new Date();
+
 		clock.pause();
-		await wait(20);
+		await vi.advanceTimersByTimeAsync(20);
 		clock.resume();
-		await vi.waitFor(
-			() => {
-				expect(realCompletedAt).toBeDefined();
-				expect(fakeCompletedAt).toBeDefined();
-			},
-			{ timeout: 100, interval: 5 },
-		);
+		await vi.advanceTimersByTimeAsync(10);
 
 		if (!realCompletedAt || !fakeCompletedAt) {
 			throw new Error("Expected timeout to complete");
 		}
 
 		const realElapsedMs = diffMs(realCompletedAt, now);
-		expect(realElapsedMs).toBeGreaterThanOrEqual(30);
+		expect(realElapsedMs).toBe(30);
 
 		const fakeElapsedMs = diffMs(fakeCompletedAt, now);
-		expect(fakeElapsedMs).toBeGreaterThanOrEqual(9);
-		expect(realElapsedMs - fakeElapsedMs).toBeGreaterThanOrEqual(20);
+		expect(fakeElapsedMs).toBe(10);
+		expect(realElapsedMs - fakeElapsedMs).toBe(20);
 	});
 
 	it("should be able to cancel a task", async () => {
@@ -151,18 +138,17 @@ browser.describe("Clock", () => {
 			completed = true;
 		}, 10);
 		clock.clearTimeout(timer);
-		await wait(20);
+		await vi.advanceTimersByTimeAsync(20);
 		expect(completed).toBe(false);
 	});
 
 	it("should be able to cancel all tasks", async () => {
-		const clock = new Clock();
 		let completed = false;
 		clock.setTimeout(() => {
 			completed = true;
 		}, 10);
 		clock.clear();
-		await wait(20);
+		await vi.advanceTimersByTimeAsync(20);
 		expect(completed).toBe(false);
 	});
 
@@ -176,12 +162,8 @@ browser.describe("Clock", () => {
 		calls.push("sync");
 		expect(calls).toEqual(["sync"]);
 
-		await vi.waitFor(
-			() => {
-				expect(calls).toEqual(["sync", "microtask"]);
-			},
-			{ timeout: 100, interval: 5 },
-		);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(calls).toEqual(["sync", "microtask"]);
 	});
 
 	it("should flush nested microtasks in order", async () => {
@@ -194,12 +176,8 @@ browser.describe("Clock", () => {
 			});
 		});
 
-		await vi.waitFor(
-			() => {
-				expect(calls).toEqual(["first", "second"]);
-			},
-			{ timeout: 100, interval: 5 },
-		);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(calls).toEqual(["first", "second"]);
 	});
 
 	it("should not flush microtasks while paused", async () => {
@@ -210,16 +188,12 @@ browser.describe("Clock", () => {
 			calls.push("microtask");
 		});
 
-		await wait(0);
+		await vi.advanceTimersByTimeAsync(0);
 		expect(calls).toEqual([]);
 
 		clock.resume();
-		await vi.waitFor(
-			() => {
-				expect(calls).toEqual(["microtask"]);
-			},
-			{ timeout: 100, interval: 5 },
-		);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(calls).toEqual(["microtask"]);
 	});
 
 	it("should clear queued microtasks", async () => {
@@ -232,7 +206,7 @@ browser.describe("Clock", () => {
 		clock.clear();
 		clock.resume();
 
-		await wait(0);
+		await vi.advanceTimersByTimeAsync(0);
 		expect(completed).toBe(false);
 	});
 
@@ -243,19 +217,11 @@ browser.describe("Clock", () => {
 			realTimes.push(new Date());
 			fakeTimes.push(clock.now());
 		}, 10);
-		await vi.waitFor(
-			() => {
-				expect(fakeTimes.length).toBeGreaterThanOrEqual(3);
-			},
-			{ timeout: 100, interval: 5 },
-		);
 
-		for (const diff of diffTimes(realTimes)) {
-			expect(diff).toBeGreaterThanOrEqual(9);
-		}
-		for (const diff of diffTimes(fakeTimes)) {
-			expect(diff).toBeGreaterThanOrEqual(9);
-		}
+		await vi.advanceTimersByTimeAsync(30);
+
+		expect(diffTimes(realTimes)).toEqual([10, 10, 10]);
+		expect(diffTimes(fakeTimes)).toEqual([10, 10, 10]);
 	});
 
 	it("should correctly handle intervals with pauses", async () => {
@@ -265,24 +231,14 @@ browser.describe("Clock", () => {
 			realTimes.push(new Date());
 			fakeTimes.push(clock.now());
 		}, 10);
-		clock.pause();
-		await wait(20);
-		clock.resume();
-		await vi.waitFor(
-			() => {
-				expect(fakeTimes.length).toBeGreaterThanOrEqual(3);
-			},
-			{ timeout: 100, interval: 5 },
-		);
 
-		const [firstDiff, ...remainingDiffs] = diffTimes(realTimes);
-		expect(firstDiff).toBeGreaterThanOrEqual(20);
-		for (const diff of remainingDiffs) {
-			expect(diff).toBeGreaterThanOrEqual(9);
-		}
-		for (const diff of diffTimes(fakeTimes)) {
-			expect(diff).toBeGreaterThanOrEqual(9);
-		}
+		clock.pause();
+		await vi.advanceTimersByTimeAsync(20);
+		clock.resume();
+		await vi.advanceTimersByTimeAsync(30);
+
+		expect(diffTimes(realTimes)).toEqual([30, 10, 10]);
+		expect(diffTimes(fakeTimes)).toEqual([10, 10, 10]);
 	});
 
 	it("should dispose correctly", async () => {
@@ -293,7 +249,7 @@ browser.describe("Clock", () => {
 				completed = true;
 			}, 10);
 		}
-		await wait(20);
+		await vi.advanceTimersByTimeAsync(20);
 		expect(completed).toBe(false);
 	});
 });

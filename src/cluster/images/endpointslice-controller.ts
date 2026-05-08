@@ -1,11 +1,12 @@
 import * as k8s from "../../client";
-import type { ImageDefinition, ProcessContext } from "../cri";
+import type { ProcessContext } from "../cri";
+import { BaseImage } from "./base";
 
 export interface EndpointSliceControllerOptions {
 	kubeConfig: k8s.KubeConfig;
 }
 
-export class EndpointSliceController implements ImageDefinition {
+export class EndpointSliceController extends BaseImage {
 	private readonly coreApi: k8s.CoreV1Api;
 	private readonly discoveryApi: k8s.DiscoveryV1Api;
 	private serviceInformer: k8s.Informer<k8s.V1Service> | undefined;
@@ -18,6 +19,7 @@ export class EndpointSliceController implements ImageDefinition {
 	private readonly requeued = new Set<string>();
 
 	constructor(private readonly options: EndpointSliceControllerOptions) {
+		super();
 		this.coreApi = options.kubeConfig.makeApiClient(k8s.CoreV1Api);
 		this.discoveryApi = options.kubeConfig.makeApiClient(k8s.DiscoveryV1Api);
 	}
@@ -29,10 +31,6 @@ export class EndpointSliceController implements ImageDefinition {
 		} finally {
 			await this.close();
 		}
-	}
-
-	async exec(_context: ProcessContext, _argv: readonly string[]): Promise<number> {
-		return 0;
 	}
 
 	private async close(): Promise<void> {

@@ -1,4 +1,5 @@
 import { Cluster } from "../../../../cluster";
+import { retryConflicts } from "../../../../retry-update";
 import { NamespaceStore, NodeStore, PodStore, ServiceStore } from "../../../../cluster/storage";
 import { Store } from "../../../../cluster/storage/store";
 import { NotFound } from "../../../errors";
@@ -23,6 +24,7 @@ import type {
 	CoreV1ApiListServiceForAllNamespacesRequest,
 	CoreV1ApiReadNamespacedPodRequest,
 	CoreV1ApiReadNamespacedServiceRequest,
+	CoreV1ApiReadNamespaceRequest,
 	CoreV1ApiReplaceNamespacedPodRequest,
 	CoreV1ApiReplaceNamespacedPodStatusRequest,
 	CoreV1ApiReplaceNamespacedServiceRequest,
@@ -30,12 +32,14 @@ import type {
 import { rethrowApiErrors } from "./errors";
 
 export class CoreV1Api implements CoreV1ApiInterface {
+	private readonly cluster: Cluster;
 	private readonly namespaces: Store<V1Namespace>;
 	private readonly nodes: Store<V1Node>;
 	private readonly pods: Store<V1Pod>;
 	private readonly services: Store<V1Service>;
 
 	public constructor(cluster: Cluster) {
+		this.cluster = cluster;
 		this.namespaces = new NamespaceStore(cluster.etcd);
 		this.nodes = new NodeStore(cluster.etcd);
 		this.pods = new PodStore(cluster.etcd);
@@ -57,6 +61,16 @@ export class CoreV1Api implements CoreV1ApiInterface {
 			return {
 				status: "Success",
 			};
+		});
+	}
+
+	public async readNamespace(request: CoreV1ApiReadNamespaceRequest): Promise<V1Namespace> {
+		return await rethrowApiErrors(async () => {
+			const namespace = await this.namespaces.get(request.name);
+			if (!namespace) {
+				throw new NotFound(`Namespace "${request.name}" not found`);
+			}
+			return namespace;
 		});
 	}
 
@@ -180,13 +194,40 @@ export class CoreV1Api implements CoreV1ApiInterface {
 
 	public async deleteNamespacedPod(request: CoreV1ApiDeleteNamespacedPodRequest): Promise<V1Pod> {
 		return await rethrowApiErrors(async () => {
-			const pod = await this.pods.get(request.name, request.namespace);
-			if (!pod) {
-				throw new NotFound(`Pod "${request.name}" not found`);
-			}
+			return await retryConflicts(
+				async () => {
+					const pod = await this.pods.get(request.name, request.namespace);
+					if (!pod) {
+						throw new NotFound(`Pod "${request.name}" not found`);
+					}
 
-			await this.pods.delete(request.name, request.namespace);
-			return pod;
+					const gracePeriodSeconds = podDeletionGracePeriodSeconds(request, pod);
+					if (gracePeriodSeconds === 0) {
+						await this.pods.delete(request.name, request.namespace);
+						return pod;
+					}
+
+					pod.metadata ??= {};
+					if (pod.metadata.deletionTimestamp) {
+						if (
+							pod.metadata.deletionGracePeriodSeconds === undefined ||
+							gracePeriodSeconds < pod.metadata.deletionGracePeriodSeconds
+						) {
+							pod.metadata.deletionGracePeriodSeconds = gracePeriodSeconds;
+							return await this.pods.update(request.name, pod);
+						}
+						return pod;
+					}
+
+					pod.metadata.deletionTimestamp = this.cluster.clock.now();
+					pod.metadata.deletionGracePeriodSeconds = gracePeriodSeconds;
+					await this.pods.update(request.name, pod);
+					return pod;
+				},
+				{
+					clock: this.cluster.clock,
+				},
+			);
 		});
 	}
 
@@ -237,4 +278,16 @@ export class CoreV1Api implements CoreV1ApiInterface {
 			return await this.services.update(request.name, request.body);
 		});
 	}
+}
+
+function podDeletionGracePeriodSeconds(
+	request: CoreV1ApiDeleteNamespacedPodRequest,
+	pod: V1Pod,
+): number {
+	return (
+		request.gracePeriodSeconds ??
+		request.body?.gracePeriodSeconds ??
+		pod.spec?.terminationGracePeriodSeconds ??
+		30
+	);
 }

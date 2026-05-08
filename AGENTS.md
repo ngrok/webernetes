@@ -20,6 +20,13 @@ General rules for this repository:
 - The simulator is not currently trying to support init containers, ephemeral
   containers, or Kubernetes' volumes / CSI subsystem. Keep new simulator work
   scoped to regular containers unless a task explicitly changes that scope.
+- The simulator's CRI/runtime state is owned by the kubelet and should not
+  independently contain pod sandboxes or containers for pods that are absent
+  from the apiserver. Unlike the real kubelet, there is currently no runtime-only
+  pod discovery/cleanup path for orphaned containers. If new code needs to
+  create or retain runtime containers without an apiserver Pod, add that
+  reconciliation path deliberately instead of treating orphan runtime state as
+  an expected condition.
 - In cluster simulation code, do not call global timer/time APIs such as
   `setTimeout`, `setInterval`, or `Date.now` directly. Route timeout, interval,
   and current-time behavior through the cluster `Clock` instance so the

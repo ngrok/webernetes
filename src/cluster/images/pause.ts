@@ -1,11 +1,8 @@
-import type { ImageDefinition, ProcessContext } from "../cri";
+import type { ProcessContext } from "../cri";
+import { BaseImage } from "./base";
 
-export class PauseImage implements ImageDefinition {
-	async start(context: ProcessContext): Promise<number> {
+export class PauseImage extends BaseImage {
+	override async start(context: ProcessContext): Promise<number> {
 		return await context.waitUntilKilled();
-	}
-
-	async exec(): Promise<number> {
-		return 0;
 	}
 }

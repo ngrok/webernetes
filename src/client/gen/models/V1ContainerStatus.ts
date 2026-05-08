@@ -11,6 +11,9 @@ export interface V1ContainerStatus {
 	containerID?: string;
 	image: string;
 	imageID: string;
+	// This is called LastTerminationState in the Kubernetes type, but the JSON is
+	// lastState. The types for the JS SDK dictate this needs to match the JSON
+	// field name.
 	lastState?: V1ContainerState;
 	name: string;
 	ready: boolean;

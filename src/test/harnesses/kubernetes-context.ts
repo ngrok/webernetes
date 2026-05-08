@@ -19,8 +19,8 @@ export function createKubernetesRuntimeContext({
 	target: KubernetesTestTarget;
 	fetchNodePort: FetchNodePort;
 }): KubernetesRuntimeContext {
-	const core = kubeConfig.makeApiClient(k8s.CoreV1Api);
-	const discovery = kubeConfig.makeApiClient(k8s.DiscoveryV1Api);
+	const core = lazyApiClient(() => kubeConfig.makeApiClient(k8s.CoreV1Api));
+	const discovery = lazyApiClient(() => kubeConfig.makeApiClient(k8s.DiscoveryV1Api));
 	let suiteNamespace: string | undefined;
 	let testNamespace: string | undefined;
 
@@ -59,6 +59,17 @@ export function createKubernetesRuntimeContext({
 	};
 
 	return context;
+}
+
+function lazyApiClient<T extends object>(factory: () => T): T {
+	let target: T | undefined;
+	return new Proxy({} as T, {
+		get(_object, property, receiver) {
+			target ??= factory();
+			const value = Reflect.get(target, property, receiver);
+			return typeof value === "function" ? value.bind(target) : value;
+		},
+	});
 }
 
 async function createNamespace(api: CoreV1Api, generateName: string): Promise<string> {

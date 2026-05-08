@@ -1,6 +1,7 @@
-import { expect, it, vi } from "vitest";
+import { expect, it } from "vitest";
 import type { V1Pod } from "../gen/models";
 import { kubernetes } from "../../test/harnesses/kubernetes";
+import { waitFor } from "../../test/wait";
 
 const IMAGE = "crccheck/hello-world:latest";
 
@@ -45,44 +46,35 @@ kubernetes.describe("NodePort", ({ core, discovery, getSuiteNamespace, fetchNode
 			throw new Error("Expected Service to allocate a NodePort");
 		}
 
-		await vi.waitFor(
-			async () => {
-				const pod = await core.readNamespacedPod({
-					name: "hello-world",
-					namespace,
-				});
-				expectPodReady(pod);
-			},
-			{ timeout: 120_000, interval: 500 },
-		);
+		await waitFor(async () => {
+			const pod = await core.readNamespacedPod({
+				name: "hello-world",
+				namespace,
+			});
+			expectPodReady(pod);
+		});
 
-		await vi.waitFor(
-			async () => {
-				const slices = await discovery.listNamespacedEndpointSlice({
-					namespace,
-					labelSelector: "kubernetes.io/service-name=hello-world",
-				});
-				const slice = slices.items.find((candidate) =>
-					candidate.endpoints.some((endpoint) => endpoint.conditions?.ready !== false),
-				);
-				expect(slice?.ports?.[0]).toMatchObject({
-					name: "http",
-					port: 8000,
-					protocol: "TCP",
-				});
-			},
-			{ timeout: 120_000, interval: 500 },
-		);
+		await waitFor(async () => {
+			const slices = await discovery.listNamespacedEndpointSlice({
+				namespace,
+				labelSelector: "kubernetes.io/service-name=hello-world",
+			});
+			const slice = slices.items.find((candidate) =>
+				candidate.endpoints.some((endpoint) => endpoint.conditions?.ready !== false),
+			);
+			expect(slice?.ports?.[0]).toMatchObject({
+				name: "http",
+				port: 8000,
+				protocol: "TCP",
+			});
+		});
 
-		await vi.waitFor(
-			async () => {
-				const response = await fetchNodePort(nodePort, { path: "/" });
-				expect(response.status).toBe(200);
-				expect(response.body).toContain("Hello World");
-			},
-			{ timeout: 120_000, interval: 500 },
-		);
-	}, 180_000);
+		await waitFor(async () => {
+			const response = await fetchNodePort(nodePort, { path: "/" });
+			expect(response.status).toBe(200);
+			expect(response.body).toContain("Hello World");
+		});
+	});
 
 	it("should stop routing after a NodePort service is deleted", async () => {
 		const namespace = await getSuiteNamespace();
@@ -124,33 +116,27 @@ kubernetes.describe("NodePort", ({ core, discovery, getSuiteNamespace, fetchNode
 			throw new Error("Expected Service to allocate a NodePort");
 		}
 
-		await vi.waitFor(
-			async () => {
-				const response = await fetchNodePort(nodePort, { path: "/" });
-				expect(response.status).toBe(200);
-				expect(response.body).toContain("Hello World");
-			},
-			{ timeout: 120_000, interval: 500 },
-		);
+		await waitFor(async () => {
+			const response = await fetchNodePort(nodePort, { path: "/" });
+			expect(response.status).toBe(200);
+			expect(response.body).toContain("Hello World");
+		});
 
 		await core.deleteNamespacedService({
 			name: "delete-route",
 			namespace,
 		});
 
-		await vi.waitFor(
-			async () => {
-				let rejected = false;
-				try {
-					await fetchNodePort(nodePort, { path: "/" });
-				} catch {
-					rejected = true;
-				}
-				expect(rejected).toBe(true);
-			},
-			{ timeout: 120_000, interval: 500 },
-		);
-	}, 180_000);
+		await waitFor(async () => {
+			let rejected = false;
+			try {
+				await fetchNodePort(nodePort, { path: "/" });
+			} catch {
+				rejected = true;
+			}
+			expect(rejected).toBe(true);
+		});
+	});
 });
 
 function expectPodReady(pod: V1Pod): void {

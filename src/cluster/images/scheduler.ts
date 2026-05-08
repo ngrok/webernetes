@@ -1,5 +1,7 @@
 import * as k8s from "../../client";
-import type { ImageDefinition, ProcessContext } from "../cri";
+import { retryConflicts } from "../../retry-update";
+import type { ProcessContext } from "../cri";
+import { BaseImage } from "./base";
 
 function podKey(pod: V1Pod): string {
 	return `${pod.metadata?.namespace ?? "default"}/${pod.metadata?.name ?? ""}`;
@@ -7,7 +9,7 @@ function podKey(pod: V1Pod): string {
 
 type V1Pod = k8s.V1Pod;
 
-export class Scheduler implements ImageDefinition {
+export class Scheduler extends BaseImage {
 	private readonly api: k8s.CoreV1Api;
 	private informer: k8s.Informer<V1Pod> | undefined;
 	private nextServerIndex = 0;
@@ -18,6 +20,7 @@ export class Scheduler implements ImageDefinition {
 		private readonly kubeConfig: k8s.KubeConfig,
 		private readonly nodeNames: readonly string[],
 	) {
+		super();
 		this.api = kubeConfig.makeApiClient(k8s.CoreV1Api);
 	}
 
@@ -27,8 +30,8 @@ export class Scheduler implements ImageDefinition {
 			"/api/v1/pods",
 			async () => await this.api.listPodForAllNamespaces(),
 		);
-		this.informer.on("add", (pod) => this.schedulePod(pod));
-		this.informer.on("update", (pod) => this.schedulePod(pod));
+		this.informer.on("add", (pod) => this.schedulePod(pod, context));
+		this.informer.on("update", (pod) => this.schedulePod(pod, context));
 		await this.informer.start();
 		try {
 			return await context.waitUntilKilled();
@@ -37,16 +40,12 @@ export class Scheduler implements ImageDefinition {
 		}
 	}
 
-	async exec(_context: ProcessContext, _argv: readonly string[]): Promise<number> {
-		return 0;
-	}
-
 	private async close(): Promise<void> {
 		this.stopped = true;
 		await this.informer?.stop();
 	}
 
-	private schedulePod(pod: V1Pod): void {
+	private schedulePod(pod: V1Pod, context: ProcessContext): void {
 		if (this.stopped || pod.spec?.nodeName || !pod.metadata?.name) {
 			return;
 		}
@@ -55,37 +54,34 @@ export class Scheduler implements ImageDefinition {
 			return;
 		}
 		this.pending.add(key);
-		void this.bindPod(pod)
+		void this.bindPod(pod, context)
 			.catch(() => undefined)
 			.finally(() => this.pending.delete(key));
 	}
 
-	private async bindPod(pod: V1Pod): Promise<void> {
+	private async bindPod(pod: V1Pod, context: ProcessContext): Promise<void> {
 		const server = this.nextServer();
-		for (let attempt = 0; attempt < 5; attempt++) {
-			const current = await this.api.readNamespacedPod({
-				name: pod.metadata?.name ?? "",
-				namespace: pod.metadata?.namespace ?? "default",
-			});
-			if (!current || current.spec?.nodeName) {
-				return;
-			}
-			current.spec ??= { containers: [] };
-			current.spec.nodeName = server.name;
-			try {
+		await retryConflicts(
+			async () => {
+				const current = await this.api.readNamespacedPod({
+					name: pod.metadata?.name ?? "",
+					namespace: pod.metadata?.namespace ?? "default",
+				});
+				if (current.spec?.nodeName) {
+					return;
+				}
+				current.spec ??= { containers: [] };
+				current.spec.nodeName = server.name;
 				await this.api.replaceNamespacedPod({
 					name: current.metadata?.name ?? "",
 					namespace: current.metadata?.namespace ?? "default",
 					body: current,
 				});
-				return;
-			} catch (error) {
-				if (error instanceof Error && error.message.includes("HTTP-Code: 409")) {
-					continue;
-				}
-				throw error;
-			}
-		}
+			},
+			{
+				clock: context.clock,
+			},
+		);
 	}
 
 	private nextServer() {

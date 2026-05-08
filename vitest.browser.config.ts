@@ -4,8 +4,8 @@ export default defineConfig({
 	test: {
 		include: ["src/**/*.test.ts"],
 		passWithNoTests: true,
-		testTimeout: 15_000,
-		hookTimeout: 60_000,
+		testTimeout: 10_000,
+		hookTimeout: 20_000,
 		browser: {
 			enabled: true,
 			provider: "playwright",
