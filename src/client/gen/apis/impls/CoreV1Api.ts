@@ -1,30 +1,50 @@
 import { Cluster } from "../../../../cluster";
 import { retryConflicts } from "../../../../retry-update";
-import { NamespaceStore, NodeStore, PodStore, ServiceStore } from "../../../../cluster/storage";
+import {
+	EventStore,
+	NamespaceStore,
+	NodeStore,
+	PodStore,
+	ServiceStore,
+} from "../../../../cluster/storage";
 import { Store } from "../../../../cluster/storage/store";
 import { NotFound } from "../../../errors";
 import { filterByLabels, parseLabelSelector } from "../../../labels";
-import { V1Namespace, V1NodeList, V1PodList, V1ServiceList, V1Status } from "../../models";
+import {
+	CoreV1EventList,
+	V1Namespace,
+	V1NodeList,
+	V1PodList,
+	V1ServiceList,
+	V1Status,
+} from "../../models";
+import type { CoreV1Event } from "../../models/CoreV1Event";
 import type { V1Node } from "../../models/V1Node";
 import type { V1Pod } from "../../models/V1Pod";
 import type { V1Service } from "../../models/V1Service";
 import type {
+	CoreV1ApiCreateNamespacedEventRequest,
 	CoreV1ApiCreateNamespacedPodRequest,
 	CoreV1ApiCreateNamespacedServiceRequest,
 	CoreV1ApiCreateNamespaceRequest,
 	CoreV1ApiCreateNodeRequest,
+	CoreV1ApiDeleteNamespacedEventRequest,
 	CoreV1ApiDeleteNamespacedPodRequest,
 	CoreV1ApiDeleteNamespacedServiceRequest,
 	CoreV1ApiDeleteNamespaceRequest,
 	CoreV1Api as CoreV1ApiInterface,
+	CoreV1ApiListEventForAllNamespacesRequest,
 	CoreV1ApiListNodeRequest,
+	CoreV1ApiListNamespacedEventRequest,
 	CoreV1ApiListPodForAllNamespacesRequest,
 	CoreV1ApiListNamespacedPodRequest,
 	CoreV1ApiListNamespacedServiceRequest,
 	CoreV1ApiListServiceForAllNamespacesRequest,
+	CoreV1ApiReadNamespacedEventRequest,
 	CoreV1ApiReadNamespacedPodRequest,
 	CoreV1ApiReadNamespacedServiceRequest,
 	CoreV1ApiReadNamespaceRequest,
+	CoreV1ApiReplaceNamespacedEventRequest,
 	CoreV1ApiReplaceNamespacedPodRequest,
 	CoreV1ApiReplaceNamespacedPodStatusRequest,
 	CoreV1ApiReplaceNamespacedServiceRequest,
@@ -35,6 +55,7 @@ export class CoreV1Api implements CoreV1ApiInterface {
 	private readonly cluster: Cluster;
 	private readonly namespaces: Store<V1Namespace>;
 	private readonly nodes: Store<V1Node>;
+	private readonly events: Store<CoreV1Event>;
 	private readonly pods: Store<V1Pod>;
 	private readonly services: Store<V1Service>;
 
@@ -42,10 +63,22 @@ export class CoreV1Api implements CoreV1ApiInterface {
 		this.cluster = cluster;
 		this.namespaces = new NamespaceStore(cluster.etcd);
 		this.nodes = new NodeStore(cluster.etcd);
+		this.events = new EventStore(cluster.etcd);
 		this.pods = new PodStore(cluster.etcd);
 		this.services = new ServiceStore(cluster.etcd, {
 			serviceCIDR: cluster.serviceCIDR,
 			nodePortRange: cluster.nodePortRange,
+		});
+	}
+
+	public async createNamespacedEvent(
+		param: CoreV1ApiCreateNamespacedEventRequest,
+		_options?: unknown,
+	): Promise<CoreV1Event> {
+		return await rethrowApiErrors(async () => {
+			param.body.metadata ??= {};
+			param.body.metadata.namespace ??= param.namespace;
+			return await this.events.create(param.body);
 		});
 	}
 
@@ -86,6 +119,20 @@ export class CoreV1Api implements CoreV1ApiInterface {
 		});
 	}
 
+	public async listNamespacedEvent(
+		request: CoreV1ApiListNamespacedEventRequest,
+	): Promise<CoreV1EventList> {
+		return await rethrowApiErrors(async () => {
+			const selector = parseLabelSelector(request.labelSelector);
+			return {
+				metadata: {
+					resourceVersion: "",
+				},
+				items: filterByLabels(await this.events.list(request.namespace), selector),
+			};
+		});
+	}
+
 	public async listNamespacedService(
 		request: CoreV1ApiListNamespacedServiceRequest,
 	): Promise<V1ServiceList> {
@@ -110,6 +157,20 @@ export class CoreV1Api implements CoreV1ApiInterface {
 					resourceVersion: "",
 				},
 				items: filterByLabels(await this.pods.list(), selector),
+			};
+		});
+	}
+
+	public async listEventForAllNamespaces(
+		request: CoreV1ApiListEventForAllNamespacesRequest = {},
+	): Promise<CoreV1EventList> {
+		return await rethrowApiErrors(async () => {
+			const selector = parseLabelSelector(request.labelSelector);
+			return {
+				metadata: {
+					resourceVersion: "",
+				},
+				items: filterByLabels(await this.events.list(), selector),
 			};
 		});
 	}
@@ -179,6 +240,19 @@ export class CoreV1Api implements CoreV1ApiInterface {
 		});
 	}
 
+	public async readNamespacedEvent(
+		request: CoreV1ApiReadNamespacedEventRequest,
+	): Promise<CoreV1Event> {
+		return await rethrowApiErrors(async () => {
+			const event = await this.events.get(request.name, request.namespace);
+			if (!event) {
+				throw new NotFound(`Event "${request.name}" not found`);
+			}
+
+			return event;
+		});
+	}
+
 	public async readNamespacedService(
 		request: CoreV1ApiReadNamespacedServiceRequest,
 	): Promise<V1Service> {
@@ -245,12 +319,39 @@ export class CoreV1Api implements CoreV1ApiInterface {
 		});
 	}
 
+	public async deleteNamespacedEvent(
+		request: CoreV1ApiDeleteNamespacedEventRequest,
+	): Promise<V1Status> {
+		return await rethrowApiErrors(async () => {
+			const event = await this.events.get(request.name, request.namespace);
+			if (!event) {
+				throw new NotFound(`Event "${request.name}" not found`);
+			}
+
+			await this.events.delete(request.name, request.namespace);
+			return {
+				status: "Success",
+			};
+		});
+	}
+
 	public async replaceNamespacedPod(request: CoreV1ApiReplaceNamespacedPodRequest): Promise<V1Pod> {
 		return await rethrowApiErrors(async () => {
 			request.body.metadata ??= {};
 			request.body.metadata.name = request.name;
 			request.body.metadata.namespace ??= request.namespace;
 			return await this.pods.update(request.name, request.body);
+		});
+	}
+
+	public async replaceNamespacedEvent(
+		request: CoreV1ApiReplaceNamespacedEventRequest,
+	): Promise<CoreV1Event> {
+		return await rethrowApiErrors(async () => {
+			request.body.metadata ??= {};
+			request.body.metadata.name = request.name;
+			request.body.metadata.namespace ??= request.namespace;
+			return await this.events.update(request.name, request.body);
 		});
 	}
 

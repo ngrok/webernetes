@@ -18,6 +18,12 @@ export interface ApiType {}
 // oxlint-disable-next-line typescript/no-explicit-any
 export type ApiConstructor<T> = new (...args: any[]) => T;
 
+export class V1MicroTime extends Date {
+	toISOString(): string {
+		return super.toISOString();
+	}
+}
+
 export interface Watch {
 	watch(
 		path: string,

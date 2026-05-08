@@ -5,3 +5,4 @@ export * from "./pod";
 export * from "./namespace";
 export * from "./service";
 export * from "./endpointslice";
+export * from "./event";

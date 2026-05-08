@@ -1,4 +1,7 @@
 export * from "./CoreV1ResourceClaim";
+export * from "./CoreV1Event";
+export * from "./CoreV1EventList";
+export * from "./CoreV1EventSeries";
 export * from "./DiscoveryV1EndpointPort";
 export * from "./V1AWSElasticBlockStoreVolumeSource";
 export * from "./V1Affinity";
@@ -38,6 +41,7 @@ export * from "./V1EndpointConditions";
 export * from "./V1EndpointHints";
 export * from "./V1EndpointSlice";
 export * from "./V1EndpointSliceList";
+export * from "./V1EventSource";
 export * from "./V1EphemeralContainer";
 export * from "./V1EphemeralVolumeSource";
 export * from "./V1ExecAction";
