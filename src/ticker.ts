@@ -103,6 +103,13 @@ export class Ticker extends EventEmitter {
 		this.start();
 	}
 
+	tick(): void {
+		if (this.intervalHandle === undefined) {
+			return;
+		}
+		this.emitTick();
+	}
+
 	private emitTick(): void {
 		if (this.inTickHandler) {
 			this.pendingTick ??= this.clock.now();

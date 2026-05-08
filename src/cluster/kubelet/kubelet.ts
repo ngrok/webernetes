@@ -4,7 +4,7 @@ import type {
 	V1ContainerStatus,
 	V1Pod,
 	V1PodStatus,
-} from "../client";
+} from "../../client";
 import type {
 	ContainerConfig,
 	ContainerPort,
@@ -15,17 +15,18 @@ import type {
 	PodSandboxStatus,
 	PortMapping,
 	Runtime,
-} from "./cri";
-import type { ContainerInstance } from "./cri";
+} from "../cri";
+import type { ContainerInstance } from "../cri";
+import { buildContainerID } from "./container";
 import { ProbeManager } from "./prober";
 import type { ProbeUpdate } from "./prober";
 import { PodWorkers } from "./pod-workers";
-import type { PodRuntimeStatus, RuntimePod } from "./cri";
-import { retryConflicts } from "../retry-update";
-import { Server } from "./server";
-import { PodStore } from "./storage";
-import { StatusManager } from "./status-manager";
-import type { Watcher } from "./storage/watch";
+import type { PodRuntimeStatus, RuntimePod } from "../cri";
+import { retryConflicts } from "../../retry-update";
+import { Server } from "../server";
+import { PodStore } from "../storage";
+import { StatusManager } from "./status";
+import type { Watcher } from "../storage/watch";
 
 interface RunningPod {
 	sandboxId: string;
@@ -68,9 +69,14 @@ export class Kubelet {
 		this.server = server;
 		this.containerRuntime = server.runtime;
 		this.pods = new PodStore(server.cluster.etcd);
+		this.statusManager = new StatusManager({
+			clock: server.cluster.clock,
+			pods: this.pods,
+		});
 		this.probeManager = new ProbeManager({
 			clock: server.cluster.clock,
 			runtime: this.containerRuntime,
+			statusManager: this.statusManager,
 		});
 		this.podWorkers = new PodWorkers(
 			server.cluster.clock,
@@ -80,10 +86,6 @@ export class Kubelet {
 				this.syncTerminatingPod(pod, podStatus, gracePeriod, podStatusFn),
 			(pod, podStatus) => this.syncTerminatedPod(pod, podStatus),
 		);
-		this.statusManager = new StatusManager({
-			clock: server.cluster.clock,
-			pods: this.pods,
-		});
 	}
 
 	async start(): Promise<void> {
@@ -127,38 +129,38 @@ export class Kubelet {
 			}
 		});
 		this.probeManager.readinessManager.on("update", (update: ProbeUpdate) => {
-			void this.handleReadinessUpdate(update);
+			void (async () => {
+				const ready = update.result === "success";
+				await this.statusManager.setContainerReadiness(update.podUid, update.containerId, ready);
+
+				const status = ready ? "ready" : "not ready";
+				await this.handleProbeSync(update, "readiness", status);
+			})();
 		});
 		this.probeManager.startupManager.on("update", (update: ProbeUpdate) => {
-			void this.handleStartupUpdate(update);
+			void (async () => {
+				const started = update.result === "success";
+				await this.statusManager.setContainerStartup(update.podUid, update.containerId, started);
+
+				const status = started ? "started" : "unhealthy";
+				await this.handleProbeSync(update, "startup", status);
+			})();
 		});
-	}
-
-	private async handleReadinessUpdate(update: ProbeUpdate): Promise<void> {
-		const ready = update.result === "success";
-		await this.statusManager.setContainerReadiness(update.podUid, update.containerId, ready);
-
-		const status = ready ? "ready" : "not ready";
-		await this.handleProbeSync(update, "readiness", status);
-	}
-
-	private async handleStartupUpdate(update: ProbeUpdate): Promise<void> {
-		const started = update.result === "success";
-		await this.statusManager.setContainerStartup(update.podUid, update.containerId, started);
-
-		const status = started ? "started" : "unhealthy";
-		await this.handleProbeSync(update, "startup", status);
 	}
 
 	// Models kubernetes/pkg/kubelet/kubelet.go handleProbeSync.
 	private async handleProbeSync(
 		update: ProbeUpdate,
-		_probe: "liveness" | "readiness" | "startup",
-		_status: string,
+		probe: "liveness" | "readiness" | "startup",
+		status: string,
 	): Promise<void> {
 		if (this.stopped || !update.podUid) {
 			return;
 		}
+		void probe;
+		void status;
+		// We should not use the pod from the prober manager, because it is never
+		// updated after initialization.
 		const pod = await this.findPodByUid(update.podUid);
 		if (!pod) {
 			return;
@@ -654,8 +656,8 @@ export class Kubelet {
 			name: status.name,
 			image: status.imageRef,
 			imageID: status.imageRef,
-			containerID: `simulator://${status.id}`,
-			ready: status.ready,
+			containerID: buildContainerID("simulator", status.id).toString(),
+			ready: false,
 			restartCount: status.restartCount,
 			started: status.state === "Running",
 			state: this.containerState(status),
@@ -674,7 +676,7 @@ export class Kubelet {
 						finishedAt: status.finishedAt ? new Date(status.finishedAt) : undefined,
 						reason: status.reason,
 						message: status.message,
-						containerID: `simulator://${status.id}`,
+						containerID: buildContainerID("simulator", status.id).toString(),
 					},
 				};
 			case "Created":
@@ -683,9 +685,10 @@ export class Kubelet {
 	}
 
 	private probeFailed(containerId: string): boolean {
+		const id = buildContainerID("simulator", containerId);
 		return (
-			this.probeManager.result("liveness", containerId) === "failure" ||
-			this.probeManager.result("startup", containerId) === "failure"
+			this.probeManager.result("liveness", id) === "failure" ||
+			this.probeManager.result("startup", id) === "failure"
 		);
 	}
 

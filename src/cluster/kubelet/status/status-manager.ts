@@ -5,10 +5,12 @@ import type {
 	V1Pod,
 	V1PodCondition,
 	V1PodStatus,
-} from "../client";
-import type { Clock } from "../clock";
-import { retryConflicts } from "../retry-update";
-import type { PodStore } from "./storage";
+} from "../../../client";
+import type { Clock } from "../../../clock";
+import { retryConflicts } from "../../../retry-update";
+import { type ContainerID, parseContainerID } from "../container";
+import type { PodStore } from "../../storage";
+import { generateContainersReadyCondition, generatePodReadyCondition } from "./generate";
 
 export interface StatusManagerOptions {
 	clock: Clock;
@@ -36,8 +38,21 @@ export class StatusManager {
 		return [this.podStatuses.get(podStatusKey(pod)) ?? status, changed];
 	}
 
+	// Models kubernetes/pkg/kubelet/status/status_manager.go GetPodStatus.
+	getPodStatus(podUid: string): [V1PodStatus | undefined, boolean] {
+		const status = this.podStatuses.get(podUid);
+		if (!status) {
+			return [undefined, false];
+		}
+		return [this.copyPodStatus(status), true];
+	}
+
 	// Models kubernetes/pkg/kubelet/status/status_manager.go SetContainerReadiness.
-	async setContainerReadiness(podUid: string, containerId: string, ready: boolean): Promise<void> {
+	async setContainerReadiness(
+		podUid: string,
+		containerId: ContainerID,
+		ready: boolean,
+	): Promise<void> {
 		await retryConflicts(
 			async () => {
 				const pod = await this.findPodByUid(podUid);
@@ -84,7 +99,7 @@ export class StatusManager {
 				const allContainerStatuses = status.containerStatuses ?? [];
 				updateConditionFunc(
 					"Ready",
-					this.generatePodReadyCondition(
+					generatePodReadyCondition(
 						pod,
 						oldStatus,
 						status.conditions ?? [],
@@ -94,7 +109,7 @@ export class StatusManager {
 				);
 				updateConditionFunc(
 					"ContainersReady",
-					this.generateContainersReadyCondition(pod, oldStatus, allContainerStatuses, status.phase),
+					generateContainersReadyCondition(pod, oldStatus, allContainerStatuses, status.phase),
 				);
 				await this.updateStatusInternal(pod, status, false, false);
 			},
@@ -105,7 +120,11 @@ export class StatusManager {
 	}
 
 	// Models kubernetes/pkg/kubelet/status/status_manager.go SetContainerStartup.
-	async setContainerStartup(podUid: string, containerId: string, started: boolean): Promise<void> {
+	async setContainerStartup(
+		podUid: string,
+		containerId: ContainerID,
+		started: boolean,
+	): Promise<void> {
 		await retryConflicts(
 			async () => {
 				const pod = await this.findPodByUid(podUid);
@@ -150,8 +169,8 @@ export class StatusManager {
 			...status,
 			conditions: [
 				...conditions,
-				this.generatePodReadyCondition(pod, status, conditions, allContainerStatuses, status.phase),
-				this.generateContainersReadyCondition(pod, status, allContainerStatuses, status.phase),
+				generatePodReadyCondition(pod, status, conditions, allContainerStatuses, status.phase),
+				generateContainersReadyCondition(pod, status, allContainerStatuses, status.phase),
 			],
 		};
 	}
@@ -488,194 +507,13 @@ export class StatusManager {
 		};
 	}
 
-	// Models kubernetes/pkg/kubelet/status/generate.go GeneratePodReadyCondition.
-	private generatePodReadyCondition(
-		pod: V1Pod,
-		oldStatus: V1PodStatus,
-		conditions: V1PodCondition[],
-		containerStatuses: V1ContainerStatus[],
-		phase: V1PodStatus["phase"],
-	): V1PodCondition {
-		const containersReady = this.generateContainersReadyCondition(
-			pod,
-			oldStatus,
-			containerStatuses,
-			phase,
-		);
-		if (containersReady.status !== "True") {
-			return {
-				type: "Ready",
-				observedGeneration: this.calculatePodConditionObservedGeneration(
-					oldStatus,
-					pod.metadata?.generation ?? 0,
-					"Ready",
-				),
-				status: containersReady.status,
-				reason: containersReady.reason,
-				message: containersReady.message,
-			};
-		}
-
-		const unreadyMessages: string[] = [];
-		for (const readinessGate of pod.spec?.readinessGates ?? []) {
-			const condition = conditions.find(
-				(condition) => condition.type === readinessGate.conditionType,
-			);
-			if (!condition) {
-				unreadyMessages.push(
-					`corresponding condition of pod readiness gate "${readinessGate.conditionType}" does not exist.`,
-				);
-			} else if (condition.status !== "True") {
-				unreadyMessages.push(
-					`the status of pod readiness gate "${readinessGate.conditionType}" is not "True", but ${condition.status}`,
-				);
-			}
-		}
-
-		if (unreadyMessages.length !== 0) {
-			const unreadyMessage = unreadyMessages.join(", ");
-			return {
-				type: "Ready",
-				observedGeneration: this.calculatePodConditionObservedGeneration(
-					oldStatus,
-					pod.metadata?.generation ?? 0,
-					"Ready",
-				),
-				status: "False",
-				reason: "ReadinessGatesNotReady",
-				message: unreadyMessage,
-			};
-		}
-
-		return {
-			type: "Ready",
-			observedGeneration: this.calculatePodConditionObservedGeneration(
-				oldStatus,
-				pod.metadata?.generation ?? 0,
-				"Ready",
-			),
-			status: "True",
-		};
-	}
-
-	// Models kubernetes/pkg/kubelet/status/generate.go GenerateContainersReadyCondition.
-	private generateContainersReadyCondition(
-		pod: V1Pod,
-		oldStatus: V1PodStatus,
-		containerStatuses: V1ContainerStatus[] | undefined,
-		phase: V1PodStatus["phase"],
-	): V1PodCondition {
-		if (containerStatuses === undefined) {
-			return {
-				type: "ContainersReady",
-				observedGeneration: this.calculatePodConditionObservedGeneration(
-					oldStatus,
-					pod.metadata?.generation ?? 0,
-					"ContainersReady",
-				),
-				status: "False",
-				reason: "UnknownContainerStatuses",
-			};
-		}
-
-		const unknownContainers: string[] = [];
-		const unreadyContainers: string[] = [];
-
-		for (const container of pod.spec?.containers ?? []) {
-			const containerStatus = containerStatuses.find((status) => status.name === container.name);
-			if (containerStatus) {
-				if (!containerStatus.ready) {
-					unreadyContainers.push(container.name);
-				}
-			} else {
-				unknownContainers.push(container.name);
-			}
-		}
-
-		if (phase === "Succeeded" && unknownContainers.length === 0) {
-			return this.generateContainersReadyConditionForTerminalPhase(pod, oldStatus, phase);
-		}
-
-		if (phase === "Failed") {
-			return this.generateContainersReadyConditionForTerminalPhase(pod, oldStatus, phase);
-		}
-
-		const unreadyMessages: string[] = [];
-		if (unknownContainers.length > 0) {
-			unreadyMessages.push(
-				`containers with unknown status: ${formatContainerNames(unknownContainers)}`,
-			);
-		}
-		if (unreadyContainers.length > 0) {
-			unreadyMessages.push(
-				`containers with unready status: ${formatContainerNames(unreadyContainers)}`,
-			);
-		}
-		const unreadyMessage = unreadyMessages.join(", ");
-		if (unreadyMessage !== "") {
-			return {
-				type: "ContainersReady",
-				observedGeneration: this.calculatePodConditionObservedGeneration(
-					oldStatus,
-					pod.metadata?.generation ?? 0,
-					"ContainersReady",
-				),
-				status: "False",
-				reason: "ContainersNotReady",
-				message: unreadyMessage,
-			};
-		}
-
-		return {
-			type: "ContainersReady",
-			observedGeneration: this.calculatePodConditionObservedGeneration(
-				oldStatus,
-				pod.metadata?.generation ?? 0,
-				"ContainersReady",
-			),
-			status: "True",
-		};
-	}
-
-	private generateContainersReadyConditionForTerminalPhase(
-		pod: V1Pod,
-		oldStatus: V1PodStatus,
-		phase: V1PodStatus["phase"],
-	): V1PodCondition {
-		return {
-			type: "ContainersReady",
-			observedGeneration: this.calculatePodConditionObservedGeneration(
-				oldStatus,
-				pod.metadata?.generation ?? 0,
-				"ContainersReady",
-			),
-			status: "False",
-			reason: phase === "Failed" ? "PodFailed" : "PodCompleted",
-		};
-	}
-
-	// Models kubernetes/pkg/api/v1/pod/util.go CalculatePodConditionObservedGeneration.
-	private calculatePodConditionObservedGeneration(
-		podStatus: V1PodStatus | undefined,
-		generation: number,
-		_conditionType: V1PodCondition["type"],
-	): number {
-		if (!podStatus) {
-			return 0;
-		}
-		// In Go this does a check against a feature gate called
-		// PodObservedGenerationTrackingEnabled, which defaults to true in 1.35 and
-		// is slated for removal in 1.38. When true, it just returns generation, so
-		// that's all I'm opting to do here.
-		return generation;
-	}
-
 	private findContainerStatus(
 		status: V1PodStatus,
-		containerId: string,
+		containerId: ContainerID,
 	): V1ContainerStatus | undefined {
 		return status.containerStatuses?.find(
-			(containerStatus) => simulatorContainerId(containerStatus.containerID) === containerId,
+			(containerStatus) =>
+				parseContainerID(containerStatus.containerID).toString() === containerId.toString(),
 		);
 	}
 
@@ -686,14 +524,4 @@ export class StatusManager {
 
 function podStatusKey(pod: V1Pod): string {
 	return pod.metadata?.uid ?? `${pod.metadata?.namespace ?? "default"}/${pod.metadata?.name ?? ""}`;
-}
-
-function simulatorContainerId(containerId: string | undefined): string | undefined {
-	return containerId?.startsWith("simulator://")
-		? containerId.slice("simulator://".length)
-		: undefined;
-}
-
-function formatContainerNames(names: string[]): string {
-	return `[${names.join(" ")}]`;
 }

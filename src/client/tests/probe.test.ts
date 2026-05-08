@@ -112,6 +112,9 @@ kubernetes.describe("Probes", ({ core, getSuiteNamespace }) => {
 			expect(containerStatus(pod).ready).toBe(false);
 			expect(conditionStatus(pod, "Ready")).toBe("False");
 		});
+
+		await observeFor(2_500);
+		expect(containerStatus(await readPod("http-readiness-failure")).restartCount).toBe(0);
 	});
 
 	it("exec readiness probe succeeds based on command exit code", async () => {
@@ -166,6 +169,44 @@ kubernetes.describe("Probes", ({ core, getSuiteNamespace }) => {
 		});
 	});
 
+	it("exec liveness probe success does not restart the container", async () => {
+		await createPod(
+			"exec-liveness-success",
+			busyboxContainer({
+				livenessProbe: {
+					exec: { command: ["true"] },
+					periodSeconds: 1,
+					failureThreshold: 1,
+				},
+			}),
+		);
+
+		await waitFor(async () => {
+			expect(containerStatus(await readPod("exec-liveness-success")).started).toBe(true);
+		});
+		await observeFor(2_500);
+		expect(containerStatus(await readPod("exec-liveness-success")).restartCount).toBe(0);
+	});
+
+	it("tcpSocket liveness probe success does not restart the container", async () => {
+		await createPod(
+			"tcp-liveness-success",
+			agnhostContainer({
+				livenessProbe: {
+					tcpSocket: { port: "http" },
+					periodSeconds: 1,
+					failureThreshold: 1,
+				},
+			}),
+		);
+
+		await waitFor(async () => {
+			expect(containerStatus(await readPod("tcp-liveness-success")).started).toBe(true);
+		});
+		await observeFor(2_500);
+		expect(containerStatus(await readPod("tcp-liveness-success")).restartCount).toBe(0);
+	});
+
 	it("tcpSocket readiness succeeds when the container listens on the target port", async () => {
 		await createPod(
 			"tcp-readiness-success",
@@ -215,4 +256,8 @@ function containerStatus(pod: V1Pod) {
 
 function conditionStatus(pod: V1Pod, type: string): string | undefined {
 	return pod.status?.conditions?.find((condition) => condition.type === type)?.status;
+}
+
+async function observeFor(ms: number): Promise<void> {
+	await new Promise((resolve) => setTimeout(resolve, ms));
 }

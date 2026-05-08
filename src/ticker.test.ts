@@ -78,6 +78,24 @@ browser.describe("Ticker", () => {
 		expect(times.map((time) => time.getTime() - resetAtMs)).toEqual([10, 20]);
 	});
 
+	it("can manually emit a tick through the ticker dispatch path", async () => {
+		const ticker = new Ticker(clock, 50);
+		const times: Date[] = [];
+		ticker.on("tick", (now) => {
+			times.push(now);
+		});
+
+		ticker.tick();
+		expect(times).toEqual([]);
+
+		ticker.start();
+		const tickAtMs = clock.nowMs();
+		ticker.tick();
+		await Promise.resolve();
+
+		expect(times.map((time) => time.getTime() - tickAtMs)).toEqual([0]);
+	});
+
 	it("keeps one pending tick while a tick handler is still running", async () => {
 		const ticker = new Ticker(clock, 10);
 		const startedAt: Date[] = [];
@@ -117,6 +135,51 @@ browser.describe("Ticker", () => {
 			throw new Error("Expected initial and pending ticks");
 		}
 		expect(pendingTick.getTime() - firstTick.getTime()).toBe(10);
+		expect(startedAt.length).toBe(2);
+	});
+
+	it("coalesces manual ticks while a tick handler is still running", async () => {
+		const ticker = new Ticker(clock, 10);
+		const startedAt: Date[] = [];
+		let unblockFirstTick: () => void = () => {};
+		const firstTickStarted = new Promise<void>((resolve) => {
+			ticker.on("tick", async (now) => {
+				startedAt.push(now);
+				if (startedAt.length === 1) {
+					resolve();
+					await new Promise<void>((unblock) => {
+						unblockFirstTick = unblock;
+					});
+				}
+			});
+		});
+		const secondTickStarted = new Promise<void>((resolve) => {
+			ticker.on("tick", () => {
+				if (startedAt.length === 2) {
+					resolve();
+				}
+			});
+		});
+
+		ticker.start();
+		ticker.tick();
+		await firstTickStarted;
+
+		await vi.advanceTimersByTimeAsync(5);
+		ticker.tick();
+		await vi.advanceTimersByTimeAsync(5);
+		ticker.tick();
+		expect(startedAt.length).toBe(1);
+
+		unblockFirstTick();
+		await secondTickStarted;
+
+		const firstTick = startedAt[0];
+		const pendingTick = startedAt[1];
+		if (!firstTick || !pendingTick) {
+			throw new Error("Expected initial and pending ticks");
+		}
+		expect(pendingTick.getTime() - firstTick.getTime()).toBe(5);
 		expect(startedAt.length).toBe(2);
 	});
 
