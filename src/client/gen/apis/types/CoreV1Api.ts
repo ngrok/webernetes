@@ -236,6 +236,17 @@ export interface CoreV1ApiCreateNodeRequest {
 	fieldValidation?: string;
 }
 
+export interface CoreV1ApiDeleteNodeRequest {
+	name: string;
+	pretty?: string;
+	dryRun?: string;
+	gracePeriodSeconds?: number;
+	ignoreStoreReadErrorWithClusterBreakingPotential?: boolean;
+	orphanDependents?: boolean;
+	propagationPolicy?: string;
+	body?: V1DeleteOptions;
+}
+
 export interface CoreV1ApiListNodeRequest {
 	pretty?: string;
 	allowWatchBookmarks?: boolean;
@@ -276,6 +287,7 @@ export interface CoreV1Api {
 	deleteNamespacedPod(request: CoreV1ApiDeleteNamespacedPodRequest): Promise<V1Pod>;
 	deleteNamespacedService(request: CoreV1ApiDeleteNamespacedServiceRequest): Promise<V1Service>;
 	deleteNamespace(request: CoreV1ApiDeleteNamespaceRequest): Promise<V1Status>;
+	deleteNode(request: CoreV1ApiDeleteNodeRequest): Promise<V1Status>;
 	listEventForAllNamespaces(
 		request?: CoreV1ApiListEventForAllNamespacesRequest,
 	): Promise<CoreV1EventList>;

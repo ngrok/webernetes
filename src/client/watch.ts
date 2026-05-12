@@ -1,4 +1,5 @@
 import { KubeConfig } from "./config";
+import { fieldSelectorMatches, parseFieldSelector } from "./fields";
 import { labelsMatch, parseLabelSelector } from "./labels";
 import {
 	EndpointSliceStore,
@@ -98,12 +99,17 @@ export class Watch {
 		}
 
 		const labels = parseLabelSelector(selector);
+		const fieldSelector = queryParams.fieldSelector;
+		if (fieldSelector !== undefined && !(typeof fieldSelector === "string")) {
+			throw new Error(`Invalid field selector: ${fieldSelector}`);
+		}
+		const fields = parseFieldSelector(fieldSelector);
 		const matchingKeys = new Set<string>();
 
 		const watcher = await store.watch(namespace);
 		watcher.on("event", (phase, obj) => {
 			const key = objectKey(obj);
-			const matches = labelsMatch(obj, labels);
+			const matches = labelsMatch(obj, labels) && fieldSelectorMatches(obj, fields);
 			const matchedPreviously = matchingKeys.has(key);
 
 			if (!matches) {

@@ -7,6 +7,8 @@ export interface StoreOpts {
 	namespaced?: boolean;
 	defaultQualifiedResource: string;
 	singularQualifiedResource: string;
+	apiVersion?: string;
+	kind?: string;
 }
 
 function generateName(prefix: string): string {
@@ -18,6 +20,8 @@ function generateUid(): string {
 }
 
 export interface Storable {
+	apiVersion?: string;
+	kind?: string;
 	metadata?: V1ObjectMeta;
 }
 
@@ -65,6 +69,23 @@ export class Store<T extends Storable> {
 		return obj;
 	}
 
+	private defaultTypeMeta(obj: T): void {
+		obj.apiVersion ??= this.opts.apiVersion;
+		obj.kind ??= this.opts.kind;
+	}
+
+	private validateTypeMeta(obj: T): void {
+		if (this.opts.apiVersion !== undefined && obj.apiVersion !== this.opts.apiVersion) {
+			throw new Error(
+				`${this.opts.singularQualifiedResource} apiVersion must be ${this.opts.apiVersion}`,
+			);
+		}
+
+		if (this.opts.kind !== undefined && obj.kind !== this.opts.kind) {
+			throw new Error(`${this.opts.singularQualifiedResource} kind must be ${this.opts.kind}`);
+		}
+	}
+
 	private async readStored(
 		name: string,
 		namespace?: string,
@@ -90,6 +111,8 @@ export class Store<T extends Storable> {
 		if (!obj.metadata) {
 			throw new Error(`Object must have metadata`);
 		}
+		this.defaultTypeMeta(obj);
+		this.validateTypeMeta(obj);
 
 		if (this.opts.namespaced) {
 			if (!obj.metadata.namespace) {
@@ -139,6 +162,8 @@ export class Store<T extends Storable> {
 		if (!obj.metadata) {
 			throw new Error(`Object must have metadata`);
 		}
+		this.defaultTypeMeta(obj);
+		this.validateTypeMeta(obj);
 
 		if (!obj.metadata.name) {
 			throw new Error(`Object must have a name`);

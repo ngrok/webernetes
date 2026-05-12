@@ -5,7 +5,9 @@ import { Store } from "./store";
 export class NamespaceStore extends Store<V1Namespace> {
 	public constructor(etcd: Etcd) {
 		super(etcd, {
+			apiVersion: "v1",
 			defaultQualifiedResource: "namespaces",
+			kind: "Namespace",
 			singularQualifiedResource: "namespace",
 			namespaced: false,
 		});

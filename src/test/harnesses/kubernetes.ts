@@ -51,10 +51,15 @@ interface KubernetesRuntime {
 	defineSuite(name: string, options: SuiteOptions, factory: KubernetesSuiteFactory): void;
 }
 
-const k3sRuntime = currentTestEnvironment === "node" ? await import("./kubernetes-k3s") : undefined;
+const k3sRuntime =
+	currentTestEnvironment === "node"
+		? await import(/* @vite-ignore */ "./kubernetes-k3s")
+		: undefined;
 
 const simulatorRuntime =
-	currentTestEnvironment === "browser" ? await import("./kubernetes-simulator") : undefined;
+	currentTestEnvironment === "browser"
+		? await import(/* @vite-ignore */ "./kubernetes-simulator")
+		: undefined;
 
 export const k3s: KubernetesDescribe = {
 	describe: createTargetDescribe("k3s", k3sRuntime),

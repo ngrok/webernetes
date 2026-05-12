@@ -145,6 +145,8 @@ kubernetes.describe("EndpointSlices", ({ core, discovery, getSuiteNamespace }) =
 		});
 
 		expect(created.metadata?.name).toBe("manual");
+		expect(created.apiVersion).toBe("discovery.k8s.io/v1");
+		expect(created.kind).toBe("EndpointSlice");
 		expect(created.metadata?.namespace).toBe(namespace);
 		expect(created.addressType).toBe("IPv4");
 		expect(created.endpoints[0]?.addresses).toEqual(["10.0.0.10"]);

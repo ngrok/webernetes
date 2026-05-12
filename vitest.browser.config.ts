@@ -1,6 +1,9 @@
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
+	optimizeDeps: {
+		exclude: ["@kubernetes/client-node", "@testcontainers/k3s", "testcontainers"],
+	},
 	test: {
 		include: ["src/**/*.test.ts"],
 		passWithNoTests: true,

@@ -56,6 +56,8 @@ kubernetes.describe("Services", ({ core, getSuiteNamespace, fetchNodePort }) => 
 		});
 
 		const nodePort = service.spec?.ports?.[0]?.nodePort;
+		expect(service.apiVersion).toBe("v1");
+		expect(service.kind).toBe("Service");
 		expect(service.metadata?.namespace).toBe(await getSuiteNamespace());
 		expect(service.spec?.type).toBe("NodePort");
 		expect(service.spec?.clusterIP).toBeTruthy();

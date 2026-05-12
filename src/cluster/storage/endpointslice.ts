@@ -5,7 +5,9 @@ import { Store } from "./store";
 export class EndpointSliceStore extends Store<V1EndpointSlice> {
 	constructor(etcd: Etcd) {
 		super(etcd, {
+			apiVersion: "discovery.k8s.io/v1",
 			defaultQualifiedResource: "discovery.k8s.io/endpointslices",
+			kind: "EndpointSlice",
 			singularQualifiedResource: "discovery.k8s.io/endpointslice",
 			namespaced: true,
 		});

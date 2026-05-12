@@ -9,6 +9,7 @@ import {
 } from "../../../../cluster/storage";
 import { Store } from "../../../../cluster/storage/store";
 import { NotFound } from "../../../errors";
+import { filterByFields, parseFieldSelector } from "../../../fields";
 import { filterByLabels, parseLabelSelector } from "../../../labels";
 import {
 	CoreV1EventList,
@@ -32,6 +33,7 @@ import type {
 	CoreV1ApiDeleteNamespacedPodRequest,
 	CoreV1ApiDeleteNamespacedServiceRequest,
 	CoreV1ApiDeleteNamespaceRequest,
+	CoreV1ApiDeleteNodeRequest,
 	CoreV1Api as CoreV1ApiInterface,
 	CoreV1ApiListEventForAllNamespacesRequest,
 	CoreV1ApiListNodeRequest,
@@ -110,11 +112,15 @@ export class CoreV1Api implements CoreV1ApiInterface {
 	public async listNamespacedPod(request: CoreV1ApiListNamespacedPodRequest): Promise<V1PodList> {
 		return await rethrowApiErrors(async () => {
 			const selector = parseLabelSelector(request.labelSelector);
+			const fieldSelector = parseFieldSelector(request.fieldSelector);
 			return {
 				metadata: {
 					resourceVersion: "",
 				},
-				items: filterByLabels(await this.pods.list(request.namespace), selector),
+				items: filterByFields(
+					filterByLabels(await this.pods.list(request.namespace), selector),
+					fieldSelector,
+				),
 			};
 		});
 	}
@@ -152,11 +158,12 @@ export class CoreV1Api implements CoreV1ApiInterface {
 	): Promise<V1PodList> {
 		return await rethrowApiErrors(async () => {
 			const selector = parseLabelSelector(request.labelSelector);
+			const fieldSelector = parseFieldSelector(request.fieldSelector);
 			return {
 				metadata: {
 					resourceVersion: "",
 				},
-				items: filterByLabels(await this.pods.list(), selector),
+				items: filterByFields(filterByLabels(await this.pods.list(), selector), fieldSelector),
 			};
 		});
 	}
@@ -192,11 +199,12 @@ export class CoreV1Api implements CoreV1ApiInterface {
 	public async listNode(request: CoreV1ApiListNodeRequest = {}): Promise<V1NodeList> {
 		return await rethrowApiErrors(async () => {
 			const selector = parseLabelSelector(request.labelSelector);
+			const fieldSelector = parseFieldSelector(request.fieldSelector);
 			return {
 				metadata: {
 					resourceVersion: "",
 				},
-				items: filterByLabels(await this.nodes.list(), selector),
+				items: filterByFields(filterByLabels(await this.nodes.list(), selector), fieldSelector),
 			};
 		});
 	}
@@ -204,6 +212,20 @@ export class CoreV1Api implements CoreV1ApiInterface {
 	public async createNode(request: CoreV1ApiCreateNodeRequest): Promise<V1Node> {
 		return await rethrowApiErrors(async () => {
 			return await this.nodes.create(request.body);
+		});
+	}
+
+	public async deleteNode(request: CoreV1ApiDeleteNodeRequest): Promise<V1Status> {
+		return await rethrowApiErrors(async () => {
+			const node = await this.nodes.get(request.name);
+			if (!node) {
+				throw new NotFound(`Node "${request.name}" not found`);
+			}
+
+			await this.nodes.delete(request.name);
+			return {
+				status: "Success",
+			};
 		});
 	}
 

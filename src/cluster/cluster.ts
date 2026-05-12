@@ -25,11 +25,18 @@ export interface ClusterOptions {
 	nodePortRange?: NodePortRange;
 }
 
+class K8sApi {
+	readonly corev1: k8s.CoreV1Api;
+	constructor(private readonly kubeConfig: k8s.KubeConfig) {
+		this.corev1 = this.kubeConfig.makeApiClient(k8s.CoreV1Api);
+	}
+}
+
 export class Cluster {
 	readonly clock: Clock;
 	readonly etcd: Etcd;
 	readonly kubeConfig: k8s.KubeConfig;
-	readonly api: k8s.CoreV1Api;
+	readonly api: K8sApi;
 	readonly servers: Server[];
 	readonly network: ClusterNetwork;
 	readonly imageRegistry: ImageRegistry;
@@ -43,7 +50,7 @@ export class Cluster {
 		this.serviceCIDR = options.serviceCIDR;
 		this.nodePortRange = options.nodePortRange ?? DEFAULT_NODE_PORT_RANGE;
 		this.kubeConfig = new k8s.KubeConfig(this);
-		this.api = this.kubeConfig.makeApiClient(k8s.CoreV1Api);
+		this.api = new K8sApi(this.kubeConfig);
 		this.network = new ClusterNetwork();
 
 		this.imageRegistry = new ImageRegistry();
@@ -93,18 +100,18 @@ export class Cluster {
 		});
 
 		// The default namespace should exist by default (ha).
-		await this.api.createNamespace({
+		await this.api.corev1.createNamespace({
 			body: { metadata: { name: "default" } },
 		});
 
 		// Create a kube-system namespace for control plane pods.
-		await this.api.createNamespace({
+		await this.api.corev1.createNamespace({
 			body: { metadata: { name: "kube-system" } },
 		});
 
 		// Seed the initial servers.
 		for (const server of this.servers) {
-			await this.api.createNode({
+			await this.api.corev1.createNode({
 				body: {
 					metadata: { name: server.name },
 					spec: {
@@ -127,7 +134,7 @@ export class Cluster {
 
 		// kube-dns requires a ClusterIP to be set so we have an IP we can use in
 		// each pod's DNS config.
-		await this.api.createNamespacedService({
+		await this.api.corev1.createNamespacedService({
 			namespace: "kube-system",
 			body: {
 				metadata: {
@@ -167,7 +174,7 @@ export class Cluster {
 		containerName: string | undefined,
 		argv: string[],
 	): Promise<ExecResult> {
-		const pod = await this.api.readNamespacedPod({ namespace, name: podName });
+		const pod = await this.api.corev1.readNamespacedPod({ namespace, name: podName });
 		const nodeName = pod.spec?.nodeName;
 		if (!nodeName) {
 			throw new Error(`pod ${namespace}/${podName} is not scheduled`);
@@ -193,7 +200,7 @@ export class Cluster {
 		labels: Record<string, string> = {},
 		ports: k8s.V1ContainerPort[] = [],
 	): Promise<void> {
-		await this.api.createNamespacedPod({
+		await this.api.corev1.createNamespacedPod({
 			namespace: "kube-system",
 			body: {
 				metadata: {

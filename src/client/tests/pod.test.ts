@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import { CIDR } from "../../net";
-import type { V1Pod } from "../gen/models";
+import type { CoreV1Event, V1Pod } from "../gen/models";
 import { kubernetes } from "../../test/harnesses/kubernetes";
 import { waitFor } from "../../test/wait";
 
@@ -55,9 +55,67 @@ kubernetes.describe("Pods", ({ core, getSuiteNamespace, createNamespace, target 
 		throw lastError ?? new Error(`Failed to replace pod ${name}`);
 	}
 
+	async function podEventReasons(name: string, namespace: string): Promise<string[]> {
+		const events = await core.listNamespacedEvent({ namespace });
+		return events.items
+			.filter((event) => event.involvedObject.kind === "Pod" && event.involvedObject.name === name)
+			.map((event) => event.reason)
+			.filter((reason): reason is string => reason !== undefined);
+	}
+
+	async function podEvents(name: string, namespace: string): Promise<CoreV1Event[]> {
+		const events = await core.listNamespacedEvent({ namespace });
+		return events.items.filter(
+			(event) => event.involvedObject.kind === "Pod" && event.involvedObject.name === name,
+		);
+	}
+
+	function eventComponent(event: CoreV1Event | undefined): string | undefined {
+		return event?.source?.component ?? event?.reportingComponent;
+	}
+
 	it("should be able to create a pod", async () => {
 		const pod = await createPod({ metadata: { name: "create-test" } });
+		expect(pod.apiVersion).toBe("v1");
+		expect(pod.kind).toBe("Pod");
 		expect(pod.metadata?.name).toBe("create-test");
+	});
+
+	it("should default apiVersion and kind when creating namespaces and nodes", async () => {
+		let namespaceName: string | undefined;
+		let nodeName: string | undefined;
+
+		try {
+			const namespace = await core.createNamespace({
+				body: {
+					metadata: {
+						generateName: "typemeta-namespace-",
+					},
+				},
+			});
+			namespaceName = namespace.metadata?.name;
+			expect(namespace.apiVersion).toBe("v1");
+			expect(namespace.kind).toBe("Namespace");
+
+			const node = await core.createNode({
+				body: {
+					metadata: {
+						generateName: "typemeta-node-",
+					},
+				},
+			});
+			nodeName = node.metadata?.name;
+			expect(node.apiVersion).toBe("v1");
+			expect(node.kind).toBe("Node");
+		} finally {
+			if (nodeName) {
+				await core.deleteNode({ name: nodeName });
+			}
+
+			if (namespaceName) {
+				await core.deleteNamespace({ name: namespaceName });
+			}
+		}
 	});
 
 	it("should not be able to create a pod in a namespace that does not exist", async () => {
@@ -148,6 +206,42 @@ kubernetes.describe("Pods", ({ core, getSuiteNamespace, createNamespace, target 
 		});
 
 		expect(pod.metadata?.name).toBe("read-test");
+	});
+
+	it("should emit scheduler and kubelet lifecycle events for a pod", async () => {
+		const podName = "event-lifecycle-test";
+		await createPod({ metadata: { name: podName } });
+		const namespace = await getSuiteNamespace();
+
+		await waitFor(async () => {
+			const pod = await core.readNamespacedPod({ name: podName, namespace });
+			expect(pod.status?.phase).toBe("Running");
+		});
+
+		await waitFor(async () => {
+			expect(await podEventReasons(podName, namespace)).toEqual(
+				expect.arrayContaining(["Scheduled", "Pulled", "Created", "Started"]),
+			);
+		});
+
+		await core.deleteNamespacedPod({
+			name: podName,
+			namespace,
+			gracePeriodSeconds: 0,
+			body: {
+				gracePeriodSeconds: 0,
+			},
+		});
+
+		await waitFor(async () => {
+			expect(await podEventReasons(podName, namespace)).toContain("Killing");
+		});
+
+		const events = await podEvents(podName, namespace);
+		expect(eventComponent(events.find((event) => event.reason === "Scheduled"))).toBe(
+			"default-scheduler",
+		);
+		expect(eventComponent(events.find((event) => event.reason === "Started"))).toBe("kubelet");
 	});
 
 	it("should be able to replace a pod", async () => {
@@ -402,6 +496,94 @@ kubernetes.describe("Pods", ({ core, getSuiteNamespace, createNamespace, target 
 				name: otherNamespace,
 			});
 		}
+	});
+
+	it("should support field selectors when listing namespaced pods", async () => {
+		const namespace = await getSuiteNamespace();
+		const selectedName = "field-selected";
+		const ignoredName = "field-ignored";
+
+		await createPod({ metadata: { name: selectedName } });
+		await createPod({ metadata: { name: ignoredName } });
+
+		const pods = await core.listNamespacedPod({
+			namespace,
+			fieldSelector: `metadata.name=${selectedName}`,
+		});
+
+		expect(pods.items).toEqual([
+			expect.objectContaining({
+				metadata: expect.objectContaining({
+					name: selectedName,
+					namespace,
+				}),
+			}),
+		]);
+	});
+
+	it("should support field selectors when listing pods across namespaces", async () => {
+		const namespace = await getSuiteNamespace();
+		const otherNamespace = await createNamespace("list-all-field-selected-");
+		const selectedPodName = "list-all-field-selected";
+		const ignoredPodName = "list-all-field-ignored";
+
+		await createPod({ metadata: { name: selectedPodName } });
+		await createPod({ metadata: { name: ignoredPodName } }, otherNamespace);
+
+		try {
+			const pods = await core.listPodForAllNamespaces({
+				fieldSelector: `metadata.name=${selectedPodName}`,
+			});
+
+			expect(pods.items).toEqual([
+				expect.objectContaining({
+					metadata: expect.objectContaining({
+						name: selectedPodName,
+						namespace,
+					}),
+				}),
+			]);
+		} finally {
+			await core.deleteNamespacedPod({
+				name: ignoredPodName,
+				namespace: otherNamespace,
+				gracePeriodSeconds: 0,
+				body: {
+					gracePeriodSeconds: 0,
+				},
+			});
+			await core.deleteNamespacedPod({
+				name: selectedPodName,
+				namespace,
+				gracePeriodSeconds: 0,
+				body: {
+					gracePeriodSeconds: 0,
+				},
+			});
+			await core.deleteNamespace({
+				name: otherNamespace,
+			});
+		}
+	});
+
+	it("should support field selectors when listing nodes", async () => {
+		const nodes = await core.listNode();
+		const selectedNode = nodes.items.find((node) => node.metadata?.name);
+		if (!selectedNode?.metadata?.name) {
+			throw new Error("Expected at least one node");
+		}
+
+		const selectedNodes = await core.listNode({
+			fieldSelector: `metadata.name=${selectedNode.metadata.name}`,
+		});
+
+		expect(selectedNodes.items).toEqual([
+			expect.objectContaining({
+				metadata: expect.objectContaining({
+					name: selectedNode.metadata.name,
+				}),
+			}),
+		]);
 	});
 
 	it("should allocate pod IPs from the scheduled node pod CIDR", async () => {

@@ -44,6 +44,8 @@ kubernetes.describe("Events", ({ core, getSuiteNamespace }) => {
 		});
 
 		expect(created.metadata?.name).toBe("event-crud");
+		expect(created.apiVersion).toBe("v1");
+		expect(created.kind).toBe("Event");
 		expect(created.metadata?.namespace).toBe(namespace);
 		expect(created.involvedObject.name).toBe("event-subject");
 

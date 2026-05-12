@@ -5,7 +5,9 @@ import { Store } from "./store";
 export class PodStore extends Store<V1Pod> {
 	constructor(etcd: Etcd) {
 		super(etcd, {
+			apiVersion: "v1",
 			defaultQualifiedResource: "pods",
+			kind: "Pod",
 			singularQualifiedResource: "pod",
 			namespaced: true,
 		});

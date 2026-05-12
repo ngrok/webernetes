@@ -64,7 +64,9 @@ export class ServiceStore extends Store<V1Service> {
 
 	constructor(etcd: Etcd, options: ServiceStoreOptions) {
 		super(etcd, {
+			apiVersion: "v1",
 			defaultQualifiedResource: "services",
+			kind: "Service",
 			singularQualifiedResource: "service",
 			namespaced: true,
 		});

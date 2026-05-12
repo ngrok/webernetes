@@ -5,6 +5,7 @@ import type {
 	V1Pod,
 	V1PodStatus,
 } from "../../client";
+import { CoreV1Api } from "../../client";
 import type {
 	ContainerConfig,
 	ContainerPort,
@@ -25,6 +26,7 @@ import type { PodRuntimeStatus, RuntimePod } from "../cri";
 import { retryConflicts } from "../../retry-update";
 import { Server } from "../server";
 import { PodStore } from "../storage";
+import { EventRecorder } from "../events";
 import { StatusManager } from "./status";
 import type { Watcher } from "../storage/watch";
 
@@ -63,12 +65,19 @@ export class Kubelet {
 	private readonly probeManager: ProbeManager;
 	private readonly podWorkers: PodWorkers;
 	private readonly statusManager: StatusManager;
+	private readonly events: EventRecorder;
 	private stopped = false;
 
 	public constructor(server: Server) {
 		this.server = server;
 		this.containerRuntime = server.runtime;
 		this.pods = new PodStore(server.cluster.etcd);
+		this.events = new EventRecorder({
+			api: server.cluster.kubeConfig.makeApiClient(CoreV1Api),
+			clock: server.cluster.clock,
+			component: "kubelet",
+			host: server.name,
+		});
 		this.statusManager = new StatusManager({
 			clock: server.cluster.clock,
 			pods: this.pods,
@@ -92,7 +101,7 @@ export class Kubelet {
 		this.syncLoopProbeUpdates();
 		await this.reconcileExistingPods();
 		this.watcher = await this.pods.watch();
-		this.watcher.on("event", (event, pod) => {
+		this.watcher.on("event", async (event, pod) => {
 			switch (event) {
 				case "ADDED":
 					this.handlePodAdditions([pod]);
@@ -101,7 +110,7 @@ export class Kubelet {
 					this.handlePodUpdates([pod]);
 					return;
 				case "DELETED":
-					this.deletePodStatus(pod);
+					await this.deletePodStatus(pod);
 					return;
 			}
 		});
@@ -217,7 +226,7 @@ export class Kubelet {
 		}
 	}
 
-	private deletePodStatus(pod: V1Pod): void {
+	private async deletePodStatus(pod: V1Pod): Promise<void> {
 		const key = podKey(pod);
 		const running = this.runningPods.get(key);
 		this.probeManager.removePod(pod);
@@ -226,8 +235,12 @@ export class Kubelet {
 		if (!running) {
 			return;
 		}
+		const sandbox = this.containerRuntime.getPodSandbox(running.sandboxId);
+		for (const container of sandbox?.containers.values() ?? []) {
+			await this.events.event(pod, "Normal", "Killing", `Stopping container ${container.name}`);
+		}
 		this.runningPods.delete(key);
-		void this.containerRuntime.removePodSandbox(running.sandboxId);
+		await this.containerRuntime.removePodSandbox(running.sandboxId);
 	}
 
 	async exec(
@@ -270,12 +283,17 @@ export class Kubelet {
 		const actions = this.computePodActions(pod, running?.sandboxId, sandboxStatus);
 
 		if (actions.killSandbox && running) {
+			const sandbox = this.containerRuntime.getPodSandbox(running.sandboxId);
+			for (const container of sandbox?.containers.values() ?? []) {
+				await this.events.event(pod, "Normal", "Killing", `Stopping container ${container.name}`);
+			}
 			await this.containerRuntime.removePodSandbox(running.sandboxId);
 			this.runningPods.delete(key);
 			running = undefined;
 			sandboxStatus = undefined;
 		} else {
 			for (const container of actions.containersToKill) {
+				await this.events.event(pod, "Normal", "Killing", `Stopping container ${container.name}`);
 				await this.containerRuntime.stopContainer(container.id);
 				await this.containerRuntime.removeContainer(container.id);
 			}
@@ -297,6 +315,7 @@ export class Kubelet {
 		const sandboxConfig = this.podSandboxConfig(pod);
 		for (const container of actions.containersToStart) {
 			await this.startContainer(
+				pod,
 				running.sandboxId,
 				sandboxConfig,
 				container,
@@ -371,6 +390,7 @@ export class Kubelet {
 				await this.server.cluster.clock.wait(gracePeriod * 1000);
 			}
 			for (const container of sandbox?.containers.values() ?? []) {
+				await this.events.event(pod, "Normal", "Killing", `Stopping container ${container.name}`);
 				await this.containerRuntime.stopContainer(container.id, gracePeriod);
 			}
 			sandbox?.unregisterNetwork();
@@ -492,6 +512,7 @@ export class Kubelet {
 	}
 
 	private async startContainer(
+		pod: V1Pod,
 		sandboxId: string,
 		sandboxConfig: PodSandboxConfig,
 		container: V1Container,
@@ -499,12 +520,20 @@ export class Kubelet {
 	): Promise<void> {
 		const image = this.containerImage(container);
 		const imageRef = await this.containerRuntime.pullImage(image);
+		await this.events.event(
+			pod,
+			"Normal",
+			"Pulled",
+			`Container image "${container.image ?? ""}" already present on machine`,
+		);
 		const containerId = await this.containerRuntime.createContainer(
 			sandboxId,
 			this.containerConfig(container, imageRef, attempt),
 			sandboxConfig,
 		);
+		await this.events.event(pod, "Normal", "Created", `Created container: ${container.name}`);
 		await this.containerRuntime.startContainer(containerId);
+		await this.events.event(pod, "Normal", "Started", `Started container ${container.name}`);
 	}
 
 	private containerImage(container: V1Container): ImageSpec {

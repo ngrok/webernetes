@@ -5,7 +5,9 @@ import { Store } from "./store";
 export class NodeStore extends Store<V1Node> {
 	public constructor(etcd: Etcd) {
 		super(etcd, {
+			apiVersion: "v1",
 			defaultQualifiedResource: "nodes",
+			kind: "Node",
 			singularQualifiedResource: "node",
 			namespaced: false,
 		});

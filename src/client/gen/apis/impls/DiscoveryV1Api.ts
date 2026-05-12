@@ -27,8 +27,6 @@ export class DiscoveryV1Api implements DiscoveryV1ApiInterface {
 		return await rethrowApiErrors(async () => {
 			request.body.metadata ??= {};
 			request.body.metadata.namespace ??= request.namespace;
-			request.body.apiVersion ??= "discovery.k8s.io/v1";
-			request.body.kind ??= "EndpointSlice";
 			return await this.endpointSlices.create(request.body);
 		});
 	}
@@ -99,8 +97,6 @@ export class DiscoveryV1Api implements DiscoveryV1ApiInterface {
 			request.body.metadata ??= {};
 			request.body.metadata.name = request.name;
 			request.body.metadata.namespace ??= request.namespace;
-			request.body.apiVersion ??= "discovery.k8s.io/v1";
-			request.body.kind ??= "EndpointSlice";
 			return await this.endpointSlices.update(request.name, request.body);
 		});
 	}

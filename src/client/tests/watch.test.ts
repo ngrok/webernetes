@@ -132,6 +132,43 @@ kubernetes.describe("Watch", ({ core, k8s, kubeConfig, getTestNamespace }) => {
 		});
 	});
 
+	it("passes fieldSelector through to watch", async () => {
+		const seenNames: string[] = [];
+		const namespace = await getTestNamespace();
+		const node = (await core.listNode()).items.find((candidate) => candidate.metadata?.name);
+		if (!node?.metadata?.name) {
+			throw new Error("Expected at least one node");
+		}
+
+		await watchAndWait({
+			url: `/api/v1/namespaces/${namespace}/pods`,
+			queryParams: { fieldSelector: `spec.nodeName=${node.metadata.name}` },
+			onEvent: (_, obj: V1Pod) => {
+				seenNames.push(obj.metadata?.name ?? "");
+			},
+			assert: () => {
+				expect(seenNames).toContain("selected-node-pod");
+				expect(seenNames).not.toContain("other-node-pod");
+			},
+			act: async () => {
+				await createPod({
+					metadata: { name: "other-node-pod" },
+					spec: {
+						containers: [{ name: "test", image: "registry.k8s.io/pause:3.10" }],
+						nodeName: "other-node",
+					},
+				});
+				await createPod({
+					metadata: { name: "selected-node-pod" },
+					spec: {
+						containers: [{ name: "test", image: "registry.k8s.io/pause:3.10" }],
+						nodeName: node.metadata.name,
+					},
+				});
+			},
+		});
+	});
+
 	it("emits DELETED for deleted pods", async () => {
 		const events: Array<{ phase: string; obj: V1Pod }> = [];
 		const namespace = await getTestNamespace();
