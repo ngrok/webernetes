@@ -53,7 +53,13 @@ export class Scheduler extends BaseImage {
 	}
 
 	private schedulePod(pod: V1Pod, context: ProcessContext): void {
-		if (this.stopped || pod.spec?.nodeName || !pod.metadata?.name) {
+		const schedulerName = pod.spec?.schedulerName ?? "default-scheduler";
+		if (
+			this.stopped ||
+			pod.spec?.nodeName ||
+			schedulerName !== "default-scheduler" ||
+			!pod.metadata?.name
+		) {
 			return;
 		}
 		const key = podKey(pod);
@@ -71,20 +77,27 @@ export class Scheduler extends BaseImage {
 		let bound: V1Pod | undefined;
 		await retryConflicts(
 			async () => {
-				const current = await this.api.readNamespacedPod({
-					name: pod.metadata?.name ?? "",
-					namespace: pod.metadata?.namespace ?? "default",
-				});
+				const name = pod.metadata?.name ?? "";
+				const namespace = pod.metadata?.namespace ?? "default";
+				const current = await this.api.readNamespacedPod({ name, namespace });
 				if (current.spec?.nodeName) {
 					return;
 				}
-				current.spec ??= { containers: [] };
-				current.spec.nodeName = server.name;
-				bound = await this.api.replaceNamespacedPod({
-					name: current.metadata?.name ?? "",
-					namespace: current.metadata?.namespace ?? "default",
-					body: current,
+				await this.api.createNamespacedPodBinding({
+					name,
+					namespace,
+					body: {
+						apiVersion: "v1",
+						kind: "Binding",
+						metadata: { name, namespace },
+						target: {
+							apiVersion: "v1",
+							kind: "Node",
+							name: server.name,
+						},
+					},
 				});
+				bound = await this.api.readNamespacedPod({ name, namespace });
 			},
 			{
 				clock: context.clock,

@@ -91,7 +91,7 @@ export class ServiceStore extends Store<V1Service> {
 		}
 	}
 
-	protected override async validateUpdate(service: V1Service): Promise<void> {
+	protected override async validateUpdate(service: V1Service, _existing: V1Service): Promise<void> {
 		await this.validateCreate(service);
 	}
 

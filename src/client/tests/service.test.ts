@@ -3,7 +3,9 @@ import type { V1Pod, V1Service } from "../gen/models";
 import { kubernetes } from "../../test/harnesses/kubernetes";
 import { waitFor } from "../../test/wait";
 
-kubernetes.describe("Services", ({ core, getSuiteNamespace, fetchNodePort }) => {
+kubernetes.describe("Services", ({ core, getSuiteNamespace, fetchNodePort, k8s }) => {
+	const mergePatchOptions = k8s.setHeaderOptions("Content-Type", k8s.PatchStrategy.MergePatch);
+
 	async function createService(service: Partial<V1Service>): Promise<V1Service> {
 		const namespace = await getSuiteNamespace();
 		return await core.createNamespacedService({
@@ -99,6 +101,81 @@ kubernetes.describe("Services", ({ core, getSuiteNamespace, fetchNodePort }) => 
 		expect(replaced.spec?.clusterIP).toBe(service.spec?.clusterIP);
 		expect(replaced.spec?.clusterIPs).toEqual(service.spec?.clusterIPs);
 		expect(replaced.spec?.ports?.[0]?.nodePort).toBe(service.spec?.ports?.[0]?.nodePort);
+	});
+
+	it("should be able to patch a service", async () => {
+		const service = await createService({
+			metadata: {
+				name: "patch-service",
+				labels: {
+					app: "original",
+					remove: "true",
+				},
+			},
+			spec: {
+				type: "ClusterIP",
+				selector: { app: "original" },
+				ports: [{ name: "http", port: 80 }],
+			},
+		});
+		const namespace = await getSuiteNamespace();
+
+		const patched = await core.patchNamespacedService(
+			{
+				name: "patch-service",
+				namespace,
+				body: {
+					metadata: {
+						labels: {
+							app: "patched",
+							remove: null,
+						},
+					},
+					spec: {
+						selector: { app: "patched" },
+					},
+				},
+			},
+			mergePatchOptions,
+		);
+
+		expect(patched.metadata?.labels?.app).toBe("patched");
+		expect(patched.metadata?.labels?.remove).toBeUndefined();
+		expect(patched.spec?.selector?.app).toBe("patched");
+		expect(patched.spec?.clusterIP).toBe(service.spec?.clusterIP);
+		expect(patched.spec?.ports?.[0]?.port).toBe(80);
+	});
+
+	it("should reject patching a service name", async () => {
+		const name = "patch-name-service";
+		const changedName = `${name}-changed`;
+		await createService({
+			metadata: {
+				name,
+			},
+			spec: {
+				type: "ClusterIP",
+				ports: [{ port: 80 }],
+			},
+		});
+		const namespace = await getSuiteNamespace();
+
+		await expect(
+			core.patchNamespacedService(
+				{
+					name,
+					namespace,
+					body: {
+						metadata: {
+							name: changedName,
+						},
+					},
+				},
+				mergePatchOptions,
+			),
+		).rejects.toThrow(
+			`the name of the object (${changedName}) does not match the name on the URL (${name})`,
+		);
 	});
 
 	it("should read and list services", async () => {

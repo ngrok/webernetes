@@ -139,10 +139,11 @@ kubernetes.describe("Watch", ({ core, k8s, kubeConfig, getTestNamespace }) => {
 		if (!node?.metadata?.name) {
 			throw new Error("Expected at least one node");
 		}
+		const nodeName = node.metadata.name;
 
 		await watchAndWait({
 			url: `/api/v1/namespaces/${namespace}/pods`,
-			queryParams: { fieldSelector: `spec.nodeName=${node.metadata.name}` },
+			queryParams: { fieldSelector: `spec.nodeName=${nodeName}` },
 			onEvent: (_, obj: V1Pod) => {
 				seenNames.push(obj.metadata?.name ?? "");
 			},
@@ -162,7 +163,7 @@ kubernetes.describe("Watch", ({ core, k8s, kubeConfig, getTestNamespace }) => {
 					metadata: { name: "selected-node-pod" },
 					spec: {
 						containers: [{ name: "test", image: "registry.k8s.io/pause:3.10" }],
-						nodeName: node.metadata.name,
+						nodeName,
 					},
 				});
 			},

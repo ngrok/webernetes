@@ -27,7 +27,10 @@ export class EndpointSliceStore extends Store<V1EndpointSlice> {
 		}
 	}
 
-	protected async validateUpdate(endpointSlice: V1EndpointSlice): Promise<void> {
+	protected async validateUpdate(
+		endpointSlice: V1EndpointSlice,
+		_existing: V1EndpointSlice,
+	): Promise<void> {
 		await this.validateCreate(endpointSlice);
 	}
 }

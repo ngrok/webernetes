@@ -8,12 +8,14 @@ import {
 	ServiceStore,
 } from "../../../../cluster/storage";
 import { Store } from "../../../../cluster/storage/store";
-import { NotFound } from "../../../errors";
+import { BadRequest, NotFound } from "../../../errors";
 import { filterByFields, parseFieldSelector } from "../../../fields";
 import { filterByLabels, parseLabelSelector } from "../../../labels";
 import {
 	CoreV1EventList,
+	V1Binding,
 	V1Namespace,
+	V1NamespaceList,
 	V1NodeList,
 	V1PodList,
 	V1ServiceList,
@@ -25,6 +27,7 @@ import type { V1Pod } from "../../models/V1Pod";
 import type { V1Service } from "../../models/V1Service";
 import type {
 	CoreV1ApiCreateNamespacedEventRequest,
+	CoreV1ApiCreateNamespacedPodBindingRequest,
 	CoreV1ApiCreateNamespacedPodRequest,
 	CoreV1ApiCreateNamespacedServiceRequest,
 	CoreV1ApiCreateNamespaceRequest,
@@ -41,15 +44,23 @@ import type {
 	CoreV1ApiListPodForAllNamespacesRequest,
 	CoreV1ApiListNamespacedPodRequest,
 	CoreV1ApiListNamespacedServiceRequest,
+	CoreV1ApiListNamespaceRequest,
 	CoreV1ApiListServiceForAllNamespacesRequest,
+	CoreV1ApiPatchNamespaceRequest,
+	CoreV1ApiPatchNamespacedPodRequest,
+	CoreV1ApiPatchNamespacedServiceRequest,
+	CoreV1ApiPatchNodeRequest,
 	CoreV1ApiReadNamespacedEventRequest,
 	CoreV1ApiReadNamespacedPodRequest,
 	CoreV1ApiReadNamespacedServiceRequest,
 	CoreV1ApiReadNamespaceRequest,
+	CoreV1ApiReadNodeRequest,
 	CoreV1ApiReplaceNamespacedEventRequest,
 	CoreV1ApiReplaceNamespacedPodRequest,
 	CoreV1ApiReplaceNamespacedPodStatusRequest,
 	CoreV1ApiReplaceNamespacedServiceRequest,
+	CoreV1ApiReplaceNamespaceRequest,
+	CoreV1ApiReplaceNodeRequest,
 } from "../types/CoreV1Api";
 import { rethrowApiErrors } from "./errors";
 
@@ -58,7 +69,7 @@ export class CoreV1Api implements CoreV1ApiInterface {
 	private readonly namespaces: Store<V1Namespace>;
 	private readonly nodes: Store<V1Node>;
 	private readonly events: Store<CoreV1Event>;
-	private readonly pods: Store<V1Pod>;
+	private readonly pods: PodStore;
 	private readonly services: Store<V1Service>;
 
 	public constructor(cluster: Cluster) {
@@ -106,6 +117,17 @@ export class CoreV1Api implements CoreV1ApiInterface {
 				throw new NotFound(`Namespace "${request.name}" not found`);
 			}
 			return namespace;
+		});
+	}
+
+	public async readNode(request: CoreV1ApiReadNodeRequest): Promise<V1Node> {
+		return await rethrowApiErrors(async () => {
+			const node = await this.nodes.get(request.name);
+			if (!node) {
+				throw new NotFound(`Node "${request.name}" not found`);
+			}
+
+			return node;
 		});
 	}
 
@@ -196,6 +218,24 @@ export class CoreV1Api implements CoreV1ApiInterface {
 		});
 	}
 
+	public async listNamespace(
+		request: CoreV1ApiListNamespaceRequest = {},
+	): Promise<V1NamespaceList> {
+		return await rethrowApiErrors(async () => {
+			const selector = parseLabelSelector(request.labelSelector);
+			const fieldSelector = parseFieldSelector(request.fieldSelector);
+			return {
+				metadata: {
+					resourceVersion: "",
+				},
+				items: filterByFields(
+					filterByLabels(await this.namespaces.list(), selector),
+					fieldSelector,
+				),
+			};
+		});
+	}
+
 	public async listNode(request: CoreV1ApiListNodeRequest = {}): Promise<V1NodeList> {
 		return await rethrowApiErrors(async () => {
 			const selector = parseLabelSelector(request.labelSelector);
@@ -237,6 +277,21 @@ export class CoreV1Api implements CoreV1ApiInterface {
 			param.body.metadata ??= {};
 			param.body.metadata.namespace ??= param.namespace;
 			return await this.pods.create(param.body);
+		});
+	}
+
+	public async createNamespacedPodBinding(
+		request: CoreV1ApiCreateNamespacedPodBindingRequest,
+		_options?: unknown,
+	): Promise<V1Binding> {
+		return await rethrowApiErrors(async () => {
+			request.body.apiVersion ??= "v1";
+			request.body.kind ??= "Binding";
+			request.body.metadata ??= {};
+			request.body.metadata.name ??= request.name;
+			request.body.metadata.namespace ??= request.namespace;
+			await this.pods.bind(request.name, request.namespace, request.body);
+			return request.body;
 		});
 	}
 
@@ -366,6 +421,30 @@ export class CoreV1Api implements CoreV1ApiInterface {
 		});
 	}
 
+	public async patchNamespacedPod(
+		request: CoreV1ApiPatchNamespacedPodRequest,
+		_options?: unknown,
+	): Promise<V1Pod> {
+		return await rethrowApiErrors(async () => {
+			return await retryConflicts(
+				async () => {
+					const pod = await this.pods.get(request.name, request.namespace);
+					if (!pod) {
+						throw new NotFound(`Pod "${request.name}" not found`);
+					}
+					validatePatchName(request.body, request.name);
+
+					const patched = mergePatch(pod, request.body);
+					patched.metadata ??= {};
+					patched.metadata.name = request.name;
+					patched.metadata.namespace ??= request.namespace;
+					return await this.pods.update(request.name, patched);
+				},
+				{ clock: this.cluster.clock },
+			);
+		});
+	}
+
 	public async replaceNamespacedEvent(
 		request: CoreV1ApiReplaceNamespacedEventRequest,
 	): Promise<CoreV1Event> {
@@ -401,6 +480,136 @@ export class CoreV1Api implements CoreV1ApiInterface {
 			return await this.services.update(request.name, request.body);
 		});
 	}
+
+	public async patchNamespacedService(
+		request: CoreV1ApiPatchNamespacedServiceRequest,
+		_options?: unknown,
+	): Promise<V1Service> {
+		return await rethrowApiErrors(async () => {
+			return await retryConflicts(
+				async () => {
+					const service = await this.services.get(request.name, request.namespace);
+					if (!service) {
+						throw new NotFound(`Service "${request.name}" not found`);
+					}
+					validatePatchName(request.body, request.name);
+
+					const patched = mergePatch(service, request.body);
+					patched.metadata ??= {};
+					patched.metadata.name = request.name;
+					patched.metadata.namespace ??= request.namespace;
+					return await this.services.update(request.name, patched);
+				},
+				{ clock: this.cluster.clock },
+			);
+		});
+	}
+
+	public async replaceNamespace(request: CoreV1ApiReplaceNamespaceRequest): Promise<V1Namespace> {
+		return await rethrowApiErrors(async () => {
+			request.body.metadata ??= {};
+			request.body.metadata.name = request.name;
+			return await this.namespaces.update(request.name, request.body);
+		});
+	}
+
+	public async patchNamespace(
+		request: CoreV1ApiPatchNamespaceRequest,
+		_options?: unknown,
+	): Promise<V1Namespace> {
+		return await rethrowApiErrors(async () => {
+			return await retryConflicts(
+				async () => {
+					const namespace = await this.namespaces.get(request.name);
+					if (!namespace) {
+						throw new NotFound(`Namespace "${request.name}" not found`);
+					}
+					validatePatchName(request.body, request.name);
+
+					const patched = mergePatch(namespace, request.body);
+					patched.metadata ??= {};
+					patched.metadata.name = request.name;
+					return await this.namespaces.update(request.name, patched);
+				},
+				{ clock: this.cluster.clock },
+			);
+		});
+	}
+
+	public async replaceNode(request: CoreV1ApiReplaceNodeRequest): Promise<V1Node> {
+		return await rethrowApiErrors(async () => {
+			request.body.metadata ??= {};
+			request.body.metadata.name = request.name;
+			return await this.nodes.update(request.name, request.body);
+		});
+	}
+
+	public async patchNode(request: CoreV1ApiPatchNodeRequest, _options?: unknown): Promise<V1Node> {
+		return await rethrowApiErrors(async () => {
+			return await retryConflicts(
+				async () => {
+					const node = await this.nodes.get(request.name);
+					if (!node) {
+						throw new NotFound(`Node "${request.name}" not found`);
+					}
+					validatePatchName(request.body, request.name);
+
+					const patched = mergePatch(node, request.body);
+					patched.metadata ??= {};
+					patched.metadata.name = request.name;
+					return await this.nodes.update(request.name, patched);
+				},
+				{ clock: this.cluster.clock },
+			);
+		});
+	}
+}
+
+type PatchObject = { [key: string]: PatchValue };
+type PatchValue = PatchObject | PatchValue[] | string | number | boolean | null;
+
+function validatePatchName(patch: unknown, name: string): void {
+	if (!isPatchObject(patch) || !isPatchObject(patch.metadata)) {
+		return;
+	}
+	const patchedName = patch.metadata.name;
+	if (patchedName !== undefined && patchedName !== name) {
+		throw new BadRequest(
+			`the name of the object (${patchedName}) does not match the name on the URL (${name})`,
+		);
+	}
+}
+
+function mergePatch<T extends object>(target: T, patch: unknown): T {
+	if (!isPatchObject(patch)) {
+		// The real generated client defaults patch requests to JSON Patch when the
+		// caller does not set a content type. The simulator currently implements
+		// merge patch only; add JSON Patch here if shared tests or user code need it.
+		throw new Error("Merge patch body must be an object");
+	}
+	return applyPatchObject(structuredClone(target), patch);
+}
+
+function applyPatchObject<T extends object>(target: T, patch: PatchObject): T {
+	const result = target as { [key: string]: unknown };
+	for (const [key, value] of Object.entries(patch)) {
+		if (value === null) {
+			delete result[key];
+			continue;
+		}
+
+		if (isPatchObject(value) && isPatchObject(result[key])) {
+			result[key] = applyPatchObject(result[key], value);
+			continue;
+		}
+
+		result[key] = structuredClone(value);
+	}
+	return target;
+}
+
+function isPatchObject(value: unknown): value is PatchObject {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function podDeletionGracePeriodSeconds(

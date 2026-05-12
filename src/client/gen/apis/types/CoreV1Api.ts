@@ -2,7 +2,9 @@ import {
 	CoreV1Event,
 	CoreV1EventList,
 	V1DeleteOptions,
+	V1Binding,
 	V1Namespace,
+	V1NamespaceList,
 	V1Node,
 	V1NodeList,
 	V1Pod,
@@ -87,6 +89,16 @@ export interface CoreV1ApiCreateNamespacedPodRequest {
 	fieldValidation?: string;
 }
 
+export interface CoreV1ApiCreateNamespacedPodBindingRequest {
+	name: string;
+	namespace: string;
+	body: V1Binding;
+	dryRun?: string;
+	fieldManager?: string;
+	fieldValidation?: string;
+	pretty?: string;
+}
+
 export interface CoreV1ApiDeleteNamespacedPodRequest {
 	name: string;
 	namespace: string;
@@ -132,6 +144,17 @@ export interface CoreV1ApiReadNamespacedPodRequest {
 	name: string;
 	namespace: string;
 	pretty?: string;
+}
+
+export interface CoreV1ApiPatchNamespacedPodRequest {
+	name: string;
+	namespace: string;
+	body: unknown;
+	pretty?: string;
+	dryRun?: string;
+	fieldManager?: string;
+	fieldValidation?: string;
+	force?: boolean;
 }
 
 export interface CoreV1ApiReplaceNamespacedPodRequest {
@@ -210,6 +233,17 @@ export interface CoreV1ApiReadNamespacedServiceRequest {
 	pretty?: string;
 }
 
+export interface CoreV1ApiPatchNamespacedServiceRequest {
+	name: string;
+	namespace: string;
+	body: unknown;
+	pretty?: string;
+	dryRun?: string;
+	fieldManager?: string;
+	fieldValidation?: string;
+	force?: boolean;
+}
+
 export interface CoreV1ApiReplaceNamespacedServiceRequest {
 	name: string;
 	namespace: string;
@@ -228,7 +262,64 @@ export interface CoreV1ApiCreateNamespaceRequest {
 	fieldValidation?: string;
 }
 
+export interface CoreV1ApiListNamespaceRequest {
+	pretty?: string;
+	allowWatchBookmarks?: boolean;
+	_continue?: string;
+	fieldSelector?: string;
+	labelSelector?: string;
+	limit?: number;
+	resourceVersion?: string;
+	resourceVersionMatch?: string;
+	sendInitialEvents?: boolean;
+	timeoutSeconds?: number;
+	watch?: boolean;
+}
+
 export interface CoreV1ApiCreateNodeRequest {
+	body: V1Node;
+	pretty?: string;
+	dryRun?: string;
+	fieldManager?: string;
+	fieldValidation?: string;
+}
+
+export interface CoreV1ApiReadNodeRequest {
+	name: string;
+	pretty?: string;
+}
+
+export interface CoreV1ApiPatchNamespaceRequest {
+	name: string;
+	body: unknown;
+	pretty?: string;
+	dryRun?: string;
+	fieldManager?: string;
+	fieldValidation?: string;
+	force?: boolean;
+}
+
+export interface CoreV1ApiPatchNodeRequest {
+	name: string;
+	body: unknown;
+	pretty?: string;
+	dryRun?: string;
+	fieldManager?: string;
+	fieldValidation?: string;
+	force?: boolean;
+}
+
+export interface CoreV1ApiReplaceNamespaceRequest {
+	name: string;
+	body: V1Namespace;
+	pretty?: string;
+	dryRun?: string;
+	fieldManager?: string;
+	fieldValidation?: string;
+}
+
+export interface CoreV1ApiReplaceNodeRequest {
+	name: string;
 	body: V1Node;
 	pretty?: string;
 	dryRun?: string;
@@ -281,6 +372,9 @@ export interface CoreV1Api {
 	createNamespacedEvent(request: CoreV1ApiCreateNamespacedEventRequest): Promise<CoreV1Event>;
 	createNamespace(request: CoreV1ApiCreateNamespaceRequest): Promise<V1Namespace>;
 	createNode(request: CoreV1ApiCreateNodeRequest): Promise<V1Node>;
+	createNamespacedPodBinding(
+		request: CoreV1ApiCreateNamespacedPodBindingRequest,
+	): Promise<V1Binding>;
 	createNamespacedPod(request: CoreV1ApiCreateNamespacedPodRequest): Promise<V1Pod>;
 	createNamespacedService(request: CoreV1ApiCreateNamespacedServiceRequest): Promise<V1Service>;
 	deleteNamespacedEvent(request: CoreV1ApiDeleteNamespacedEventRequest): Promise<V1Status>;
@@ -291,6 +385,7 @@ export interface CoreV1Api {
 	listEventForAllNamespaces(
 		request?: CoreV1ApiListEventForAllNamespacesRequest,
 	): Promise<CoreV1EventList>;
+	listNamespace(request?: CoreV1ApiListNamespaceRequest): Promise<V1NamespaceList>;
 	listNode(request?: CoreV1ApiListNodeRequest): Promise<V1NodeList>;
 	listNamespacedEvent(request: CoreV1ApiListNamespacedEventRequest): Promise<CoreV1EventList>;
 	listNamespacedPod(request: CoreV1ApiListNamespacedPodRequest): Promise<V1PodList>;
@@ -303,8 +398,21 @@ export interface CoreV1Api {
 	readNamespacedPod(request: CoreV1ApiReadNamespacedPodRequest): Promise<V1Pod>;
 	readNamespacedService(request: CoreV1ApiReadNamespacedServiceRequest): Promise<V1Service>;
 	readNamespace(request: CoreV1ApiReadNamespaceRequest): Promise<V1Namespace>;
+	readNode(request: CoreV1ApiReadNodeRequest): Promise<V1Node>;
+	patchNamespace(request: CoreV1ApiPatchNamespaceRequest, options?: unknown): Promise<V1Namespace>;
+	patchNode(request: CoreV1ApiPatchNodeRequest, options?: unknown): Promise<V1Node>;
+	patchNamespacedPod(
+		request: CoreV1ApiPatchNamespacedPodRequest,
+		options?: unknown,
+	): Promise<V1Pod>;
+	patchNamespacedService(
+		request: CoreV1ApiPatchNamespacedServiceRequest,
+		options?: unknown,
+	): Promise<V1Service>;
 	replaceNamespacedEvent(request: CoreV1ApiReplaceNamespacedEventRequest): Promise<CoreV1Event>;
 	replaceNamespacedPod(request: CoreV1ApiReplaceNamespacedPodRequest): Promise<V1Pod>;
 	replaceNamespacedPodStatus(request: CoreV1ApiReplaceNamespacedPodStatusRequest): Promise<V1Pod>;
 	replaceNamespacedService(request: CoreV1ApiReplaceNamespacedServiceRequest): Promise<V1Service>;
+	replaceNamespace(request: CoreV1ApiReplaceNamespaceRequest): Promise<V1Namespace>;
+	replaceNode(request: CoreV1ApiReplaceNodeRequest): Promise<V1Node>;
 }

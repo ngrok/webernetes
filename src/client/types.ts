@@ -80,7 +80,14 @@ export interface K8s {
 	CoreV1Api: ApiConstructor<CoreV1Api>;
 	DiscoveryV1Api: ApiConstructor<DiscoveryV1Api>;
 	Exec: ApiConstructor<Exec>;
+	PatchStrategy: {
+		JsonPatch: "application/json-patch+json";
+		MergePatch: "application/merge-patch+json";
+		StrategicMergePatch: "application/strategic-merge-patch+json";
+		ServerSideApply: "application/apply-patch+yaml";
+	};
 	Watch: ApiConstructor<Watch>;
+	setHeaderOptions(key: string, value: string, options?: unknown): unknown;
 	makeInformer<T extends KubernetesObject>(
 		kubeconfig: KubeConfig,
 		path: string,

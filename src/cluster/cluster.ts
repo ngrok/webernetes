@@ -13,6 +13,7 @@ import { PauseImage } from "./images/pause";
 import { KubeProxy } from "./images/proxy";
 import { Scheduler } from "./images/scheduler";
 import { type NodePortRange, ServiceStore } from "./storage";
+import { applyResources } from "./apply";
 
 const DEFAULT_NODE_PORT_RANGE: NodePortRange = {
 	from: 30000,
@@ -184,6 +185,13 @@ export class Cluster {
 			throw new Error(`node ${nodeName} not found`);
 		}
 		return await server.kubelet.exec(namespace, podName, containerName, argv);
+	}
+
+	// Mimics kubectl's client-side apply for object literals. This intentionally
+	// leaves out less common flags such as --overwrite, --field-manager,
+	// --server-side, and alpha --prune support until tests or callers need them.
+	public async apply<T extends k8s.KubernetesObject>(resources: T[]): Promise<T[]> {
+		return await applyResources(this, resources);
 	}
 
 	public close() {

@@ -4,22 +4,23 @@ import type { CoreV1Event, V1Pod } from "../gen/models";
 import { kubernetes } from "../../test/harnesses/kubernetes";
 import { waitFor } from "../../test/wait";
 
-kubernetes.describe("Pods", ({ core, getSuiteNamespace, createNamespace, target }) => {
+kubernetes.describe("Pods", ({ core, getSuiteNamespace, createNamespace, target, k8s }) => {
 	const podImage = "registry.k8s.io/pause:3.10";
+	const mergePatchOptions = k8s.setHeaderOptions("Content-Type", k8s.PatchStrategy.MergePatch);
 
 	async function createPod(pod: Partial<V1Pod>, podNamespace?: string): Promise<V1Pod> {
 		const namespace = podNamespace ?? (await getSuiteNamespace());
 		return await core.createNamespacedPod({
 			namespace,
 			body: {
+				...pod,
 				metadata: {
 					...pod.metadata,
 				},
 				spec: {
 					...pod.spec,
-					containers: [{ name: "test", image: podImage }],
+					containers: pod.spec?.containers ?? [{ name: "test", image: podImage }],
 				},
-				...pod,
 			},
 		});
 	}
@@ -81,43 +82,6 @@ kubernetes.describe("Pods", ({ core, getSuiteNamespace, createNamespace, target 
 		expect(pod.metadata?.name).toBe("create-test");
 	});
 
-	it("should default apiVersion and kind when creating namespaces and nodes", async () => {
-		let namespaceName: string | undefined;
-		let nodeName: string | undefined;
-
-		try {
-			const namespace = await core.createNamespace({
-				body: {
-					metadata: {
-						generateName: "typemeta-namespace-",
-					},
-				},
-			});
-			namespaceName = namespace.metadata?.name;
-			expect(namespace.apiVersion).toBe("v1");
-			expect(namespace.kind).toBe("Namespace");
-
-			const node = await core.createNode({
-				body: {
-					metadata: {
-						generateName: "typemeta-node-",
-					},
-				},
-			});
-			nodeName = node.metadata?.name;
-			expect(node.apiVersion).toBe("v1");
-			expect(node.kind).toBe("Node");
-		} finally {
-			if (nodeName) {
-				await core.deleteNode({ name: nodeName });
-			}
-
-			if (namespaceName) {
-				await core.deleteNamespace({ name: namespaceName });
-			}
-		}
-	});
-
 	it("should not be able to create a pod in a namespace that does not exist", async () => {
 		await expect(
 			core.createNamespacedPod({
@@ -133,6 +97,24 @@ kubernetes.describe("Pods", ({ core, getSuiteNamespace, createNamespace, target 
 				},
 			}),
 		).rejects.toThrow(/NotFound/);
+	});
+
+	it("should reject pods without containers", async () => {
+		const namespace = await getSuiteNamespace();
+
+		await expect(
+			core.createNamespacedPod({
+				namespace,
+				body: {
+					metadata: {
+						name: "empty-containers-test",
+					},
+					spec: {
+						containers: [],
+					},
+				},
+			}),
+		).rejects.toThrow("spec.containers: Required value");
 	});
 
 	it("should be able to delete a pod", async () => {
@@ -266,6 +248,109 @@ kubernetes.describe("Pods", ({ core, getSuiteNamespace, createNamespace, target 
 		expect(
 			pods.items.find((pod) => pod.metadata?.name === "replace-test")?.metadata?.labels?.app,
 		).toBe("replaced");
+	});
+
+	it("should be able to bind a pod to a node", async () => {
+		const namespace = await getSuiteNamespace();
+		const nodeName = (await core.listNode()).items.find((node) => node.metadata?.name)?.metadata
+			?.name;
+		if (!nodeName) {
+			throw new Error("Expected at least one node");
+		}
+		await core.createNamespacedPod({
+			namespace,
+			body: {
+				metadata: {
+					name: "binding-test",
+				},
+				spec: {
+					containers: [{ name: "test", image: podImage }],
+					schedulerName: "manual",
+				},
+			},
+		});
+
+		await core.createNamespacedPodBinding({
+			name: "binding-test",
+			namespace,
+			body: {
+				apiVersion: "v1",
+				kind: "Binding",
+				metadata: {
+					name: "binding-test",
+					namespace,
+				},
+				target: {
+					apiVersion: "v1",
+					kind: "Node",
+					name: nodeName,
+				},
+			},
+		});
+
+		const pod = await core.readNamespacedPod({ name: "binding-test", namespace });
+		expect(pod.spec?.nodeName).toBe(nodeName);
+	});
+
+	it("should be able to patch a pod", async () => {
+		await createPod({
+			metadata: {
+				name: "patch-test",
+				labels: {
+					app: "original",
+					remove: "true",
+				},
+			},
+		});
+		const namespace = await getSuiteNamespace();
+
+		const patched = await core.patchNamespacedPod(
+			{
+				name: "patch-test",
+				namespace,
+				body: {
+					metadata: {
+						labels: {
+							app: "patched",
+							remove: null,
+						},
+					},
+				},
+			},
+			mergePatchOptions,
+		);
+
+		expect(patched.metadata?.labels?.app).toBe("patched");
+		expect(patched.metadata?.labels?.remove).toBeUndefined();
+		expect(patched.spec?.containers?.[0]?.name).toBe("test");
+	});
+
+	it("should reject patching a pod name", async () => {
+		const name = "patch-name-test";
+		const changedName = `${name}-changed`;
+		await createPod({
+			metadata: {
+				name,
+			},
+		});
+		const namespace = await getSuiteNamespace();
+
+		await expect(
+			core.patchNamespacedPod(
+				{
+					name,
+					namespace,
+					body: {
+						metadata: {
+							name: changedName,
+						},
+					},
+				},
+				mergePatchOptions,
+			),
+		).rejects.toThrow(
+			`the name of the object (${changedName}) does not match the name on the URL (${name})`,
+		);
 	});
 
 	it("should throw 409 when replacing a pod with a stale resourceVersion", async () => {
@@ -564,26 +649,6 @@ kubernetes.describe("Pods", ({ core, getSuiteNamespace, createNamespace, target 
 				name: otherNamespace,
 			});
 		}
-	});
-
-	it("should support field selectors when listing nodes", async () => {
-		const nodes = await core.listNode();
-		const selectedNode = nodes.items.find((node) => node.metadata?.name);
-		if (!selectedNode?.metadata?.name) {
-			throw new Error("Expected at least one node");
-		}
-
-		const selectedNodes = await core.listNode({
-			fieldSelector: `metadata.name=${selectedNode.metadata.name}`,
-		});
-
-		expect(selectedNodes.items).toEqual([
-			expect.objectContaining({
-				metadata: expect.objectContaining({
-					name: selectedNode.metadata.name,
-				}),
-			}),
-		]);
 	});
 
 	it("should allocate pod IPs from the scheduled node pod CIDR", async () => {

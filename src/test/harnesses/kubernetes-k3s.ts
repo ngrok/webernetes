@@ -10,7 +10,7 @@ import { node } from "../describe";
 import type { SuiteOptions } from "../describe";
 import { createKubernetesRuntimeContext } from "./kubernetes-context";
 import type { KubernetesSuiteFactory, NodePortRequest, NodePortResponse } from "./kubernetes";
-import type { K8s, KubeConfig } from "../../client/types";
+import type { K8s, KubeConfig, KubernetesObject } from "../../client/types";
 
 let containerPromise: Promise<StartedK3sContainer> | undefined;
 let setupPromise: Promise<void> | undefined;
@@ -54,6 +54,7 @@ export function defineSuite(
 			kubeConfig,
 			target: "k3s",
 			fetchNodePort,
+			apply,
 		});
 
 		beforeAll(async () => {
@@ -162,6 +163,27 @@ async function fetchNodePort(
 	};
 }
 
+async function apply<T extends KubernetesObject>(resources: T[]): Promise<T[]> {
+	const container = await getK3sContainer();
+	const input = Buffer.from(
+		JSON.stringify({
+			apiVersion: "v1",
+			kind: "List",
+			items: resources,
+		}),
+		"utf8",
+	).toString("base64");
+	const result = await container.exec([
+		"sh",
+		"-c",
+		`printf %s ${shellQuote(input)} | base64 -d | kubectl apply -f - -o json`,
+	]);
+	if (result.exitCode !== 0) {
+		throw new Error(result.stderr || result.output || "kubectl apply failed");
+	}
+	return parseApplyOutput<T>(result.stdout);
+}
+
 async function waitForK3sNodeReady(container: StartedK3sContainer): Promise<void> {
 	const result = await container.exec([
 		"kubectl",
@@ -187,6 +209,14 @@ async function warmK3sImages(container: StartedK3sContainer): Promise<void> {
 
 function shellQuote(value: string): string {
 	return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function parseApplyOutput<T extends KubernetesObject>(output: string): T[] {
+	const parsed = JSON.parse(output) as T & { items?: T[] };
+	if (Array.isArray(parsed.items)) {
+		return parsed.items;
+	}
+	return [parsed];
 }
 
 function isFileExistsError(error: unknown): error is NodeJS.ErrnoException {

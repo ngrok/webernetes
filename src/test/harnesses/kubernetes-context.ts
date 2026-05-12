@@ -1,5 +1,5 @@
 import type { CoreV1Api } from "../../client/gen/apis/types";
-import type { K8s, KubeConfig } from "../../client/types";
+import type { K8s, KubeConfig, KubernetesObject } from "../../client/types";
 import type { KubernetesTestContext, KubernetesTestTarget, FetchNodePort } from "./kubernetes";
 
 export interface KubernetesRuntimeContext extends KubernetesTestContext {
@@ -13,11 +13,13 @@ export function createKubernetesRuntimeContext({
 	kubeConfig,
 	target,
 	fetchNodePort,
+	apply,
 }: {
 	k8s: K8s;
 	kubeConfig: KubeConfig;
 	target: KubernetesTestTarget;
 	fetchNodePort: FetchNodePort;
+	apply<T extends KubernetesObject>(resources: T[]): Promise<T[]>;
 }): KubernetesRuntimeContext {
 	const core = lazyApiClient(() => kubeConfig.makeApiClient(k8s.CoreV1Api));
 	const discovery = lazyApiClient(() => kubeConfig.makeApiClient(k8s.DiscoveryV1Api));
@@ -29,6 +31,7 @@ export function createKubernetesRuntimeContext({
 		kubeConfig,
 		target,
 		fetchNodePort,
+		apply,
 		core,
 		discovery,
 		async getSuiteNamespace() {

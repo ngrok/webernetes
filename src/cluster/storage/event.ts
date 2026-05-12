@@ -23,7 +23,7 @@ export class EventStore extends Store<CoreV1Event> {
 		}
 	}
 
-	protected async validateUpdate(event: CoreV1Event): Promise<void> {
+	protected async validateUpdate(event: CoreV1Event, _existing: CoreV1Event): Promise<void> {
 		await this.validateCreate(event);
 	}
 }

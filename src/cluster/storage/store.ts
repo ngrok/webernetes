@@ -25,6 +25,10 @@ export interface Storable {
 	metadata?: V1ObjectMeta;
 }
 
+export interface StoreUpdateOptions {
+	skipValidateUpdate?: boolean;
+}
+
 export class Store<T extends Storable> {
 	constructor(
 		protected readonly etcd: Etcd,
@@ -33,7 +37,7 @@ export class Store<T extends Storable> {
 
 	protected async validateCreate(_: T): Promise<void> {}
 
-	protected async validateUpdate(_: T): Promise<void> {}
+	protected async validateUpdate(_: T, _existing: T): Promise<void> {}
 
 	protected async prepareCreate(_: T): Promise<void> {}
 
@@ -158,7 +162,7 @@ export class Store<T extends Storable> {
 		return this.withResourceVersion(obj, response.header.revision);
 	}
 
-	async update(name: string, obj: T): Promise<T> {
+	async update(name: string, obj: T, options: StoreUpdateOptions = {}): Promise<T> {
 		if (!obj.metadata) {
 			throw new Error(`Object must have metadata`);
 		}
@@ -185,7 +189,9 @@ export class Store<T extends Storable> {
 		}
 
 		await this.prepareUpdate(obj, existing.obj);
-		await this.validateUpdate(obj);
+		if (!options.skipValidateUpdate) {
+			await this.validateUpdate(obj, existing.obj);
+		}
 
 		const k = this.key(name, obj.metadata.namespace);
 		const response = await this.etcd

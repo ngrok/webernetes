@@ -5,3 +5,5 @@ export * from "./gen";
 export * from "./informer";
 export * from "./exec";
 export * from "./watch";
+export * from "./patch";
+export type { KubernetesObject } from "./types";

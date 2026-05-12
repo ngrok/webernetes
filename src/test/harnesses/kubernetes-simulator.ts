@@ -39,6 +39,7 @@ export function defineSuite(
 			kubeConfig: cluster.kubeConfig,
 			target: "simulator",
 			fetchNodePort,
+			apply: async (resources) => await cluster.apply(resources),
 		});
 
 		beforeAll(async () => {

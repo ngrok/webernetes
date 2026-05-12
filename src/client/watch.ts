@@ -3,6 +3,8 @@ import { fieldSelectorMatches, parseFieldSelector } from "./fields";
 import { labelsMatch, parseLabelSelector } from "./labels";
 import {
 	EndpointSliceStore,
+	EventStore,
+	NamespaceStore,
 	NodeStore,
 	PodStore,
 	ServiceStore,
@@ -56,6 +58,10 @@ function storeFromKind(kind: string, config: KubeConfig): Store<Storable> {
 			return new EndpointSliceStore(etcd);
 		case "nodes":
 			return new NodeStore(etcd);
+		case "events":
+			return new EventStore(etcd);
+		case "namespaces":
+			return new NamespaceStore(etcd);
 		default:
 			throw new Error(`Unsupported kind: ${kind}`);
 	}

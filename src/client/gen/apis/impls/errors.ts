@@ -1,4 +1,4 @@
-import { Conflict, NotFound } from "../../../errors";
+import { BadRequest, Conflict, Invalid, NotFound } from "../../../errors";
 import { V1Status } from "../../models";
 
 export class ApiException<T> extends Error {
@@ -29,7 +29,11 @@ export async function rethrowApiErrors<T>(f: () => Promise<T>): Promise<T> {
 		}
 
 		let code = 500;
-		if (e instanceof NotFound) {
+		if (e instanceof BadRequest) {
+			code = 400;
+		} else if (e instanceof Invalid) {
+			code = 422;
+		} else if (e instanceof NotFound) {
 			code = 404;
 		} else if (e instanceof Conflict) {
 			code = 409;
