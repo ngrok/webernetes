@@ -1,5 +1,5 @@
 {
-  "name": "k8s-web-simulator",
+  "name": "webernetes",
   "version": "0.1.0",
   "files": [
     "dist"

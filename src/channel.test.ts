@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { Channel } from "./channel";
+import { Channel, select } from "./channel";
 import { browser } from "./test/describe";
 
 browser.describe("Channel", () => {
@@ -141,7 +141,7 @@ browser.describe("Channel", () => {
 		channel.close();
 
 		await expect(channel.receive()).resolves.toEqual({ ok: true, value: "value" });
-		await expect(channel.receive()).resolves.toEqual({ ok: false });
+		await expect(channel.receive()).resolves.toEqual({ ok: false, value: undefined });
 		expect(() => channel.trySend("after-close")).toThrow(/closed channel/);
 	});
 
@@ -171,7 +171,7 @@ browser.describe("Channel", () => {
 
 		channel.close();
 
-		await expect(received).resolves.toEqual({ ok: false });
+		await expect(received).resolves.toEqual({ ok: false, value: undefined });
 	});
 
 	// Go check:
@@ -363,5 +363,179 @@ browser.describe("Channel async iteration", () => {
 		await expect(secondNext).resolves.toEqual({ done: false, value: "second" });
 		await expect(first.next()).resolves.toEqual({ done: true });
 		await expect(second.next()).resolves.toEqual({ done: true });
+	});
+});
+
+browser.describe("select", () => {
+	// Go check:
+	//
+	//   package main
+	//
+	//   import "fmt"
+	//
+	//   func main() {
+	//   	ch := make(chan string, 1)
+	//   	ch <- "value"
+	//   	select {
+	//   	case value, ok := <-ch:
+	//   		fmt.Println(value, ok)
+	//   	}
+	//   }
+	//
+	// Output:
+	//   value true
+	it("runs the first ready receive case", async () => {
+		const channel = new Channel<string>(1);
+		expect(channel.trySend("value")).toBe(true);
+		const result = await select().case(channel, ({ value }) => value);
+		expect(result).toBe("value");
+	});
+
+	// Go check:
+	//
+	//   package main
+	//
+	//   import "fmt"
+	//
+	//   func main() {
+	//   	ch := make(chan string)
+	//   	selected := "none"
+	//   	select {
+	//   	case _, ok := <-ch:
+	//   		if ok {
+	//   			selected = "channel"
+	//   		}
+	//   	default:
+	//   		selected = "default"
+	//   	}
+	//   	fmt.Println(selected)
+	//   }
+	//
+	// Output:
+	//   default
+	it("runs the default case when no channel is ready", async () => {
+		const channel = new Channel<string>();
+		await expect(
+			select()
+				.case(channel, () => "channel")
+				.default(() => "default"),
+		).resolves.toBe("default");
+	});
+
+	// Go check:
+	//
+	//   package main
+	//
+	//   import "fmt"
+	//
+	//   func main() {
+	//   	first := make(chan string)
+	//   	second := make(chan int)
+	//   	done := make(chan string)
+	//   	go func() {
+	//   		select {
+	//   		case value, ok := <-first:
+	//   			if ok {
+	//   				done <- value
+	//   			}
+	//   		case value, ok := <-second:
+	//   			if ok {
+	//   				done <- fmt.Sprint(value)
+	//   			}
+	//   		}
+	//   	}()
+	//   	second <- 2
+	//   	fmt.Println(<-done)
+	//   }
+	//
+	// Output:
+	//   2
+	it("waits until one channel is ready when there is no default case", async () => {
+		const first = new Channel<string>();
+		const second = new Channel<number>();
+
+		const selecting = select()
+			.case(first, ({ value }) => value)
+			.case(second, ({ value }) => value);
+
+		second.send(2);
+		const result = await selecting;
+		expect(result).toBe(2);
+	});
+
+	// Go check:
+	//
+	//   package main
+	//
+	//   import "fmt"
+	//
+	//   func main() {
+	//   	ch := make(chan string)
+	//   	close(ch)
+	//   	select {
+	//   	case value, ok := <-ch:
+	//   		fmt.Printf("value=%q ok=%v\n", value, ok)
+	//   	}
+	//   }
+	//
+	// Output:
+	//   value="" ok=false
+	it("treats a closed channel as a ready receive case", async () => {
+		const channel = new Channel<string>();
+		channel.close();
+		const closed = await select().case(channel, ({ ok }) => !ok);
+		expect(closed).toBe(true);
+	});
+
+	// Go check:
+	//
+	//   package main
+	//
+	//   import "fmt"
+	//
+	//   func main() {
+	//   	first := make(chan string)
+	//   	second := make(chan string, 1)
+	//   	done := make(chan string)
+	//   	go func() {
+	//   		select {
+	//   		case value, ok := <-first:
+	//   			if ok {
+	//   				done <- "first:" + value
+	//   			}
+	//   		case value, ok := <-second:
+	//   			if ok {
+	//   				done <- "second:" + value
+	//   			}
+	//   		}
+	//   	}()
+	//   	first <- "one"
+	//   	fmt.Println(<-done)
+	//   	second <- "two"
+	//   	fmt.Println(<-second)
+	//   }
+	//
+	// Output:
+	//   first:one
+	//   two
+	it("cancels losing receive cases", async () => {
+		const first = new Channel<string>();
+		const second = new Channel<string>(1);
+
+		const selecting = select()
+			.case(first, () => "first")
+			.case(second, () => "second");
+
+		first.send("one");
+		await expect(selecting).resolves.toEqual("first");
+
+		// It's a tiny bit tricky to understand what's being tested here but the
+		// idea is that when we switch across channels, if no message is immediately
+		// ready we add new listeners to each channel until one becomes ready. This
+		// test is making sure that, when a message is received from a channel, the
+		// listeners are cleaned up correctly. If they're not, one of these
+		// listeners will eat a message and lose it.
+		expect(second.trySend("two")).toBe(true);
+		await expect(second.receive()).resolves.toEqual({ ok: true, value: "two" });
 	});
 });
