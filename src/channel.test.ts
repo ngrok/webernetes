@@ -153,6 +153,62 @@ browser.describe("Channel", () => {
 	//
 	//   func main() {
 	//   	ch := make(chan string)
+	//   	close(ch)
+	//   	value, ok := <-ch
+	//   	fmt.Printf("first value=%q ok=%v\n", value, ok)
+	//   	value, ok = <-ch
+	//   	fmt.Printf("second value=%q ok=%v\n", value, ok)
+	//   }
+	//
+	// Output:
+	//   first value="" ok=false
+	//   second value="" ok=false
+	it("keeps reporting closed on repeated empty receives after close", async () => {
+		const channel = new Channel<string>();
+
+		channel.close();
+
+		await expect(channel.receive()).resolves.toEqual({ ok: false, value: undefined });
+		await expect(channel.receive()).resolves.toEqual({ ok: false, value: undefined });
+	});
+
+	// Go check:
+	//
+	//   package main
+	//
+	//   import "fmt"
+	//
+	//   func main() {
+	//   	ch := make(chan string)
+	//   	close(ch)
+	//   	func() {
+	//   		defer func() {
+	//   			if recover() != nil {
+	//   				fmt.Println("close closed panicked")
+	//   			}
+	//   		}()
+	//   		close(ch)
+	//   	}()
+	//   }
+	//
+	// Output:
+	//   close closed panicked
+	it("rejects closing an already closed channel", () => {
+		const channel = new Channel<string>();
+
+		channel.close();
+
+		expect(() => channel.close()).toThrow("close of closed channel");
+	});
+
+	// Go check:
+	//
+	//   package main
+	//
+	//   import "fmt"
+	//
+	//   func main() {
+	//   	ch := make(chan string)
 	//   	done := make(chan struct{})
 	//   	go func() {
 	//   		_, ok := <-ch
@@ -429,6 +485,55 @@ browser.describe("select", () => {
 	//   import "fmt"
 	//
 	//   func main() {
+	//   	select {
+	//   	default:
+	//   		fmt.Println("default")
+	//   	}
+	//   }
+	//
+	// Output:
+	//   default
+	it("runs a default-only select", async () => {
+		await expect(select().default(() => "default")).resolves.toBe("default");
+	});
+
+	// Go check:
+	//
+	//   package main
+	//
+	//   import "fmt"
+	//
+	//   func main() {
+	//   	ch := make(chan string)
+	//   	close(ch)
+	//   	select {
+	//   	case value, ok := <-ch:
+	//   		fmt.Printf("receive value=%q ok=%v\n", value, ok)
+	//   	default:
+	//   		fmt.Println("default")
+	//   	}
+	//   }
+	//
+	// Output:
+	//   receive value="" ok=false
+	it("runs a ready closed-channel case instead of default", async () => {
+		const channel = new Channel<string>();
+		channel.close();
+
+		await expect(
+			select()
+				.case(channel, ({ ok, value }) => (ok ? value : "closed"))
+				.default(() => "default"),
+		).resolves.toBe("closed");
+	});
+
+	// Go check:
+	//
+	//   package main
+	//
+	//   import "fmt"
+	//
+	//   func main() {
 	//   	first := make(chan string)
 	//   	second := make(chan int)
 	//   	done := make(chan string)
@@ -485,6 +590,143 @@ browser.describe("select", () => {
 		channel.close();
 		const closed = await select().case(channel, ({ ok }) => !ok);
 		expect(closed).toBe(true);
+	});
+
+	// Go check:
+	//
+	//   package main
+	//
+	//   import "fmt"
+	//
+	//   func main() {
+	//   	ch := make(chan string, 1)
+	//   	ch <- "buffered"
+	//   	close(ch)
+	//   	select {
+	//   	case value, ok := <-ch:
+	//   		fmt.Println(value, ok)
+	//   	}
+	//   	select {
+	//   	case value, ok := <-ch:
+	//   		fmt.Printf("value=%q ok=%v\n", value, ok)
+	//   	}
+	//   }
+	//
+	// Output:
+	//   buffered true
+	//   value="" ok=false
+	it("drains buffered values before a select observes closed", async () => {
+		const channel = new Channel<string>(1);
+		expect(channel.trySend("buffered")).toBe(true);
+		channel.close();
+
+		await expect(select().case(channel, ({ value, ok }) => ({ value, ok }))).resolves.toEqual({
+			ok: true,
+			value: "buffered",
+		});
+		await expect(select().case(channel, ({ value, ok }) => ({ value, ok }))).resolves.toEqual({
+			ok: false,
+			value: undefined,
+		});
+	});
+
+	// Go check:
+	//
+	//   package main
+	//
+	//   import "fmt"
+	//
+	//   func main() {
+	//   	firstCount := 0
+	//   	secondCount := 0
+	//   	for i := 0; i < 1000; i++ {
+	//   		first := make(chan string, 1)
+	//   		second := make(chan string, 1)
+	//   		first <- "first"
+	//   		second <- "second"
+	//   		select {
+	//   		case <-first:
+	//   			firstCount++
+	//   		case <-second:
+	//   			secondCount++
+	//   		}
+	//   	}
+	//   	fmt.Println(firstCount > 0, secondCount > 0)
+	//   }
+	//
+	// Output:
+	//   true true
+	it("chooses among multiple ready cases pseudo-randomly instead of always source order", async () => {
+		let firstCount = 0;
+		let secondCount = 0;
+
+		for (let index = 0; index < 1000; index++) {
+			const first = new Channel<string>(1);
+			const second = new Channel<string>(1);
+			expect(first.trySend("first")).toBe(true);
+			expect(second.trySend("second")).toBe(true);
+			await select()
+				.case(first, () => {
+					firstCount++;
+				})
+				.case(second, () => {
+					secondCount++;
+				});
+		}
+
+		expect(firstCount > 0).toBe(true);
+		expect(secondCount > 0).toBe(true);
+	});
+
+	// Go check:
+	//
+	//   package main
+	//
+	//   import "fmt"
+	//
+	//   func main() {
+	//   	first := make(chan string, 1)
+	//   	second := make(chan string, 1)
+	//   	first <- "first"
+	//   	second <- "second"
+	//   	selected := ""
+	//   	unselectedWasNotDrained := false
+	//   	select {
+	//   	case <-first:
+	//   		selected = "first"
+	//   	case <-second:
+	//   		selected = "second"
+	//   	}
+	//   	switch selected {
+	//   	case "first":
+	//   		unselectedWasNotDrained = <-second == "second"
+	//   	case "second":
+	//   		unselectedWasNotDrained = <-first == "first"
+	//   	}
+	//   	fmt.Println(unselectedWasNotDrained)
+	//   }
+	//
+	// Output:
+	//   true
+	it("does not drain unselected ready cases", async () => {
+		const first = new Channel<string>(1);
+		const second = new Channel<string>(1);
+		expect(first.trySend("first")).toBe(true);
+		expect(second.trySend("second")).toBe(true);
+		let unselectedWasNotDrained = false;
+
+		const selected = await select()
+			.case(first, () => "first")
+			.case(second, () => "second");
+		if (selected === "first") {
+			const result = await second.receive();
+			unselectedWasNotDrained = result.ok && result.value === "second";
+		} else {
+			const result = await first.receive();
+			unselectedWasNotDrained = result.ok && result.value === "first";
+		}
+
+		expect(unselectedWasNotDrained).toBe(true);
 	});
 
 	// Go check:

@@ -67,13 +67,21 @@ export class Channel<T> implements AsyncIterable<T> {
 		cases: readonly SelectReceiveCase[],
 		defaultCase?: SelectDefault<D>,
 	): Promise<R | Awaited<D>> {
-		// TODO(samwho): should we copy Go's pseudo-random channel selection when
-		// multiple channels are ready?
-		for (const { channel, handler } of cases) {
-			const result = channel.tryReceive();
-			if (result) {
-				return (await handler(result)) as R;
+		const readyCases: SelectReceiveCase[] = [];
+		for (const receiveCase of cases) {
+			if (receiveCase.channel.canReceive()) {
+				readyCases.push(receiveCase);
 			}
+		}
+		if (readyCases.length > 0) {
+			const selected = readyCases[
+				Math.floor(Math.random() * readyCases.length)
+			] as SelectReceiveCase;
+			const result = selected.channel.tryReceive();
+			if (!result) {
+				throw new Error("selected channel was not ready");
+			}
+			return (await selected.handler(result)) as R;
 		}
 
 		if (defaultCase) {
@@ -160,6 +168,10 @@ export class Channel<T> implements AsyncIterable<T> {
 		return undefined;
 	}
 
+	private canReceive(): boolean {
+		return this.values.length > 0 || this.senders.length > 0 || this.closed;
+	}
+
 	async receive(): Promise<ChannelReceive<T>> {
 		const result = this.tryReceive();
 		if (result) {
@@ -173,7 +185,7 @@ export class Channel<T> implements AsyncIterable<T> {
 
 	close(): void {
 		if (this.closed) {
-			return;
+			throw new Error("close of closed channel");
 		}
 		this.closed = true;
 
