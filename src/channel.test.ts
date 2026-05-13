@@ -422,6 +422,26 @@ browser.describe("Channel async iteration", () => {
 	});
 });
 
+browser.describe("Channel views", () => {
+	it("can expose read-only and write-only views over the same channel", async () => {
+		const channel = new Channel<string>(1);
+		const receiver = channel.readOnly();
+		const sender = channel.writeOnly();
+
+		expect(sender.trySend("value")).toBe(true);
+
+		await expect(receiver.receive()).resolves.toEqual({ ok: true, value: "value" });
+	});
+
+	it("can select on a read-only channel", async () => {
+		const channel = new Channel<string>(1);
+		const receiver = channel.readOnly();
+		expect(channel.trySend("value")).toBe(true);
+
+		await expect(select().case(receiver, ({ value }) => value)).resolves.toBe("value");
+	});
+});
+
 browser.describe("select", () => {
 	// Go check:
 	//

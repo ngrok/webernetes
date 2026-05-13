@@ -18,6 +18,10 @@ interface PendingSender<T> {
 
 type MaybePromise<T> = T | Promise<T>;
 
+const channelSource = Symbol("channelSource");
+
+export type ReceiveChannel<T> = Channel<T> | ReadOnlyChannel<T>;
+export type SendChannel<T> = Channel<T> | WriteOnlyChannel<T>;
 export type SelectHandler<T, R = unknown> = (result: ChannelReceive<T>) => MaybePromise<R>;
 export type SelectDefault<R = unknown> = () => MaybePromise<R>;
 
@@ -27,9 +31,12 @@ export class SelectBuilder<T = never> implements PromiseLike<T> {
 		handler: SelectHandler<unknown>;
 	}> = [];
 
-	case<V, R>(channel: Channel<V>, handler: SelectHandler<V, R>): SelectBuilder<T | Awaited<R>> {
+	case<V, R>(
+		channel: ReceiveChannel<V>,
+		handler: SelectHandler<V, R>,
+	): SelectBuilder<T | Awaited<R>> {
 		this.cases.push({
-			channel: channel as unknown as Channel<unknown>,
+			channel: channel[channelSource]() as unknown as Channel<unknown>,
 			handler: handler as unknown as SelectHandler<unknown>,
 		});
 		return this as unknown as SelectBuilder<T | Awaited<R>>;
@@ -58,6 +65,14 @@ export class Channel<T> implements AsyncIterable<T> {
 	private readonly receivers: Array<(result: ChannelReceive<T>) => void> = [];
 	private readonly senders: Array<PendingSender<T>> = [];
 	private closed = false;
+
+	readOnly(): ReadOnlyChannel<T> {
+		return new ReadOnlyChannel(this);
+	}
+
+	writeOnly(): WriteOnlyChannel<T> {
+		return new WriteOnlyChannel(this);
+	}
 
 	static select<R = never, D = never>(
 		cases: readonly SelectReceiveCase[],
@@ -111,6 +126,10 @@ export class Channel<T> implements AsyncIterable<T> {
 				);
 			}
 		});
+	}
+
+	[channelSource](): Channel<T> {
+		return this;
 	}
 
 	constructor(private readonly capacity = 0) {
@@ -183,6 +202,10 @@ export class Channel<T> implements AsyncIterable<T> {
 		});
 	}
 
+	drainBuffered(): void {
+		this.values.length = 0;
+	}
+
 	close(): void {
 		if (this.closed) {
 			throw new Error("close of closed channel");
@@ -246,6 +269,38 @@ export class Channel<T> implements AsyncIterable<T> {
 		}
 
 		this.senders.unshift(sender);
+	}
+}
+
+export class ReadOnlyChannel<T> implements AsyncIterable<T> {
+	constructor(private readonly channel: Channel<T>) {}
+
+	receive(): Promise<ChannelReceive<T>> {
+		return this.channel.receive();
+	}
+
+	async *[Symbol.asyncIterator](): AsyncIterator<T> {
+		yield* this.channel;
+	}
+
+	[channelSource](): Channel<T> {
+		return this.channel;
+	}
+}
+
+export class WriteOnlyChannel<T> {
+	constructor(private readonly channel: Channel<T>) {}
+
+	trySend(value: T): boolean {
+		return this.channel.trySend(value);
+	}
+
+	send(value: T): Promise<void> {
+		return this.channel.send(value);
+	}
+
+	close(): void {
+		this.channel.close();
 	}
 }
 

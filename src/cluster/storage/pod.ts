@@ -29,6 +29,9 @@ export class PodStore extends Store<V1Pod> {
 
 	protected async validateUpdate(pod: V1Pod, existing: V1Pod): Promise<void> {
 		await this.validateCreate(pod);
+		if (pod.spec && pod.spec.nodeName === undefined) {
+			pod.spec.nodeName = existing.spec?.nodeName;
+		}
 		if (pod.spec?.nodeName !== existing.spec?.nodeName) {
 			throw new Invalid(
 				`Pod "${pod.metadata?.name}" is invalid: spec: Forbidden: pod updates may not change fields other than spec.containers[*].image`,

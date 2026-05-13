@@ -1,4 +1,5 @@
 import type { V1Container, V1ContainerStatus, V1Pod, V1PodStatus, V1Probe } from "../../../client";
+import { Channel, select } from "../../../channel";
 import type { Clock } from "../../../clock";
 import { Ticker } from "../../../ticker";
 import { type ContainerID, parseContainerID } from "../container";
@@ -26,6 +27,9 @@ export class ProbeWorker {
 	private readonly resultsManager: ResultsManager;
 	private readonly probeManager: ProbeManager;
 	private readonly removeWorker: () => void;
+	private readonly intervalMs: number;
+	private readonly stopCh = new Channel<void>(1);
+	private readonly manualTriggerCh = new Channel<void>(1);
 	private ticker: Ticker;
 	private containerId: ContainerID | undefined;
 	private lastResult: ProberResult | undefined;
@@ -44,14 +48,12 @@ export class ProbeWorker {
 		this.probeManager = options.probeManager;
 		this.removeWorker = options.removeWorker;
 
-		const intervalMs = (this.spec.periodSeconds ?? 10) * 1000;
-		this.ticker = new Ticker(this.clock, intervalMs);
-		this.ticker.on("tick", () => this.run());
+		this.intervalMs = (this.spec.periodSeconds ?? 10) * 1000;
+		this.ticker = new Ticker(this.clock, this.intervalMs);
 	}
 
 	start() {
 		void this.run();
-		this.ticker.start();
 	}
 
 	stop() {
@@ -59,12 +61,7 @@ export class ProbeWorker {
 			return;
 		}
 		this.stoppedState = true;
-		this.ticker.stop();
-		if (this.containerId) {
-			this.resultsManager.remove(this.containerId);
-			this.containerId = undefined;
-		}
-		this.removeWorker();
+		this.stopCh.trySend(undefined);
 	}
 
 	get stopped(): boolean {
@@ -75,14 +72,32 @@ export class ProbeWorker {
 		if (this.stopped) {
 			return;
 		}
-		this.ticker.reset((this.spec.periodSeconds ?? 10) * 1000);
-		this.ticker.tick();
+		this.manualTriggerCh.trySend(undefined);
 	}
 
 	// Models kubernetes/pkg/kubelet/prober/worker.go run.
 	private async run(): Promise<void> {
-		if (!(await this.doProbe())) {
-			this.stop();
+		try {
+			while (!this.stoppedState && (await this.doProbe())) {
+				const selected = await select()
+					.case(this.stopCh, () => "stop")
+					.case(this.ticker.C, () => "tick")
+					.case(this.manualTriggerCh, () => "manual");
+				if (selected === "stop") {
+					break;
+				}
+				if (selected === "manual") {
+					this.ticker.reset(this.intervalMs);
+				}
+			}
+		} finally {
+			this.stoppedState = true;
+			this.ticker.stop();
+			if (this.containerId) {
+				this.resultsManager.remove(this.containerId);
+				this.containerId = undefined;
+			}
+			this.removeWorker();
 		}
 	}
 

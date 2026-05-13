@@ -1,224 +1,365 @@
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it } from "vitest";
 
+import { Channel, select } from "./channel";
 import { Clock } from "./clock";
 import { Ticker } from "./ticker";
 import { browser } from "./test/describe";
 
+// These tests mirror the Go ticker tests from src/time/tick_test.go at:
+// https://github.com/golang/go/blob/58efaf3859e6a6f9988e69afc59c0792888ca41a/src/time/tick_test.go
+//
+// For TestChan, we only mirror Go's synctimerchan behavior. That is the
+// asynctimerchan=0 path and the default Go 1.23+ behavior: timer/ticker channels
+// should not expose stale values after Stop or Reset. We do not mirror the old
+// async timer channel modes that need drainAsync.
+//
+// Not mirrored:
+// - TestTicker's Darwin/ARM64 timing adjustment and 1s fallback case: these
+//   exist to deflake Go's wall-clock runtime tests and would add several
+//   seconds without adding new ticker semantics here.
+// - TestTickerStopWithDirectInitialization and TestManualTicker: Go permits
+//   manual struct initialization of time.Ticker; our Ticker state is private.
+// - TestTick: Go's Tick convenience wrapper has no equivalent here.
+// - TestLongAdjustTimers, TestTimerGC, and the benchmarks: these test Go
+//   runtime scheduling, garbage collection, or benchmark behavior.
+// - TestAfterTimes: it covers time.After, which we do not implement.
+// - TestChan's Timer cases, tickerTimer bool return values, len/cap checks,
+//   async-timer drain paths, and GODEBUG matrix.
 browser.describe("Ticker", () => {
 	let clock: Clock;
 
 	beforeEach(() => {
-		vi.useFakeTimers();
 		clock = new Clock();
 	});
 
 	afterEach(() => {
 		clock.clear();
-		vi.useRealTimers();
 	});
 
-	it("emits ticks at a consistent interval", async () => {
-		const ticker = new Ticker(clock, 10);
-		const times: Date[] = [];
-		ticker.on("tick", (now) => {
-			times.push(now);
-		});
+	// Mirrors Go TestTicker, lines 15-100:
+	// https://github.com/golang/go/blob/58efaf3859e6a6f9988e69afc59c0792888ca41a/src/time/tick_test.go#L15-L100
+	it("ticks, resets to a new interval, and stops", async () => {
+		const baseCount = 10;
+		const baseDelta = 20;
 
-		ticker.start();
-		await vi.advanceTimersByTimeAsync(30);
+		const errs: string[] = [];
 
-		const firstTick = times[0];
-		if (!firstTick) {
-			throw new Error("Expected first tick");
+		for (const test of [{ count: baseCount, delta: baseDelta }]) {
+			const { count, delta } = test;
+			const ticker = new Ticker(clock, delta);
+			const t0 = clock.nowMs();
+			for (let range = 0; range < count / 2; range++) {
+				const { ok } = await ticker.C.receive();
+				expect(ok).toBe(true);
+			}
+			ticker.reset(delta * 2);
+			for (let range = 0; range < count - count / 2; range++) {
+				const { ok } = await ticker.C.receive();
+				expect(ok).toBe(true);
+			}
+			ticker.stop();
+			const t1 = clock.nowMs();
+			const dt = t1 - t0;
+			const target = 3 * delta * (count / 2);
+			const slop = (target * 3) / 10;
+			if (dt < target - slop || dt > target + slop) {
+				errs.push(
+					`${count / 2} ${delta}ms ticks then ${count / 2} ${delta * 2}ms ticks took ${dt}ms, expected [${target - slop}ms,${target + slop}ms]`,
+				);
+				continue;
+			}
+
+			await clock.wait(2 * delta);
+			if (await hasTick(ticker)) {
+				errs.push("Ticker did not shut down");
+				continue;
+			}
 		}
-		expect(times.map((time) => time.getTime() - firstTick.getTime())).toEqual([0, 10, 20]);
-		expect(deltas(times)).toEqual([10, 10]);
+
+		expect(errs).toEqual([]);
 	});
 
-	it("does not emit ticks before start or after stop", async () => {
-		const ticker = new Ticker(clock, 10);
-		let ticks = 0;
-		ticker.on("tick", () => {
-			ticks++;
-		});
+	// Mirrors Go TestTicker's dropped-tick timing behavior, lines 56-70:
+	// https://github.com/golang/go/blob/58efaf3859e6a6f9988e69afc59c0792888ca41a/src/time/tick_test.go#L56-L70
+	it("drops ticks while one unread tick is already pending", async () => {
+		const ticker = new Ticker(clock, 20);
+		const t0 = clock.nowMs();
 
-		await vi.advanceTimersByTimeAsync(20);
-		expect(ticks).toBe(0);
-		expect(ticker.stopped).toBe(true);
-
-		ticker.start();
-		expect(ticker.stopped).toBe(false);
-		await vi.advanceTimersByTimeAsync(10);
-		expect(ticks).toBe(1);
-
-		ticker.stop();
-		await vi.advanceTimersByTimeAsync(30);
-		expect(ticks).toBe(1);
-		expect(ticker.stopped).toBe(true);
-	});
-
-	it("resets the tick interval", async () => {
-		const ticker = new Ticker(clock, 50);
-		const times: Date[] = [];
-		ticker.on("tick", (now) => {
-			times.push(now);
-		});
-
-		ticker.start();
-		await vi.advanceTimersByTimeAsync(20);
-		expect(times).toEqual([]);
-
-		const resetAtMs = clock.nowMs();
-		ticker.reset(10);
-		await vi.advanceTimersByTimeAsync(9);
-		expect(times).toEqual([]);
-		await vi.advanceTimersByTimeAsync(1);
-		await vi.advanceTimersByTimeAsync(10);
-
-		expect(times.map((time) => time.getTime() - resetAtMs)).toEqual([10, 20]);
-	});
-
-	it("can manually emit a tick through the ticker dispatch path", async () => {
-		const ticker = new Ticker(clock, 50);
-		const times: Date[] = [];
-		ticker.on("tick", (now) => {
-			times.push(now);
-		});
-
-		ticker.tick();
-		expect(times).toEqual([]);
-
-		ticker.start();
-		const tickAtMs = clock.nowMs();
-		ticker.tick();
-		await Promise.resolve();
-
-		expect(times.map((time) => time.getTime() - tickAtMs)).toEqual([0]);
-	});
-
-	it("keeps one pending tick while a tick handler is still running", async () => {
-		const ticker = new Ticker(clock, 10);
-		const startedAt: Date[] = [];
-		let unblockFirstTick: () => void = () => {};
-		const firstTickStarted = new Promise<void>((resolve) => {
-			ticker.on("tick", async (now) => {
-				startedAt.push(now);
-				if (startedAt.length === 1) {
-					resolve();
-					await new Promise<void>((unblock) => {
-						unblockFirstTick = unblock;
-					});
-				}
-			});
-		});
-		const secondTickStarted = new Promise<void>((resolve) => {
-			ticker.on("tick", () => {
-				if (startedAt.length === 2) {
-					resolve();
-				}
-			});
-		});
-
-		ticker.start();
-		await vi.advanceTimersByTimeAsync(10);
-		await firstTickStarted;
-
-		await vi.advanceTimersByTimeAsync(30);
-		expect(startedAt.length).toBe(1);
-
-		unblockFirstTick();
-		await secondTickStarted;
-
-		const firstTick = startedAt[0];
-		const pendingTick = startedAt[1];
-		if (!firstTick || !pendingTick) {
-			throw new Error("Expected initial and pending ticks");
-		}
-		expect(pendingTick.getTime() - firstTick.getTime()).toBe(10);
-		expect(startedAt.length).toBe(2);
-	});
-
-	it("coalesces manual ticks while a tick handler is still running", async () => {
-		const ticker = new Ticker(clock, 10);
-		const startedAt: Date[] = [];
-		let unblockFirstTick: () => void = () => {};
-		const firstTickStarted = new Promise<void>((resolve) => {
-			ticker.on("tick", async (now) => {
-				startedAt.push(now);
-				if (startedAt.length === 1) {
-					resolve();
-					await new Promise<void>((unblock) => {
-						unblockFirstTick = unblock;
-					});
-				}
-			});
-		});
-		const secondTickStarted = new Promise<void>((resolve) => {
-			ticker.on("tick", () => {
-				if (startedAt.length === 2) {
-					resolve();
-				}
-			});
-		});
-
-		ticker.start();
-		ticker.tick();
-		await firstTickStarted;
-
-		await vi.advanceTimersByTimeAsync(5);
-		ticker.tick();
-		await vi.advanceTimersByTimeAsync(5);
-		ticker.tick();
-		expect(startedAt.length).toBe(1);
-
-		unblockFirstTick();
-		await secondTickStarted;
-
-		const firstTick = startedAt[0];
-		const pendingTick = startedAt[1];
-		if (!firstTick || !pendingTick) {
-			throw new Error("Expected initial and pending ticks");
-		}
-		expect(pendingTick.getTime() - firstTick.getTime()).toBe(5);
-		expect(startedAt.length).toBe(2);
-	});
-
-	it("preserves scheduled tick times while a slow handler observes pending ticks", async () => {
-		const ticker = new Ticker(clock, 50);
-		const startedAt: Date[] = [];
-		const startMs = clock.nowMs();
-		ticker.on("tick", async (now) => {
-			startedAt.push(now);
-			await clock.wait(61);
-		});
-
-		ticker.start();
-		await vi.advanceTimersByTimeAsync(500);
+		await clock.wait(30);
+		const first = await ticker.C.receive();
+		await clock.wait(100);
+		const second = await ticker.C.receive();
 		ticker.stop();
 
-		expect(startedAt.slice(0, 8).map((time) => time.getTime() - startMs)).toEqual([
-			50, 100, 150, 200, 250, 300, 400, 450,
-		]);
-		expect(deltas(startedAt.slice(0, 8))).toEqual([50, 50, 50, 50, 50, 100, 50]);
+		if (!first.value || !second.value) {
+			throw new Error("tick missing");
+		}
+
+		expect(first.ok).toBe(true);
+		expect(second.ok).toBe(true);
+		expect(first.value.getTime() - t0).toBeGreaterThanOrEqual(20);
+		expect(second.value.getTime()).toBeGreaterThan(first.value.getTime());
+		expect(second.value.getTime() - first.value.getTime()).toBeLessThan(60);
 	});
 
-	it("rejects non-positive intervals", () => {
-		expect(() => new Ticker(clock, 0)).toThrow("Ticker interval must be greater than 0");
+	// Mirrors Go testTimerChan's simple Stop/Reset ticker checks, lines 460-505:
+	// https://github.com/golang/go/blob/58efaf3859e6a6f9988e69afc59c0792888ca41a/src/time/tick_test.go#L460-L505
+	it("stops and resets without stale ticks", async () => {
+		const sched = 10;
+		const tim = new Ticker(clock, 10000);
 
-		const ticker = new Ticker(clock, 10);
-		expect(() => ticker.reset(0)).toThrow("Ticker interval must be greater than 0");
+		tim.stop();
+		await expect(hasTick(tim)).resolves.toBe(false);
+
+		tim.reset(10000);
+		await expect(hasTick(tim)).resolves.toBe(false);
+
+		tim.reset(1);
+		await assertTick(tim, clock);
+
+		await clock.wait(sched);
+		tim.reset(10000);
+		await expect(hasTick(tim)).resolves.toBe(false);
+
+		tim.stop();
+	});
+
+	// Mirrors Go TestTeardown, lines 109-122:
+	// https://github.com/golang/go/blob/58efaf3859e6a6f9988e69afc59c0792888ca41a/src/time/tick_test.go#L109-L122
+	it("can be repeatedly created, ticked, and stopped", async () => {
+		const delta = 20;
+		for (let range = 0; range < 3; range++) {
+			const ticker = new Ticker(clock, delta);
+			const { ok } = await ticker.C.receive();
+			expect(ok).toBe(true);
+			ticker.stop();
+		}
+	});
+
+	// Mirrors Go TestNewTickerLtZeroDuration, lines 132-140:
+	// https://github.com/golang/go/blob/58efaf3859e6a6f9988e69afc59c0792888ca41a/src/time/tick_test.go#L132-L140
+	it("rejects non-positive new ticker intervals", () => {
+		expect(() => new Ticker(clock, -1)).toThrow("Ticker interval must be greater than 0");
+	});
+
+	// Mirrors Go TestTickerResetLtZeroDuration, lines 142-151:
+	// https://github.com/golang/go/blob/58efaf3859e6a6f9988e69afc59c0792888ca41a/src/time/tick_test.go#L142-L151
+	it("rejects non-positive reset intervals", () => {
+		const tk = new Ticker(clock, 1000);
+		try {
+			expect(() => tk.reset(0)).toThrow("Ticker interval must be greater than 0");
+			expect(() => tk.reset(-1)).toThrow("Ticker interval must be greater than 0");
+		} finally {
+			tk.stop();
+		}
+	});
+
+	// Mirrors Go TestChan ticker stale-value checks, lines 629-637:
+	// https://github.com/golang/go/blob/58efaf3859e6a6f9988e69afc59c0792888ca41a/src/time/tick_test.go#L629-L637
+	it("does not receive an old tick after stop", async () => {
+		const tim = new Ticker(clock, 10000);
+
+		tim.reset(1);
+		await clock.wait(10);
+		tim.stop();
+
+		await expect(hasTick(tim)).resolves.toBe(false);
+	});
+
+	// Mirrors Go TestChan ticker stale-value checks, lines 639-655:
+	// https://github.com/golang/go/blob/58efaf3859e6a6f9988e69afc59c0792888ca41a/src/time/tick_test.go#L639-L655
+	it("does not receive an old tick after reset", async () => {
+		const tim = new Ticker(clock, 1000);
+
+		tim.reset(1000);
+		await expect(hasTick(tim)).resolves.toBe(false);
+		tim.reset(1);
+		await assertTick(tim, clock);
+		await clock.wait(10);
+		await assertTick(tim, clock);
+		await clock.wait(10);
+		tim.reset(1000);
+		await expect(hasTick(tim)).resolves.toBe(false);
+		tim.stop();
+	});
+
+	// Mirrors Go testTimerChan's blocked receiver reset checks, lines 529-562:
+	// https://github.com/golang/go/blob/58efaf3859e6a6f9988e69afc59c0792888ca41a/src/time/tick_test.go#L529-L562
+	it("does not wake a blocked receiver until reset is imminent", async () => {
+		const sched = 10;
+		const tim = new Ticker(clock, 10000);
+		tim.reset(10000);
+		await expect(hasTick(tim)).resolves.toBe(false);
+
+		let done = false;
+		void (async () => {
+			await tim.C.receive();
+			done = true;
+		})();
+		await clock.wait(sched);
+		expect(done).toBe(false);
+
+		tim.reset(20000);
+		await clock.wait(sched);
+		expect(done).toBe(false);
+
+		tim.reset(1);
+		await waitUntil(clock, () => done);
+
+		await assertTick(tim, clock);
+
+		tim.stop();
+		await expect(hasTick(tim)).resolves.toBe(false);
+	});
+
+	// Mirrors Go testTimerChan's two select receiver checks, lines 564-609:
+	// https://github.com/golang/go/blob/58efaf3859e6a6f9988e69afc59c0792888ca41a/src/time/tick_test.go#L564-L609
+	it("wakes one of multiple select receivers after reset", async () => {
+		const sched = 10;
+		const tim = new Ticker(clock, 10000);
+		tim.reset(10000);
+		await expect(hasTick(tim)).resolves.toBe(false);
+
+		const done = new Channel<boolean>(2);
+		let done1 = false;
+		let done2 = false;
+		const stop = new Channel<boolean>();
+		void (async () => {
+			await select()
+				.case(tim.C, () => {
+					done.trySend(true);
+				})
+				.case(stop, () => undefined);
+			done1 = true;
+		})();
+		void (async () => {
+			await select()
+				.case(tim.C, () => {
+					done.trySend(true);
+				})
+				.case(stop, () => undefined);
+			done2 = true;
+		})();
+		await clock.wait(sched);
+		await notDone(done);
+
+		tim.reset(sched / 2);
+		await clock.wait(sched);
+		await waitDone(done, clock);
+
+		tim.stop();
+		stop.close();
+		await waitUntil(clock, () => done1);
+		await waitUntil(clock, () => done2);
+
+		await maybeReceive(done);
+		await maybeTick(tim);
+		await notDone(done);
+	});
+
+	// Mirrors Go testTimerChan's stopped select receiver checks, lines 611-627:
+	// https://github.com/golang/go/blob/58efaf3859e6a6f9988e69afc59c0792888ca41a/src/time/tick_test.go#L611-L627
+	it("does not wake select receivers when stopped", async () => {
+		const sched = 10;
+		const tim = new Ticker(clock, 10000);
+		tim.stop();
+		const stop = new Channel<boolean>();
+		const done = new Channel<boolean>(2);
+
+		for (let range = 0; range < 2; range++) {
+			void (async () => {
+				await select()
+					.case(tim.C, () => {
+						throw new Error("unexpected data");
+					})
+					.case(stop, () => undefined);
+				expect(done.trySend(true)).toBe(true);
+			})();
+		}
+
+		await clock.wait(sched);
+		stop.close();
+		await waitDone(done, clock);
+		await waitDone(done, clock);
+	});
+
+	// Mirrors Go TestTickTimes, lines 688-702:
+	// https://github.com/golang/go/blob/58efaf3859e6a6f9988e69afc59c0792888ca41a/src/time/tick_test.go#L688-L702
+	it("reports the scheduled tick time even when read later", async () => {
+		for (let range = 0; range < 10; range++) {
+			const start = clock.nowMs();
+			const c = new Ticker(clock, 10);
+			await clock.wait(500);
+			const tick = await assertTick(c, clock);
+			c.stop();
+			const dt = tick.getTime() - start;
+			if (dt < 400) {
+				return;
+			}
+		}
+		throw new Error("not working");
 	});
 });
 
-function deltas(times: Date[]): number[] {
-	const result: number[] = [];
-	for (let index = 1; index < times.length; index++) {
-		const previous = times[index - 1];
-		const current = times[index];
-		if (!previous || !current) {
-			throw new Error("Expected adjacent tick times");
-		}
-		result.push(current.getTime() - previous.getTime());
+async function assertTick(tim: Ticker, clock: Clock): Promise<Date> {
+	const tick = await maybeTick(tim);
+	if (tick) {
+		return tick;
 	}
-	return result;
+
+	for (let range = 0; range < 100; range++) {
+		await clock.wait(10);
+		const tick = await maybeTick(tim);
+		if (tick) {
+			return tick;
+		}
+	}
+
+	throw new Error("missing tick");
+}
+
+async function hasTick(tim: Ticker): Promise<boolean> {
+	return (await maybeTick(tim)) !== undefined;
+}
+
+async function maybeTick(tim: Ticker): Promise<Date | undefined> {
+	return await select()
+		.case(tim.C, ({ value }) => value)
+		.default(() => undefined);
+}
+
+async function notDone(done: Channel<boolean>): Promise<void> {
+	expect(await maybeReceive(done)).toBeUndefined();
+}
+
+async function waitDone(done: Channel<boolean>, clock: Clock): Promise<void> {
+	if ((await maybeReceive(done)) !== undefined) {
+		return;
+	}
+
+	for (let range = 0; range < 100; range++) {
+		await clock.wait(10);
+		if ((await maybeReceive(done)) !== undefined) {
+			return;
+		}
+	}
+
+	throw new Error("never got done");
+}
+
+async function maybeReceive<T>(channel: Channel<T>): Promise<T | undefined> {
+	return await select()
+		.case(channel, ({ value }) => value)
+		.default(() => undefined);
+}
+
+async function waitUntil(clock: Clock, condition: () => boolean): Promise<void> {
+	for (let range = 0; range < 100; range++) {
+		if (condition()) {
+			return;
+		}
+		await clock.wait(10);
+	}
+
+	throw new Error("condition was not met");
 }
