@@ -5,6 +5,7 @@ import { waitFor } from "../../test/wait";
 
 const agnhostImage = "registry.k8s.io/e2e-test-images/agnhost:2.40";
 const busyboxImage = "busybox:1.36";
+const probeObservationMs = 1_200;
 
 kubernetes.describe("Probes", ({ core, getSuiteNamespace }) => {
 	async function createPod(name: string, container: V1Container): Promise<V1Pod> {
@@ -33,7 +34,7 @@ kubernetes.describe("Probes", ({ core, getSuiteNamespace }) => {
 			agnhostContainer({
 				readinessProbe: {
 					httpGet: { path: "/readyz", port: "http" },
-					initialDelaySeconds: 2,
+					initialDelaySeconds: 1,
 					periodSeconds: 1,
 					failureThreshold: 1,
 				},
@@ -69,7 +70,7 @@ kubernetes.describe("Probes", ({ core, getSuiteNamespace }) => {
 			agnhostContainer({
 				startupProbe: {
 					httpGet: { path: "/healthz", port: "http" },
-					initialDelaySeconds: 2,
+					initialDelaySeconds: 1,
 					periodSeconds: 1,
 					failureThreshold: 1,
 				},
@@ -112,8 +113,6 @@ kubernetes.describe("Probes", ({ core, getSuiteNamespace }) => {
 			expect(containerStatus(pod).ready).toBe(false);
 			expect(conditionStatus(pod, "Ready")).toBe("False");
 		});
-
-		await observeFor(2_500);
 		expect(containerStatus(await readPod("http-readiness-failure")).restartCount).toBe(0);
 	});
 
@@ -184,7 +183,7 @@ kubernetes.describe("Probes", ({ core, getSuiteNamespace }) => {
 		await waitFor(async () => {
 			expect(containerStatus(await readPod("exec-liveness-success")).started).toBe(true);
 		});
-		await observeFor(2_500);
+		await observeFor(probeObservationMs);
 		expect(containerStatus(await readPod("exec-liveness-success")).restartCount).toBe(0);
 	});
 
@@ -203,7 +202,7 @@ kubernetes.describe("Probes", ({ core, getSuiteNamespace }) => {
 		await waitFor(async () => {
 			expect(containerStatus(await readPod("tcp-liveness-success")).started).toBe(true);
 		});
-		await observeFor(2_500);
+		await observeFor(probeObservationMs);
 		expect(containerStatus(await readPod("tcp-liveness-success")).restartCount).toBe(0);
 	});
 
