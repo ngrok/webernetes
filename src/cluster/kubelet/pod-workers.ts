@@ -1,4 +1,4 @@
-import { Channel, type SendChannel } from "../../channel";
+import { Channel, type SendChannel } from "../../go/channel";
 import type { V1Pod, V1PodStatus } from "../../client";
 import type { Clock } from "../../clock";
 import type { PodRuntimeStatus } from "../cri";

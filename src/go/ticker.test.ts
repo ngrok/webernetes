@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, expect, it } from "vitest";
 
 import { Channel, select } from "./channel";
-import { Clock } from "./clock";
+import { Clock } from "../clock";
 import { Ticker } from "./ticker";
-import { browser } from "./test/describe";
+import { browser } from "../test/describe";
 
 // These tests mirror the Go ticker tests from src/time/tick_test.go at:
 // https://github.com/golang/go/blob/58efaf3859e6a6f9988e69afc59c0792888ca41a/src/time/tick_test.go

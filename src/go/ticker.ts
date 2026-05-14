@@ -1,5 +1,5 @@
 import { Channel, type ReadOnlyChannel } from "./channel";
-import type { Clock } from "./clock";
+import type { Clock } from "../clock";
 
 // This Ticker class exists to match the semantics of Go's ticker:
 //   https://pkg.go.dev/time#Ticker

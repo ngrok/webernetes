@@ -1,4 +1,4 @@
-import { Channel, type ReadOnlyChannel } from "../../../../channel";
+import { Channel, type ReadOnlyChannel } from "../../../../go/channel";
 import type { V1Pod } from "../../../../client";
 import type { ContainerID } from "../../container";
 

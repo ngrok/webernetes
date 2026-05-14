@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import { Channel, select } from "./channel";
-import { browser } from "./test/describe";
+import { browser } from "../test/describe";
 
 browser.describe("Channel", () => {
 	// Go check:

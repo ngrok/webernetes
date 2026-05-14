@@ -1,4 +1,6 @@
 import type { Clock } from "../../clock";
+import { Channel, select } from "../../go/channel";
+import * as context from "../../go/context";
 import type { KubeConfig } from "../../client/types";
 import { ipToNumber } from "../../net";
 import type { DnsHandler, DnsListener, DnsRecordType, DnsResponse } from "../cni/dns";
@@ -391,34 +393,27 @@ export class Runtime {
 		return this.options.clock.wait(ms);
 	}
 
-	async sleepUntil(signal: AbortSignal, ms: number, exitCode: () => number): Promise<void> {
-		if (signal.aborted) {
+	async sleepUntil(ctx: context.Context, ms: number, exitCode: () => number): Promise<void> {
+		if (ctx.err()) {
 			return Promise.reject(new ProcessExit(exitCode()));
 		}
 		let timeoutHandle: number | undefined;
-		let removeAbortListener: (() => void) | undefined;
+		const timeout = new Channel<void>(1);
 		try {
-			return await new Promise<void>((resolve, reject) => {
-				const onAbort = () => {
-					if (timeoutHandle !== undefined) {
-						this.options.clock.clearTimeout(timeoutHandle);
-						timeoutHandle = undefined;
-					}
-					reject(new ProcessExit(exitCode()));
-				};
-				removeAbortListener = () => signal.removeEventListener("abort", onAbort);
-				signal.addEventListener("abort", onAbort, { once: true });
-				timeoutHandle = this.options.clock.setTimeout(() => {
-					timeoutHandle = undefined;
-					removeAbortListener?.();
-					resolve();
-				}, ms);
-			});
+			timeoutHandle = this.options.clock.setTimeout(() => {
+				timeoutHandle = undefined;
+				timeout.trySend(undefined);
+			}, ms);
+			const selected = await select()
+				.case(ctx.done(), () => "done")
+				.case(timeout, () => "timeout");
+			if (selected === "done") {
+				throw new ProcessExit(exitCode());
+			}
 		} finally {
 			if (timeoutHandle !== undefined) {
 				this.options.clock.clearTimeout(timeoutHandle);
 			}
-			removeAbortListener?.();
 		}
 	}
 
@@ -654,15 +649,12 @@ export class ProcessInstance {
 	private killedExitCode: number | undefined;
 	private stdoutBuffer = "";
 	private stderrBuffer = "";
-	private readonly abortController = new AbortController();
+	private readonly ctx: context.Context;
+	private readonly cancelContext: context.CancelFunc;
 	private readonly listeners: Array<{ close(): void }> = [];
 	private resolveWait: (code: number) => void = () => {};
-	private resolveKilled: (code: number) => void = () => {};
 	private readonly waitPromise = new Promise<number>((resolve) => {
 		this.resolveWait = resolve;
-	});
-	private readonly killedPromise = new Promise<number>((resolve) => {
-		this.resolveKilled = resolve;
 	});
 
 	constructor(
@@ -673,6 +665,7 @@ export class ProcessInstance {
 		private readonly runtime: Runtime,
 	) {
 		this.startedAt = runtime.nowMs();
+		[this.ctx, this.cancelContext] = context.withCancel(context.background());
 	}
 
 	readonly startedAt: number;
@@ -689,8 +682,8 @@ export class ProcessInstance {
 		return this.processExitCode;
 	}
 
-	get signal(): AbortSignal {
-		return this.abortController.signal;
+	get context(): context.Context {
+		return this.ctx;
 	}
 
 	get abortExitCode(): number {
@@ -729,10 +722,7 @@ export class ProcessInstance {
 	async kill(signal: "SIGTERM" | "SIGKILL" = "SIGTERM"): Promise<void> {
 		const exitCode = signal === "SIGKILL" ? 137 : 143;
 		this.killedExitCode = exitCode;
-		if (!this.abortController.signal.aborted) {
-			this.abortController.abort();
-			this.resolveKilled(exitCode);
-		}
+		this.cancelContext();
 		this.finish(exitCode);
 	}
 
@@ -749,13 +739,17 @@ export class ProcessInstance {
 	}
 
 	waitUntilKilled(): Promise<number> {
-		if (this.abortController.signal.aborted) {
+		if (this.ctx.err()) {
 			return Promise.resolve(this.killedExitCode ?? this.processExitCode ?? 143);
 		}
-		return this.killedPromise;
+		return this.ctx
+			.done()
+			.receive()
+			.then(() => this.killedExitCode ?? this.processExitCode ?? 143);
 	}
 
 	exit(code: number): never {
+		this.cancelContext();
 		this.finish(code);
 		throw new ProcessExit(code);
 	}
@@ -767,6 +761,7 @@ export class ProcessInstance {
 		this.processState = "Exited";
 		this.finishedAtMs = this.runtime.nowMs();
 		this.processExitCode = code;
+		this.cancelContext();
 		for (const listener of this.listeners.splice(0)) {
 			listener.close();
 		}
@@ -774,7 +769,7 @@ export class ProcessInstance {
 	}
 }
 
-export class ProcessContext {
+export class ProcessContext implements context.Context {
 	constructor(
 		private readonly process: ProcessInstance,
 		private readonly runtime: Runtime,
@@ -824,8 +819,12 @@ export class ProcessContext {
 		return this.runtime.clock;
 	}
 
-	get signal(): AbortSignal {
-		return this.process.signal;
+	done(): ReturnType<context.Context["done"]> {
+		return this.process.context.done();
+	}
+
+	err(): ReturnType<context.Context["err"]> {
+		return this.process.context.err();
 	}
 
 	exec(argv: string[], options?: ExecOptions): ProcessInstance {
@@ -893,7 +892,7 @@ export class ProcessContext {
 	}
 
 	sleep(ms: number): Promise<void> {
-		return this.runtime.sleepUntil(this.signal, ms, () => this.process.abortExitCode);
+		return this.runtime.sleepUntil(this.process.context, ms, () => this.process.abortExitCode);
 	}
 
 	waitUntilKilled(): Promise<number> {

@@ -5,7 +5,7 @@ import type {
 	V1Pod,
 	V1PodStatus,
 } from "../../client";
-import { Channel, select } from "../../channel";
+import { Channel, select } from "../../go/channel";
 import { CoreV1Api } from "../../client";
 import type {
 	ContainerConfig,

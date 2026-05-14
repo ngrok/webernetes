@@ -1,7 +1,7 @@
 import type { V1Container, V1Pod, V1Probe } from "../../../client";
-import { Channel, select } from "../../../channel";
+import { Channel, select } from "../../../go/channel";
 import type { Clock } from "../../../clock";
-import { Ticker } from "../../../ticker";
+import { Ticker } from "../../../go/ticker";
 import * as podutil from "../../pod-util";
 import { type ContainerID, parseContainerID } from "../container";
 import type { ProbeManager } from "./manager";
