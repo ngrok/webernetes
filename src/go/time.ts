@@ -1,6 +1,29 @@
 import { Channel, type ReadOnlyChannel } from "./channel";
 import type { Clock } from "../clock";
 
+// after waits for the duration to elapse and then sends the current time on the
+// returned channel, matching Go's time.After:
+//   https://pkg.go.dev/time#After
+export function after(clock: Clock, delayMs: number): ReadOnlyChannel<Date> {
+	const channel = new Channel<Date>(1);
+	clock.setTimeout(() => {
+		channel.trySend(clock.now());
+	}, delayMs);
+	return channel.readOnly();
+}
+
+// tick is a convenience wrapper for Ticker, matching Go's time.Tick:
+//   https://pkg.go.dev/time#Tick
+//
+// Intentional divergence: Go returns nil when d <= 0. This helper throws
+// instead so TypeScript callers do not need to null-check every tick channel.
+export function tick(clock: Clock, intervalMs: number): ReadOnlyChannel<Date> {
+	if (intervalMs <= 0) {
+		throw new Error("tick interval must be greater than 0");
+	}
+	return new Ticker(clock, intervalMs).C;
+}
+
 // This Ticker class exists to match the semantics of Go's ticker:
 //   https://pkg.go.dev/time#Ticker
 //

@@ -1,6 +1,7 @@
 import type { Clock } from "../../clock";
-import { Channel, select } from "../../go/channel";
+import { select } from "../../go/channel";
 import * as context from "../../go/context";
+import * as time from "../../go/time";
 import type { KubeConfig } from "../../client/types";
 import { ipToNumber } from "../../net";
 import type { DnsHandler, DnsListener, DnsRecordType, DnsResponse } from "../cni/dns";
@@ -200,26 +201,34 @@ export interface PodRuntimeStatus {
 }
 
 export class Runtime {
+	readonly clock: Clock;
+	readonly kubeConfig: KubeConfig;
 	readonly network: ClusterNetwork;
 	readonly imageRegistry: ImageRegistry;
+	private readonly podCIDR: string;
+	private readonly idPrefix: string;
 	private readonly sandboxes = new Map<string, PodSandboxInstance>();
 	private readonly containers = new Map<string, ContainerInstance>();
 	private nextSandboxId = 1;
 	private nextContainerId = 1;
 	private nextPid = 1;
 
-	constructor(private readonly options: RuntimeOptions) {
+	constructor(options: RuntimeOptions) {
+		this.clock = options.clock;
+		this.kubeConfig = options.kubeConfig;
 		this.network = options.network;
 		this.imageRegistry = options.imageRegistry;
+		this.podCIDR = options.podCIDR;
+		this.idPrefix = options.idPrefix ?? "";
 	}
 
 	async runPodSandbox(config: PodSandboxConfig): Promise<string> {
 		const sandbox = new PodSandboxInstance(
-			`${this.options.idPrefix ?? ""}sandbox-${this.nextSandboxId++}`,
+			`${this.idPrefix}sandbox-${this.nextSandboxId++}`,
 			config,
 			this.nowMs(),
 		);
-		sandbox.setNetworkRegistration(this.network.setupPodSandbox(sandbox, this.options.podCIDR));
+		sandbox.setNetworkRegistration(this.network.setupPodSandbox(sandbox, this.podCIDR));
 		this.sandboxes.set(sandbox.id, sandbox);
 		return sandbox.id;
 	}
@@ -313,7 +322,7 @@ export class Runtime {
 			throw new Error(`image ${config.image.image} not found`);
 		}
 		const container = new ContainerInstance(
-			`${this.options.idPrefix ?? ""}container-${this.nextContainerId++}`,
+			`${this.idPrefix}container-${this.nextContainerId++}`,
 			sandbox,
 			config,
 			image,
@@ -389,44 +398,20 @@ export class Runtime {
 		return new ProcessInstance(this.nextPid++, container, argv, run, this);
 	}
 
-	sleep(ms: number): Promise<void> {
-		return this.options.clock.wait(ms);
-	}
-
 	async sleepUntil(ctx: context.Context, ms: number, exitCode: () => number): Promise<void> {
 		if (ctx.err()) {
 			return Promise.reject(new ProcessExit(exitCode()));
 		}
-		let timeoutHandle: number | undefined;
-		const timeout = new Channel<void>(1);
-		try {
-			timeoutHandle = this.options.clock.setTimeout(() => {
-				timeoutHandle = undefined;
-				timeout.trySend(undefined);
-			}, ms);
-			const selected = await select()
-				.case(ctx.done(), () => "done")
-				.case(timeout, () => "timeout");
-			if (selected === "done") {
-				throw new ProcessExit(exitCode());
-			}
-		} finally {
-			if (timeoutHandle !== undefined) {
-				this.options.clock.clearTimeout(timeoutHandle);
-			}
+		const selected = await select()
+			.case(ctx.done(), () => "done")
+			.case(time.after(this.clock, ms), () => "timeout");
+		if (selected === "done") {
+			throw new ProcessExit(exitCode());
 		}
 	}
 
 	nowMs(): number {
-		return this.options.clock.nowMs();
-	}
-
-	get clock(): Clock {
-		return this.options.clock;
-	}
-
-	kubeConfig(): KubeConfig {
-		return this.options.kubeConfig;
+		return this.clock.nowMs();
 	}
 
 	private async waitForProcess(
@@ -441,12 +426,12 @@ export class Runtime {
 			return await Promise.race([
 				process.wait(),
 				new Promise<number>((resolve) => {
-					timeoutHandle = this.options.clock.setTimeout(() => resolve(124), timeoutMs);
+					timeoutHandle = this.clock.setTimeout(() => resolve(124), timeoutMs);
 				}),
 			]);
 		} finally {
 			if (timeoutHandle !== undefined) {
-				this.options.clock.clearTimeout(timeoutHandle);
+				this.clock.clearTimeout(timeoutHandle);
 			}
 		}
 	}
@@ -738,14 +723,12 @@ export class ProcessInstance {
 		this.stderrBuffer += chunk;
 	}
 
-	waitUntilKilled(): Promise<number> {
+	async waitUntilKilled(): Promise<number> {
 		if (this.ctx.err()) {
 			return Promise.resolve(this.killedExitCode ?? this.processExitCode ?? 143);
 		}
-		return this.ctx
-			.done()
-			.receive()
-			.then(() => this.killedExitCode ?? this.processExitCode ?? 143);
+		await this.ctx.done().receive();
+		return this.killedExitCode ?? this.processExitCode ?? 143;
 	}
 
 	exit(code: number): never {
@@ -812,7 +795,7 @@ export class ProcessContext implements context.Context {
 	}
 
 	get kubeConfig(): KubeConfig {
-		return this.runtime.kubeConfig();
+		return this.runtime.kubeConfig;
 	}
 
 	get clock(): Clock {

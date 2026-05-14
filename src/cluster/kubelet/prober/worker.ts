@@ -1,7 +1,7 @@
 import type { V1Container, V1Pod, V1Probe } from "../../../client";
 import { Channel, select } from "../../../go/channel";
 import type { Clock } from "../../../clock";
-import { Ticker } from "../../../go/ticker";
+import * as time from "../../../go/time";
 import * as podutil from "../../pod-util";
 import { type ContainerID, parseContainerID } from "../container";
 import type { ProbeManager } from "./manager";
@@ -61,7 +61,7 @@ export class ProbeWorker {
 			await this.clock.wait(Math.random() * this.intervalMs);
 		}
 
-		const probeTicker = new Ticker(this.clock, this.intervalMs);
+		const probeTicker = new time.Ticker(this.clock, this.intervalMs);
 		try {
 			probeLoop: for (; await this.doProbe(); ) {
 				const selected = await select()
