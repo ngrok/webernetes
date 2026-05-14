@@ -31,6 +31,10 @@ General rules for this repository:
   `setTimeout`, `setInterval`, or `Date.now` directly. Route timeout, interval,
   and current-time behavior through the cluster `Clock` instance so the
   simulator can be paused and controlled deterministically.
+- Simulator behavior is currently targeting Kubernetes 1.36. A local checkout
+  of `kubernetes/kubernetes` at commit
+  `ecf6decece6a6de25a57aad9ba90b6ce580f6f78` is available at
+  `~/Developer/github.com/kubernetes/kubernetes` for upstream source reference.
 - Shared tests should exercise the same calling code against the real client and
   the fake client. Favor changes that make the fake's public exported types line
   up with the real client's public exported types closely enough that unions and

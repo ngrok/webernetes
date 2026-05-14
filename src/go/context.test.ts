@@ -38,6 +38,63 @@ browser.describe("Context", () => {
 		expect(ctx.err()).toBe(context.Canceled);
 	});
 
+	// Derived from this Go program:
+	//
+	// package main
+	//
+	// import (
+	// 	"context"
+	// 	"fmt"
+	// 	"sync"
+	// 	"sync/atomic"
+	// )
+	//
+	// func main() {
+	// 	ctx, cancel := context.WithCancel(context.Background())
+	// 	var wg sync.WaitGroup
+	// 	var unblocked int32
+	// 	for range 6 {
+	// 		wg.Add(1)
+	// 		go func() {
+	// 			defer wg.Done()
+	// 			<-ctx.Done()
+	// 			atomic.AddInt32(&unblocked, 1)
+	// 		}()
+	// 	}
+	// 	cancel()
+	// 	wg.Wait()
+	// 	fmt.Println(unblocked)
+	// }
+	//
+	// Output:
+	// 6
+	it("canceling a context unblocks all waiters on done", async () => {
+		const [ctx, cancel] = context.withCancel(context.background());
+		const receiveWaiters = Array.from({ length: 3 }, async () => {
+			const result = await ctx.done().receive();
+			return result.ok;
+		});
+		const selectWaiters = Array.from({ length: 3 }, () =>
+			select()
+				.case(ctx.done(), (result) => result.ok)
+				.then((ok) => ok),
+		);
+
+		await expect(doneIsReady(ctx)).resolves.toBe(false);
+
+		cancel();
+
+		await expect(Promise.all([...receiveWaiters, ...selectWaiters])).resolves.toEqual([
+			false,
+			false,
+			false,
+			false,
+			false,
+			false,
+		]);
+		expect(ctx.err()).toBe(context.Canceled);
+	});
+
 	// Mirrors Go XTestParentFinishesChild, lines 35-129:
 	// https://github.com/golang/go/blob/go1.26.0/src/context/context_test.go#L35-L129
 	it("canceling a parent cancels children synchronously", async () => {

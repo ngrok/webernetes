@@ -18,9 +18,6 @@ export function after(clock: Clock, delayMs: number): ReadOnlyChannel<Date> {
 // Intentional divergence: Go returns nil when d <= 0. This helper throws
 // instead so TypeScript callers do not need to null-check every tick channel.
 export function tick(clock: Clock, intervalMs: number): ReadOnlyChannel<Date> {
-	if (intervalMs <= 0) {
-		throw new Error("tick interval must be greater than 0");
-	}
 	return new Ticker(clock, intervalMs).C;
 }
 
@@ -39,19 +36,25 @@ export class Ticker {
 
 	constructor(
 		private readonly clock: Clock,
-		private intervalMs: number,
+		intervalMs: number,
 	) {
+		this.start(intervalMs);
+	}
+
+	private start(intervalMs: number): void {
 		validateInterval(intervalMs);
+		this.stop();
 		this.intervalHandle = this.clock.setInterval(() => {
-			this.emitTick();
-		}, this.intervalMs);
+			this.ticks.trySend(this.clock.now());
+		}, intervalMs);
 	}
 
 	stop(): void {
-		if (this.intervalHandle !== undefined) {
-			this.clock.clearInterval(this.intervalHandle);
-			this.intervalHandle = undefined;
+		if (this.intervalHandle === undefined) {
+			return;
 		}
+		this.clock.clearInterval(this.intervalHandle);
+		this.intervalHandle = undefined;
 		this.ticks.drainBuffered();
 	}
 
@@ -60,16 +63,7 @@ export class Ticker {
 	}
 
 	reset(intervalMs: number): void {
-		validateInterval(intervalMs);
-		this.stop();
-		this.intervalMs = intervalMs;
-		this.intervalHandle = this.clock.setInterval(() => {
-			this.emitTick();
-		}, this.intervalMs);
-	}
-
-	private emitTick(): void {
-		this.ticks.trySend(this.clock.now());
+		this.start(intervalMs);
 	}
 }
 

@@ -174,8 +174,8 @@ browser.describe("tick", () => {
 	// TypeScript callers get an exception instead of a nullable channel so they
 	// do not need to null-check every tick channel.
 	it("throws for non-positive intervals", () => {
-		expect(() => time.tick(clock, 0)).toThrow("tick interval must be greater than 0");
-		expect(() => time.tick(clock, -1)).toThrow("tick interval must be greater than 0");
+		expect(() => time.tick(clock, 0)).toThrow("Ticker interval must be greater than 0");
+		expect(() => time.tick(clock, -1)).toThrow("Ticker interval must be greater than 0");
 	});
 });
 
