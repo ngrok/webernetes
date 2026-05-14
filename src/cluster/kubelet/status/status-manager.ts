@@ -1,5 +1,4 @@
 import type {
-	V1Container,
 	V1ContainerState,
 	V1ContainerStatus,
 	V1Pod,
@@ -8,6 +7,7 @@ import type {
 } from "../../../client";
 import type { Clock } from "../../../clock";
 import { retryConflicts } from "../../../retry-update";
+import * as podutil from "../../pod-util";
 import { type ContainerID, parseContainerID } from "../container";
 import type { PodStore } from "../../storage";
 import { generateContainersReadyCondition, generatePodReadyCondition } from "./generate";
@@ -39,12 +39,12 @@ export class StatusManager {
 	}
 
 	// Models kubernetes/pkg/kubelet/status/status_manager.go GetPodStatus.
-	getPodStatus(podUid: string): [V1PodStatus | undefined, boolean] {
+	getPodStatus(podUid: string): V1PodStatus | undefined {
 		const status = this.podStatuses.get(podUid);
 		if (!status) {
-			return [undefined, false];
+			return undefined;
 		}
-		return [this.copyPodStatus(status), true];
+		return this.copyPodStatus(status);
 	}
 
 	// Models kubernetes/pkg/kubelet/status/status_manager.go SetContainerReadiness.
@@ -324,7 +324,7 @@ export class StatusManager {
 			for (const container of pod.spec?.containers ?? []) {
 				if (
 					container.name === oldStatus.name &&
-					this.containerShouldRestart(container, pod, oldStatus.state.terminated.exitCode)
+					podutil.containerShouldRestart(container, pod.spec, oldStatus.state.terminated.exitCode)
 				) {
 					restartable = true;
 				}
@@ -341,68 +341,6 @@ export class StatusManager {
 			}
 		}
 
-		return undefined;
-	}
-
-	// Models kubernetes/pkg/api/v1/pod/util.go ContainerShouldRestart.
-	private containerShouldRestart(container: V1Container, pod: V1Pod, exitCode: number): boolean {
-		if (container.restartPolicy !== undefined) {
-			const rule = this.findMatchingContainerRestartRule(container, exitCode);
-			if (rule) {
-				switch (rule.action) {
-					case "Restart":
-						return true;
-					case "RestartAllContainers":
-						// The default as of 1.36, see feature gate
-						// RestartAllContainersOnContainerExits
-						return true;
-				}
-			}
-
-			switch (container.restartPolicy) {
-				case "Always":
-					return true;
-				case "OnFailure":
-					return exitCode !== 0;
-				case "Never":
-					return false;
-			}
-		}
-
-		switch (pod.spec?.restartPolicy) {
-			case "Always":
-				return true;
-			case "OnFailure":
-				return exitCode !== 0;
-			case "Never":
-				return false;
-			default:
-				return true;
-		}
-	}
-
-	// Models kubernetes/pkg/api/v1/pod/util.go FindMatchingContainerRestartRule.
-	private findMatchingContainerRestartRule(
-		container: V1Container,
-		exitCode: number,
-	): NonNullable<V1Container["restartPolicyRules"]>[number] | undefined {
-		for (const rule of container.restartPolicyRules ?? []) {
-			if (rule.exitCodes) {
-				const exitCodeMatched = (rule.exitCodes.values ?? []).includes(exitCode);
-				switch (rule.exitCodes.operator) {
-					case "In":
-						if (exitCodeMatched) {
-							return rule;
-						}
-						break;
-					case "NotIn":
-						if (!exitCodeMatched) {
-							return rule;
-						}
-						break;
-				}
-			}
-		}
 		return undefined;
 	}
 

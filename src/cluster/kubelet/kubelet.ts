@@ -5,6 +5,7 @@ import type {
 	V1Pod,
 	V1PodStatus,
 } from "../../client";
+import { Channel, select } from "../../channel";
 import { CoreV1Api } from "../../client";
 import type {
 	ContainerConfig,
@@ -32,6 +33,11 @@ import type { Watcher } from "../storage/watch";
 
 interface RunningPod {
 	sandboxId: string;
+}
+
+interface PodUpdate {
+	op: "ADD" | "DELETE" | "UPDATE";
+	pods: V1Pod[];
 }
 
 interface PodActions {
@@ -66,6 +72,7 @@ export class Kubelet {
 	private readonly podWorkers: PodWorkers;
 	private readonly statusManager: StatusManager;
 	private readonly events: EventRecorder;
+	private readonly podUpdates = new Channel<PodUpdate>(50);
 	private stopped = false;
 
 	public constructor(server: Server) {
@@ -98,26 +105,30 @@ export class Kubelet {
 	}
 
 	async start(): Promise<void> {
-		this.syncLoopProbeUpdates();
+		this.syncLoop();
 		await this.reconcileExistingPods();
 		this.watcher = await this.pods.watch();
-		this.watcher.on("event", async (event, pod) => {
+		this.watcher.on("event", (event, pod) => {
 			switch (event) {
 				case "ADDED":
-					this.handlePodAdditions([pod]);
+					this.sendPodUpdate({ op: "ADD", pods: [pod] });
 					return;
 				case "MODIFIED":
-					this.handlePodUpdates([pod]);
+					this.sendPodUpdate({ op: "UPDATE", pods: [pod] });
 					return;
 				case "DELETED":
-					await this.deletePodStatus(pod);
+					this.sendPodUpdate({ op: "DELETE", pods: [pod] });
 					return;
 			}
 		});
 	}
 
 	close(): void {
+		if (this.stopped) {
+			return;
+		}
 		this.stopped = true;
+		this.podUpdates.close();
 		this.probeManager.close();
 		this.podWorkers.close();
 		this.statusManager.close();
@@ -128,33 +139,81 @@ export class Kubelet {
 		this.runningPods.clear();
 	}
 
-	// Kubernetes runs syncLoop/syncLoopIteration around Go channels. In the
-	// simulator, pod watches and probe result managers are EventEmitters, so the
-	// probe cases from syncLoopIteration are modeled as direct subscriptions.
-	private syncLoopProbeUpdates(): void {
-		this.probeManager.livenessManager.on("update", (update: ProbeUpdate) => {
-			if (update.result === "failure") {
-				void this.handleProbeSync(update, "liveness", "unhealthy");
+	private sendPodUpdate(update: PodUpdate): void {
+		if (this.stopped) {
+			return;
+		}
+		void this.podUpdates.send(update).catch(() => {});
+	}
+
+	// Models the channel dispatch shape of kubernetes/pkg/kubelet/kubelet.go
+	// syncLoopIteration for the simulator's currently modeled pod config and
+	// probe-manager cases.
+	private syncLoop(): void {
+		void this.syncLoopIteration();
+	}
+
+	private async syncLoopIteration(): Promise<void> {
+		while (!this.stopped) {
+			const selected = await select()
+				.case(this.podUpdates, async ({ ok, value }) => {
+					if (!ok) {
+						return "closed";
+					}
+					await this.handlePodUpdate(value);
+					return "handled";
+				})
+				.case(this.probeManager.livenessManager.updates(), async ({ ok, value }) => {
+					if (!ok) {
+						return "closed";
+					}
+					if (value.result === "failure") {
+						await this.handleProbeSync(value, "liveness", "unhealthy");
+					}
+					return "handled";
+				})
+				.case(this.probeManager.readinessManager.updates(), async ({ ok, value }) => {
+					if (!ok) {
+						return "closed";
+					}
+					const ready = value.result === "success";
+					await this.statusManager.setContainerReadiness(value.podUid, value.containerId, ready);
+
+					const status = ready ? "ready" : "not ready";
+					await this.handleProbeSync(value, "readiness", status);
+					return "handled";
+				})
+				.case(this.probeManager.startupManager.updates(), async ({ ok, value }) => {
+					if (!ok) {
+						return "closed";
+					}
+					const started = value.result === "success";
+					await this.statusManager.setContainerStartup(value.podUid, value.containerId, started);
+
+					const status = started ? "started" : "unhealthy";
+					await this.handleProbeSync(value, "startup", status);
+					return "handled";
+				});
+			if (selected === "closed") {
+				return;
 			}
-		});
-		this.probeManager.readinessManager.on("update", (update: ProbeUpdate) => {
-			void (async () => {
-				const ready = update.result === "success";
-				await this.statusManager.setContainerReadiness(update.podUid, update.containerId, ready);
+		}
+	}
 
-				const status = ready ? "ready" : "not ready";
-				await this.handleProbeSync(update, "readiness", status);
-			})();
-		});
-		this.probeManager.startupManager.on("update", (update: ProbeUpdate) => {
-			void (async () => {
-				const started = update.result === "success";
-				await this.statusManager.setContainerStartup(update.podUid, update.containerId, started);
-
-				const status = started ? "started" : "unhealthy";
-				await this.handleProbeSync(update, "startup", status);
-			})();
-		});
+	private async handlePodUpdate(update: PodUpdate): Promise<void> {
+		switch (update.op) {
+			case "ADD":
+				this.handlePodAdditions(update.pods);
+				return;
+			case "UPDATE":
+				this.handlePodUpdates(update.pods);
+				return;
+			case "DELETE":
+				for (const pod of update.pods) {
+					await this.deletePodStatus(pod);
+				}
+				return;
+		}
 	}
 
 	// Models kubernetes/pkg/kubelet/kubelet.go handleProbeSync.

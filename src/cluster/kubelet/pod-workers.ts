@@ -1,4 +1,4 @@
-import { Channel } from "../../channel";
+import { Channel, type SendChannel } from "../../channel";
 import type { V1Pod, V1PodStatus } from "../../client";
 import type { Clock } from "../../clock";
 import type { PodRuntimeStatus } from "../cri";
@@ -18,7 +18,7 @@ interface RunningPod {
 }
 
 interface KillPodOptions {
-	completed?: () => void;
+	completedCh?: SendChannel<void>;
 	evict?: boolean;
 	podStatusFunc?: (status: V1PodStatus) => void;
 	podTerminationGracePeriodSecondsOverride?: number;
@@ -35,6 +35,7 @@ interface PodSyncStatus {
 	startedTerminating: boolean;
 	finished: boolean;
 	gracePeriod: number;
+	notifyPostTerminating: Array<SendChannel<void>>;
 	startedAt?: Date;
 	terminatingAt?: Date;
 	terminatedAt?: Date;
@@ -126,6 +127,7 @@ export class PodWorkers {
 				startedTerminating: false,
 				finished: false,
 				gracePeriod: 0,
+				notifyPostTerminating: [],
 			};
 
 			// Kubernetes checks podCache here when the first observed API pod is
@@ -206,11 +208,14 @@ export class PodWorkers {
 				if (isRuntimePod) {
 					return;
 				}
-				options.killPodOptions?.completed?.();
+				closeCompletedCh(options.killPodOptions);
 				options.killPodOptions = undefined;
 				break;
 			case isTerminationRequested(status):
 				options.killPodOptions ??= {};
+				if (options.killPodOptions.completedCh) {
+					status.notifyPostTerminating.push(options.killPodOptions.completedCh);
+				}
 				const [gracePeriod, gracePeriodShortened] = calculateEffectiveGracePeriod(
 					status,
 					pod,
@@ -221,7 +226,7 @@ export class PodWorkers {
 				options.killPodOptions.podTerminationGracePeriodSecondsOverride = gracePeriod;
 				break;
 			default:
-				options.killPodOptions?.completed?.();
+				closeCompletedCh(options.killPodOptions);
 				options.killPodOptions = undefined;
 				break;
 		}
@@ -433,6 +438,10 @@ export class PodWorkers {
 			return;
 		}
 		status.terminatedAt = this.clock.now();
+		for (const ch of status.notifyPostTerminating) {
+			closeChannel(ch);
+		}
+		status.notifyPostTerminating = [];
 		this.requeueLastPodUpdate(uid, status);
 	}
 
@@ -539,6 +548,22 @@ function podWorkType(status: PodSyncStatus): PodWorkerState {
 
 function isTerminalPhase(phase: NonNullable<V1Pod["status"]>["phase"]): boolean {
 	return phase === "Failed" || phase === "Succeeded";
+}
+
+function closeCompletedCh(options: KillPodOptions | undefined): void {
+	if (options?.completedCh) {
+		closeChannel(options.completedCh);
+	}
+}
+
+function closeChannel(channel: SendChannel<void>): void {
+	try {
+		channel.close();
+	} catch (error) {
+		if (!(error instanceof Error) || error.message !== "close of closed channel") {
+			throw error;
+		}
+	}
 }
 
 // Models kubernetes/pkg/kubelet/pod_workers.go calculateEffectiveGracePeriod.

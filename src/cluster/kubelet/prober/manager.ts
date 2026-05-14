@@ -30,6 +30,10 @@ export class ProbeManager {
 		this.start = options.clock.now();
 	}
 
+	get startedAt(): Date {
+		return this.start;
+	}
+
 	// Models kubernetes/pkg/kubelet/prober/prober_manager.go AddPod.
 	addPod(pod: V1Pod): void {
 		// TODO: if we ever support init containers, we'll need to make
@@ -132,6 +136,10 @@ export class ProbeManager {
 		return this.results(probeType).get(containerId);
 	}
 
+	removeWorker(podUid: string, containerName: string, probeType: ProbeType): void {
+		this.workers.delete(probeKeyString({ podUid, containerName, probeType }));
+	}
+
 	close(): void {
 		for (const worker of this.workers.values()) {
 			worker.stop();
@@ -170,12 +178,9 @@ export class ProbeManager {
 			container,
 			probe,
 			probeType,
-			removeWorker: () => {
-				this.workers.delete(key);
-			},
 		});
 		this.workers.set(key, worker);
-		worker.start();
+		void worker.run();
 	}
 
 	// Models kubernetes/pkg/kubelet/prober/prober_manager.go isContainerStarted.

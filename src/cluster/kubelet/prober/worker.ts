@@ -1,7 +1,8 @@
-import type { V1Container, V1ContainerStatus, V1Pod, V1PodStatus, V1Probe } from "../../../client";
+import type { V1Container, V1Pod, V1Probe } from "../../../client";
 import { Channel, select } from "../../../channel";
 import type { Clock } from "../../../clock";
 import { Ticker } from "../../../ticker";
+import * as podutil from "../../pod-util";
 import { type ContainerID, parseContainerID } from "../container";
 import type { ProbeManager } from "./manager";
 import type { ProberResult, ProbeType, ResultsManager } from "./results";
@@ -14,7 +15,6 @@ export interface WorkerOptions {
 	container: V1Container;
 	probe: V1Probe;
 	probeType: ProbeType;
-	removeWorker: () => void;
 }
 
 export class ProbeWorker {
@@ -26,16 +26,13 @@ export class ProbeWorker {
 	private readonly initialValue: ProberResult;
 	private readonly resultsManager: ResultsManager;
 	private readonly probeManager: ProbeManager;
-	private readonly removeWorker: () => void;
 	private readonly intervalMs: number;
 	private readonly stopCh = new Channel<void>(1);
 	private readonly manualTriggerCh = new Channel<void>(1);
-	private ticker: Ticker;
 	private containerId: ContainerID | undefined;
 	private lastResult: ProberResult | undefined;
 	private resultRun = 0;
 	private onHold = false;
-	private stoppedState = false;
 
 	constructor(options: WorkerOptions) {
 		this.clock = options.clock;
@@ -46,65 +43,55 @@ export class ProbeWorker {
 		this.initialValue = initialResult(options.probeType);
 		this.resultsManager = options.results;
 		this.probeManager = options.probeManager;
-		this.removeWorker = options.removeWorker;
 
 		this.intervalMs = (this.spec.periodSeconds ?? 10) * 1000;
-		this.ticker = new Ticker(this.clock, this.intervalMs);
-	}
-
-	start() {
-		void this.run();
 	}
 
 	stop() {
-		if (this.stoppedState) {
-			return;
-		}
-		this.stoppedState = true;
 		this.stopCh.trySend(undefined);
 	}
 
-	get stopped(): boolean {
-		return this.stoppedState;
-	}
-
 	triggerManualRun(): void {
-		if (this.stopped) {
-			return;
-		}
 		this.manualTriggerCh.trySend(undefined);
 	}
 
 	// Models kubernetes/pkg/kubelet/prober/worker.go run.
-	private async run(): Promise<void> {
+	async run(): Promise<void> {
+		if (this.intervalMs > this.clock.nowMs() - this.probeManager.startedAt.getTime()) {
+			await this.clock.wait(Math.random() * this.intervalMs);
+		}
+
+		const probeTicker = new Ticker(this.clock, this.intervalMs);
 		try {
-			while (!this.stoppedState && (await this.doProbe())) {
+			probeLoop: for (; await this.doProbe(); ) {
 				const selected = await select()
 					.case(this.stopCh, () => "stop")
-					.case(this.ticker.C, () => "tick")
+					.case(probeTicker.C, () => "tick")
 					.case(this.manualTriggerCh, () => "manual");
 				if (selected === "stop") {
-					break;
+					break probeLoop;
 				}
 				if (selected === "manual") {
-					this.ticker.reset(this.intervalMs);
+					probeTicker.reset(this.intervalMs);
 				}
 			}
 		} finally {
-			this.stoppedState = true;
-			this.ticker.stop();
+			probeTicker.stop();
 			if (this.containerId) {
 				this.resultsManager.remove(this.containerId);
-				this.containerId = undefined;
 			}
-			this.removeWorker();
+			this.probeManager.removeWorker(
+				this.pod.metadata?.uid ?? "",
+				this.container.name,
+				this.probeType,
+			);
 		}
 	}
 
 	// Models kubernetes/pkg/kubelet/prober/worker.go doProbe.
 	private async doProbe(): Promise<boolean> {
-		const [status, ok] = this.probeManager.statusManager.getPodStatus(this.pod.metadata?.uid ?? "");
-		if (!ok || !status) {
+		const status = this.probeManager.statusManager.getPodStatus(this.pod.metadata?.uid ?? "");
+		if (!status) {
 			return true;
 		}
 
@@ -112,24 +99,17 @@ export class ProbeWorker {
 			return false;
 		}
 
-		const containerStatus = findContainerStatus(status, this.container.name);
-		if (!containerStatus?.containerID) {
+		const c = podutil.getContainerStatus(status.containerStatuses, this.container.name);
+		if (!c?.containerID) {
 			return true;
 		}
 
-		const containerId = parseContainerID(containerStatus.containerID);
-		if (!containerId.id) {
-			return true;
-		}
-
-		if (this.containerId?.toString() !== containerId.toString()) {
+		if (this.containerId?.toString() !== c.containerID) {
 			if (this.containerId) {
 				this.resultsManager.remove(this.containerId);
 			}
-			this.containerId = containerId;
-			this.lastResult = undefined;
-			this.resultRun = 0;
-			this.resultsManager.set(this.containerId, this.initialValue, this.pod);
+			this.containerId = parseContainerID(c.containerID);
+			await this.resultsManager.set(this.containerId, this.initialValue, this.pod);
 			this.onHold = false;
 		}
 
@@ -137,26 +117,26 @@ export class ProbeWorker {
 			return true;
 		}
 
-		if (!containerStatus.state?.running) {
-			this.resultsManager.set(this.containerId, "failure", this.pod);
-			return !containerStatus.state?.terminated || this.pod.spec?.restartPolicy !== "Never";
+		if (!c.state?.running) {
+			await this.resultsManager.set(this.containerId, "failure", this.pod);
+			return !c.state?.terminated || this.pod.spec?.restartPolicy !== "Never";
 		}
 
 		if (
 			this.pod.metadata?.deletionTimestamp !== undefined &&
 			(this.probeType === "liveness" || this.probeType === "startup")
 		) {
-			this.resultsManager.set(this.containerId, "success", this.pod);
+			await this.resultsManager.set(this.containerId, "success", this.pod);
 			return false;
 		}
 
 		const initialDelayMs = (this.spec.initialDelaySeconds ?? 0) * 1000;
-		const startedAt = containerStatus.state.running.startedAt?.getTime();
+		const startedAt = c.state.running.startedAt?.getTime();
 		if (startedAt !== undefined && this.clock.nowMs() < startedAt + initialDelayMs) {
 			return true;
 		}
 
-		if (containerStatus.started) {
+		if (c.started) {
 			if (this.probeType === "startup") {
 				return true;
 			}
@@ -193,7 +173,7 @@ export class ProbeWorker {
 			return true;
 		}
 
-		this.resultsManager.set(this.containerId, result, this.pod);
+		await this.resultsManager.set(this.containerId, result, this.pod);
 
 		if ((this.probeType === "liveness" && result === "failure") || this.probeType === "startup") {
 			this.onHold = true;
@@ -201,15 +181,6 @@ export class ProbeWorker {
 		}
 		return true;
 	}
-}
-
-function findContainerStatus(
-	status: V1PodStatus,
-	containerName: string,
-): V1ContainerStatus | undefined {
-	return status.containerStatuses?.find(
-		(containerStatus) => containerStatus.name === containerName,
-	);
 }
 
 function initialResult(probeType: ProbeType): ProberResult {

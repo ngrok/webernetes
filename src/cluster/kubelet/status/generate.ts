@@ -1,4 +1,5 @@
 import type { V1ContainerStatus, V1Pod, V1PodCondition, V1PodStatus } from "../../../client";
+import * as podutil from "../../pod-util";
 
 // Models kubernetes/pkg/kubelet/status/generate.go GeneratePodReadyCondition.
 export function generatePodReadyCondition(
@@ -17,7 +18,7 @@ export function generatePodReadyCondition(
 	if (containersReady.status !== "True") {
 		return {
 			type: "Ready",
-			observedGeneration: calculatePodConditionObservedGeneration(
+			observedGeneration: podutil.calculatePodConditionObservedGeneration(
 				oldStatus,
 				pod.metadata?.generation ?? 0,
 				"Ready",
@@ -30,9 +31,7 @@ export function generatePodReadyCondition(
 
 	const unreadyMessages: string[] = [];
 	for (const readinessGate of pod.spec?.readinessGates ?? []) {
-		const condition = conditions.find(
-			(condition) => condition.type === readinessGate.conditionType,
-		);
+		const condition = podutil.getPodConditionFromList(conditions, readinessGate.conditionType);
 		if (!condition) {
 			unreadyMessages.push(
 				`corresponding condition of pod readiness gate "${readinessGate.conditionType}" does not exist.`,
@@ -48,7 +47,7 @@ export function generatePodReadyCondition(
 		const unreadyMessage = unreadyMessages.join(", ");
 		return {
 			type: "Ready",
-			observedGeneration: calculatePodConditionObservedGeneration(
+			observedGeneration: podutil.calculatePodConditionObservedGeneration(
 				oldStatus,
 				pod.metadata?.generation ?? 0,
 				"Ready",
@@ -61,7 +60,7 @@ export function generatePodReadyCondition(
 
 	return {
 		type: "Ready",
-		observedGeneration: calculatePodConditionObservedGeneration(
+		observedGeneration: podutil.calculatePodConditionObservedGeneration(
 			oldStatus,
 			pod.metadata?.generation ?? 0,
 			"Ready",
@@ -80,7 +79,7 @@ export function generateContainersReadyCondition(
 	if (containerStatuses === undefined) {
 		return {
 			type: "ContainersReady",
-			observedGeneration: calculatePodConditionObservedGeneration(
+			observedGeneration: podutil.calculatePodConditionObservedGeneration(
 				oldStatus,
 				pod.metadata?.generation ?? 0,
 				"ContainersReady",
@@ -94,7 +93,7 @@ export function generateContainersReadyCondition(
 	const unreadyContainers: string[] = [];
 
 	for (const container of pod.spec?.containers ?? []) {
-		const containerStatus = containerStatuses.find((status) => status.name === container.name);
+		const containerStatus = podutil.getContainerStatus(containerStatuses, container.name);
 		if (containerStatus) {
 			if (!containerStatus.ready) {
 				unreadyContainers.push(container.name);
@@ -127,7 +126,7 @@ export function generateContainersReadyCondition(
 	if (unreadyMessage !== "") {
 		return {
 			type: "ContainersReady",
-			observedGeneration: calculatePodConditionObservedGeneration(
+			observedGeneration: podutil.calculatePodConditionObservedGeneration(
 				oldStatus,
 				pod.metadata?.generation ?? 0,
 				"ContainersReady",
@@ -140,7 +139,7 @@ export function generateContainersReadyCondition(
 
 	return {
 		type: "ContainersReady",
-		observedGeneration: calculatePodConditionObservedGeneration(
+		observedGeneration: podutil.calculatePodConditionObservedGeneration(
 			oldStatus,
 			pod.metadata?.generation ?? 0,
 			"ContainersReady",
@@ -156,7 +155,7 @@ function generateContainersReadyConditionForTerminalPhase(
 ): V1PodCondition {
 	return {
 		type: "ContainersReady",
-		observedGeneration: calculatePodConditionObservedGeneration(
+		observedGeneration: podutil.calculatePodConditionObservedGeneration(
 			oldStatus,
 			pod.metadata?.generation ?? 0,
 			"ContainersReady",
@@ -164,22 +163,6 @@ function generateContainersReadyConditionForTerminalPhase(
 		status: "False",
 		reason: phase === "Failed" ? "PodFailed" : "PodCompleted",
 	};
-}
-
-// Models kubernetes/pkg/api/v1/pod/util.go CalculatePodConditionObservedGeneration.
-function calculatePodConditionObservedGeneration(
-	podStatus: V1PodStatus | undefined,
-	generation: number,
-	_conditionType: V1PodCondition["type"],
-): number {
-	if (!podStatus) {
-		return 0;
-	}
-	// In Go this does a check against a feature gate called
-	// PodObservedGenerationTrackingEnabled, which defaults to true in 1.35 and
-	// is slated for removal in 1.38. When true, it just returns generation, so
-	// that's all I'm opting to do here.
-	return generation;
 }
 
 function formatContainerNames(names: string[]): string {
