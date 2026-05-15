@@ -156,6 +156,33 @@ function withHostHeader(request: HttpRequest, host: string): HttpRequest {
 	return { ...request, headers };
 }
 
+function getContainersToDeleteInPod(
+	filterContainerId: string,
+	podStatus: PodRuntimeStatus,
+	containersToKeep: number,
+): ContainerStatus[] {
+	const matchedContainer = filterContainerId
+		? podStatus.containerStatuses.find(
+				(containerStatus) => containerStatus.id === filterContainerId,
+			)
+		: undefined;
+	if (filterContainerId && !matchedContainer) {
+		return [];
+	}
+
+	const candidates = podStatus.containerStatuses
+		.filter((containerStatus) => containerStatus.state === "Exited")
+		.filter(
+			(containerStatus) =>
+				matchedContainer === undefined || matchedContainer.name === containerStatus.name,
+		)
+		.toSorted((left, right) => right.createdAt - left.createdAt);
+	if (candidates.length <= containersToKeep) {
+		return [];
+	}
+	return candidates.slice(containersToKeep);
+}
+
 export type ContainerState = "Created" | "Running" | "Exited";
 export type PodSandboxState = "Ready" | "NotReady";
 export type ProcessState = "Created" | "Running" | "Exited";
@@ -187,17 +214,30 @@ export interface ContainerStatus {
 	ready: boolean;
 }
 
+export interface RuntimeContainer {
+	id: string;
+	name: string;
+	state: ContainerState;
+	createdAt: number;
+}
+
 export interface RuntimePod {
 	id: string;
 	name: string;
 	namespace: string;
-	createdAt: number;
-	sandboxes: PodSandboxInstance[];
+	timestamp: Date;
+	containers: RuntimeContainer[];
+	sandboxes: RuntimeContainer[];
+	containerStatuses: ContainerStatus[];
+	sandboxStatuses: PodSandboxStatus[];
 }
 
 export interface PodRuntimeStatus {
+	id: string;
 	ip?: string;
+	ips: string[];
 	containerStatuses: ContainerStatus[];
+	sandboxStatuses: PodSandboxStatus[];
 }
 
 export class Runtime {
@@ -209,6 +249,7 @@ export class Runtime {
 	private readonly idPrefix: string;
 	private readonly sandboxes = new Map<string, PodSandboxInstance>();
 	private readonly containers = new Map<string, ContainerInstance>();
+	private readonly processes = new Map<number, ProcessInstance>();
 	private nextSandboxId = 1;
 	private nextContainerId = 1;
 	private nextPid = 1;
@@ -257,6 +298,34 @@ export class Runtime {
 		this.sandboxes.delete(podSandboxId);
 	}
 
+	async close(): Promise<void> {
+		for (const sandbox of [...this.sandboxes.values()]) {
+			await this.removePodSandbox(sandbox.id);
+		}
+		for (const process of [...this.processes.values()]) {
+			await process.kill("SIGKILL");
+		}
+	}
+
+	sandboxCount(): number {
+		return this.sandboxes.size;
+	}
+
+	containerCount(): number {
+		return this.containers.size;
+	}
+
+	processCount(): number {
+		return this.processes.size;
+	}
+
+	processListenerCount(): number {
+		return [...this.processes.values()].reduce(
+			(total, process) => total + process.listenerCount(),
+			0,
+		);
+	}
+
 	podSandboxStatus(podSandboxId: string): PodSandboxStatus {
 		return this.sandboxOrThrow(podSandboxId).status();
 	}
@@ -280,6 +349,13 @@ export class Runtime {
 			);
 	}
 
+	getPods(_all: boolean): RuntimePod[] {
+		const podUIDs = new Set([...this.sandboxes.values()].map((sandbox) => sandbox.uid));
+		return [...podUIDs]
+			.map((podUID) => this.getPod(podUID))
+			.filter((pod): pod is RuntimePod => pod !== undefined);
+	}
+
 	getPod(podUid: string): RuntimePod | undefined {
 		const sandboxes = this.getPodSandboxesByPodUid(podUid);
 		const latest = sandboxes[0];
@@ -290,19 +366,34 @@ export class Runtime {
 			id: podUid,
 			name: latest.name,
 			namespace: latest.namespace,
-			createdAt: latest.createdAt,
-			sandboxes,
+			timestamp: this.clock.now(),
+			containers: sandboxes.flatMap((sandbox) =>
+				[...sandbox.containers.values()].map((container) => this.runtimeContainer(container)),
+			),
+			sandboxes: sandboxes.map((sandbox) => this.runtimeSandboxContainer(sandbox)),
+			containerStatuses: sandboxes.flatMap((sandbox) =>
+				[...sandbox.containers.values()].map((container) => container.status()),
+			),
+			sandboxStatuses: sandboxes.map((sandbox) => sandbox.status()),
 		};
 	}
 
 	getPodStatus(pod: RuntimePod): PodRuntimeStatus {
-		const sandbox = pod.sandboxes[0];
-		const sandboxStatus = sandbox?.status();
+		const ips = pod.sandboxStatuses
+			.map((status) => status.network?.ip)
+			.filter((ip): ip is string => ip !== undefined);
 		return {
-			ip: sandboxStatus?.network?.ip,
-			containerStatuses: pod.sandboxes.flatMap((sandbox) =>
-				[...sandbox.containers.values()].map((container) => container.status()),
-			),
+			id: pod.id,
+			ip: ips[0],
+			ips,
+			containerStatuses: pod.containerStatuses.map((status) => ({ ...status })),
+			sandboxStatuses: pod.sandboxStatuses.map((status) => ({
+				...status,
+				metadata: { ...status.metadata },
+				network: status.network ? { ...status.network } : undefined,
+				labels: { ...status.labels },
+				annotations: { ...status.annotations },
+			})),
 		};
 	}
 
@@ -362,6 +453,24 @@ export class Runtime {
 		this.containers.delete(containerId);
 	}
 
+	async deleteContainersInPod(
+		filterContainerId: string,
+		podStatus: PodRuntimeStatus,
+		removeAll: boolean,
+		containersToKeep: number,
+	): Promise<void> {
+		let keep = containersToKeep;
+		let filter = filterContainerId;
+		if (removeAll) {
+			keep = 0;
+			filter = "";
+		}
+
+		for (const candidate of getContainersToDeleteInPod(filter, podStatus, keep)) {
+			await this.removeContainer(candidate.id);
+		}
+	}
+
 	getContainer(containerId: string): ContainerInstance | undefined {
 		return this.containers.get(containerId);
 	}
@@ -395,7 +504,13 @@ export class Runtime {
 		argv: readonly string[],
 		run: (context: ProcessContext, argv: readonly string[]) => Promise<number>,
 	): ProcessInstance {
-		return new ProcessInstance(this.nextPid++, container, argv, run, this);
+		const process = new ProcessInstance(this.nextPid++, container, argv, run, this);
+		this.processes.set(process.pid, process);
+		return process;
+	}
+
+	forgetProcess(pid: number): void {
+		this.processes.delete(pid);
 	}
 
 	async sleepUntil(ctx: context.Context, ms: number, exitCode: () => number): Promise<void> {
@@ -450,6 +565,26 @@ export class Runtime {
 			throw new Error(`container ${containerId} not found`);
 		}
 		return container;
+	}
+
+	private runtimeContainer(container: ContainerInstance): RuntimeContainer {
+		const status = container.status();
+		return {
+			id: status.id,
+			name: status.name,
+			state: status.state,
+			createdAt: status.createdAt,
+		};
+	}
+
+	private runtimeSandboxContainer(sandbox: PodSandboxInstance): RuntimeContainer {
+		const status = sandbox.status();
+		return {
+			id: status.id,
+			name: status.metadata.name,
+			state: status.state === "Ready" ? "Running" : "Exited",
+			createdAt: status.createdAt,
+		};
 	}
 }
 
@@ -715,6 +850,10 @@ export class ProcessInstance {
 		this.listeners.push(listener);
 	}
 
+	listenerCount(): number {
+		return this.listeners.length;
+	}
+
 	writeStdout(chunk: string): void {
 		this.stdoutBuffer += chunk;
 	}
@@ -745,6 +884,7 @@ export class ProcessInstance {
 		this.finishedAtMs = this.runtime.nowMs();
 		this.processExitCode = code;
 		this.cancelContext();
+		this.runtime.forgetProcess(this.pid);
 		for (const listener of this.listeners.splice(0)) {
 			listener.close();
 		}

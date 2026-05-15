@@ -1,9 +1,6 @@
 import { expect, it } from "vitest";
 import type { V1Pod } from "../gen/models";
 import { kubernetes } from "../../test/harnesses/kubernetes";
-import { waitFor } from "../../test/wait";
-import { retryConflicts } from "../../retry-update";
-import { Clock } from "../../clock";
 
 interface WatchAndWaitOptions<T> {
 	url: string;
@@ -13,8 +10,8 @@ interface WatchAndWaitOptions<T> {
 	act?: () => Promise<void>;
 }
 
-kubernetes.describe("Watch", ({ core, k8s, kubeConfig, getTestNamespace }) => {
-	const retryClock = new Clock();
+kubernetes.describe("Watch", ({ core, k8s, kubeConfig, helpers }) => {
+	const { createPod, replacePod, getTestNamespace, waitFor } = helpers;
 
 	async function watchAndWait<T>({
 		url,
@@ -46,43 +43,6 @@ kubernetes.describe("Watch", ({ core, k8s, kubeConfig, getTestNamespace }) => {
 		} finally {
 			controller?.abort();
 		}
-	}
-
-	async function createPod(pod: Partial<V1Pod>): Promise<V1Pod> {
-		const resp = await core.createNamespacedPod({
-			namespace: await getTestNamespace(),
-			body: {
-				metadata: {
-					name: pod.metadata?.name ?? "test-pod",
-					...pod.metadata,
-				},
-				spec: {
-					containers: [{ name: "test", image: "registry.k8s.io/pause:3.10" }],
-					...pod.spec,
-				},
-			},
-		});
-		if (!resp.metadata?.name) {
-			throw new Error("Failed to create pod");
-		}
-		return resp;
-	}
-
-	async function replacePod(name: string, mutate: (pod: V1Pod) => void): Promise<V1Pod> {
-		const namespace = await getTestNamespace();
-
-		return await retryConflicts(
-			async () => {
-				const current = await core.readNamespacedPod({ name, namespace });
-				mutate(current);
-				return await core.replaceNamespacedPod({
-					name,
-					namespace,
-					body: current,
-				});
-			},
-			{ clock: retryClock },
-		);
 	}
 
 	it("exports Watch and emits ADDED for created pods", async () => {
@@ -239,6 +199,66 @@ kubernetes.describe("Watch", ({ core, k8s, kubeConfig, getTestNamespace }) => {
 						},
 					};
 				});
+			},
+		});
+	});
+
+	it("continues from a list resourceVersion and does not miss later pod updates", async () => {
+		const namespace = await getTestNamespace();
+		const podName = "resource-version-pod";
+		await createPod({
+			metadata: {
+				name: podName,
+				labels: { revision: "initial" },
+			},
+		});
+		const listed = await core.listNamespacedPod({
+			namespace,
+			fieldSelector: `metadata.name=${podName}`,
+		});
+		const listResourceVersion = listed.metadata?.resourceVersion;
+		const listedPodResourceVersion = listed.items[0]?.metadata?.resourceVersion;
+		if (!listResourceVersion || !listedPodResourceVersion) {
+			throw new Error("Expected list and item resourceVersions");
+		}
+
+		await replacePod(podName, (current) => {
+			current.metadata = {
+				...current.metadata,
+				labels: { revision: "updated-after-list" },
+			};
+		});
+
+		const events: Array<{ phase: string; obj: V1Pod }> = [];
+		await watchAndWait({
+			url: `/api/v1/namespaces/${namespace}/pods`,
+			queryParams: {
+				resourceVersion: listResourceVersion,
+				fieldSelector: `metadata.name=${podName}`,
+			},
+			onEvent: (phase, obj: V1Pod) => {
+				events.push({ phase, obj });
+			},
+			assert: () => {
+				expect(events).toContainEqual({
+					phase: "MODIFIED",
+					obj: expect.objectContaining({
+						metadata: expect.objectContaining({
+							namespace,
+							name: podName,
+							labels: expect.objectContaining({
+								revision: "updated-after-list",
+							}),
+						}),
+					}),
+				});
+				const modified = events.find(
+					(event) =>
+						event.phase === "MODIFIED" &&
+						event.obj.metadata?.labels?.revision === "updated-after-list",
+				);
+				expect(modified?.obj.metadata?.resourceVersion).toBeTruthy();
+				expect(modified?.obj.metadata?.resourceVersion).not.toBe(listedPodResourceVersion);
 			},
 		});
 	});

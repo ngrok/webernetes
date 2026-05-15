@@ -23,7 +23,6 @@ export interface ProbeUpdate {
 export class ResultsManager {
 	private readonly cache = new Map<string, ProberResult>();
 	private readonly updatesCh = new Channel<ProbeUpdate>(20);
-	private closed = false;
 
 	// Models kubernetes/pkg/kubelet/prober/results/results_manager.go Get.
 	get(containerId: ContainerID): ProberResult | undefined {
@@ -43,9 +42,6 @@ export class ResultsManager {
 
 	// Models kubernetes/pkg/kubelet/prober/results/results_manager.go setInternal.
 	private setInternal(containerId: ContainerID, result: ProberResult): boolean {
-		if (this.closed) {
-			return false;
-		}
 		const key = containerId.toString();
 		if (this.cache.get(key) === result) {
 			return false;
@@ -62,14 +58,5 @@ export class ResultsManager {
 	// Models kubernetes/pkg/kubelet/prober/results/results_manager.go Updates.
 	updates(): ReadOnlyChannel<ProbeUpdate> {
 		return this.updatesCh.readOnly();
-	}
-
-	// Simulator lifecycle cleanup; Kubernetes' results manager has no Close method.
-	close(): void {
-		if (this.closed) {
-			return;
-		}
-		this.closed = true;
-		this.updatesCh.close();
 	}
 }

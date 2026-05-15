@@ -1,4 +1,5 @@
 import * as k8s from "../../client";
+import { isNotFoundError } from "../../client/errors";
 import type { ProcessContext } from "../cri";
 import { BaseImage } from "./base";
 
@@ -221,7 +222,7 @@ export class EndpointSliceController extends BaseImage {
 				},
 			});
 		} catch (error) {
-			if (!(error instanceof Error) || !error.message.includes("HTTP-Code: 404")) {
+			if (!isNotFoundError(error)) {
 				throw error;
 			}
 			await this.discoveryApi.createNamespacedEndpointSlice({ namespace, body: slice });
@@ -239,7 +240,7 @@ export class EndpointSliceController extends BaseImage {
 				namespace: service.metadata?.namespace ?? "default",
 			});
 		} catch (error) {
-			if (!(error instanceof Error) || !error.message.includes("HTTP-Code: 404")) {
+			if (!isNotFoundError(error)) {
 				throw error;
 			}
 		}

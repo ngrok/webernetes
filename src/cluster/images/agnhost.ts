@@ -15,6 +15,8 @@ export class AgnhostImage extends BaseImage {
 				case "/healthz":
 				case "/readyz":
 					return { status: 200, body: "ok\n" };
+				case "/exit":
+					return this.exitResponse(context, url);
 				case "/echo":
 					return {
 						status: Number(url.searchParams.get("code") ?? "200"),
@@ -29,6 +31,16 @@ export class AgnhostImage extends BaseImage {
 			}
 		});
 		return await context.waitUntilKilled();
+	}
+
+	private exitResponse(context: ProcessContext, url: URL): { status: number; body: string } {
+		const code = parseExitCode(url.searchParams.get("code"));
+		const waitMs = parseDurationMs(url.searchParams.get("wait"));
+		void (async () => {
+			await context.sleep(waitMs);
+			context.exit(code);
+		})().catch(() => {});
+		return { status: 200, body: "" };
 	}
 
 	private async shellResponse(
@@ -53,6 +65,37 @@ export class AgnhostImage extends BaseImage {
 				code,
 			}),
 		};
+	}
+}
+
+function parseExitCode(value: string | null): number {
+	const code = Number(value ?? "0");
+	if (!Number.isInteger(code) || code < 0 || code > 127) {
+		return 0;
+	}
+	return code;
+}
+
+function parseDurationMs(value: string | null): number {
+	if (!value) {
+		return 0;
+	}
+	const match = /^(\d+(?:\.\d+)?)(ms|s|m|h)?$/.exec(value);
+	if (!match) {
+		return 0;
+	}
+	const amount = Number(match[1]);
+	switch (match[2] ?? "ns") {
+		case "h":
+			return amount * 60 * 60 * 1000;
+		case "m":
+			return amount * 60 * 1000;
+		case "s":
+			return amount * 1000;
+		case "ms":
+			return amount;
+		default:
+			return 0;
 	}
 }
 

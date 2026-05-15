@@ -1,5 +1,5 @@
 import { Cluster } from "../../../../cluster";
-import { retryConflicts } from "../../../../retry-update";
+import { retryConflicts } from "../../../../retry";
 import {
 	EventStore,
 	NamespaceStore,
@@ -8,9 +8,10 @@ import {
 	ServiceStore,
 } from "../../../../cluster/storage";
 import { Store } from "../../../../cluster/storage/store";
-import { BadRequest, NotFound } from "../../../errors";
+import { BadRequest, Invalid, NotFound, UnsupportedMediaType } from "../../../errors";
 import { filterByFields, parseFieldSelector } from "../../../fields";
 import { filterByLabels, parseLabelSelector } from "../../../labels";
+import { PatchStrategy } from "../../../patch";
 import {
 	CoreV1EventList,
 	V1Binding,
@@ -48,6 +49,7 @@ import type {
 	CoreV1ApiListServiceForAllNamespacesRequest,
 	CoreV1ApiPatchNamespaceRequest,
 	CoreV1ApiPatchNamespacedPodRequest,
+	CoreV1ApiPatchNamespacedPodStatusRequest,
 	CoreV1ApiPatchNamespacedServiceRequest,
 	CoreV1ApiPatchNodeRequest,
 	CoreV1ApiReadNamespacedEventRequest,
@@ -135,14 +137,12 @@ export class CoreV1Api implements CoreV1ApiInterface {
 		return await rethrowApiErrors(async () => {
 			const selector = parseLabelSelector(request.labelSelector);
 			const fieldSelector = parseFieldSelector(request.fieldSelector);
+			const list = await this.pods.listWithResourceVersion(request.namespace);
 			return {
 				metadata: {
-					resourceVersion: "",
+					resourceVersion: list.resourceVersion,
 				},
-				items: filterByFields(
-					filterByLabels(await this.pods.list(request.namespace), selector),
-					fieldSelector,
-				),
+				items: filterByFields(filterByLabels(list.items, selector), fieldSelector),
 			};
 		});
 	}
@@ -152,11 +152,12 @@ export class CoreV1Api implements CoreV1ApiInterface {
 	): Promise<CoreV1EventList> {
 		return await rethrowApiErrors(async () => {
 			const selector = parseLabelSelector(request.labelSelector);
+			const list = await this.events.listWithResourceVersion(request.namespace);
 			return {
 				metadata: {
-					resourceVersion: "",
+					resourceVersion: list.resourceVersion,
 				},
-				items: filterByLabels(await this.events.list(request.namespace), selector),
+				items: filterByLabels(list.items, selector),
 			};
 		});
 	}
@@ -166,11 +167,12 @@ export class CoreV1Api implements CoreV1ApiInterface {
 	): Promise<V1ServiceList> {
 		return await rethrowApiErrors(async () => {
 			const selector = parseLabelSelector(request.labelSelector);
+			const list = await this.services.listWithResourceVersion(request.namespace);
 			return {
 				metadata: {
-					resourceVersion: "",
+					resourceVersion: list.resourceVersion,
 				},
-				items: filterByLabels(await this.services.list(request.namespace), selector),
+				items: filterByLabels(list.items, selector),
 			};
 		});
 	}
@@ -181,11 +183,12 @@ export class CoreV1Api implements CoreV1ApiInterface {
 		return await rethrowApiErrors(async () => {
 			const selector = parseLabelSelector(request.labelSelector);
 			const fieldSelector = parseFieldSelector(request.fieldSelector);
+			const list = await this.pods.listWithResourceVersion();
 			return {
 				metadata: {
-					resourceVersion: "",
+					resourceVersion: list.resourceVersion,
 				},
-				items: filterByFields(filterByLabels(await this.pods.list(), selector), fieldSelector),
+				items: filterByFields(filterByLabels(list.items, selector), fieldSelector),
 			};
 		});
 	}
@@ -195,11 +198,12 @@ export class CoreV1Api implements CoreV1ApiInterface {
 	): Promise<CoreV1EventList> {
 		return await rethrowApiErrors(async () => {
 			const selector = parseLabelSelector(request.labelSelector);
+			const list = await this.events.listWithResourceVersion();
 			return {
 				metadata: {
-					resourceVersion: "",
+					resourceVersion: list.resourceVersion,
 				},
-				items: filterByLabels(await this.events.list(), selector),
+				items: filterByLabels(list.items, selector),
 			};
 		});
 	}
@@ -209,11 +213,12 @@ export class CoreV1Api implements CoreV1ApiInterface {
 	): Promise<V1ServiceList> {
 		return await rethrowApiErrors(async () => {
 			const selector = parseLabelSelector(request.labelSelector);
+			const list = await this.services.listWithResourceVersion();
 			return {
 				metadata: {
-					resourceVersion: "",
+					resourceVersion: list.resourceVersion,
 				},
-				items: filterByLabels(await this.services.list(), selector),
+				items: filterByLabels(list.items, selector),
 			};
 		});
 	}
@@ -224,14 +229,12 @@ export class CoreV1Api implements CoreV1ApiInterface {
 		return await rethrowApiErrors(async () => {
 			const selector = parseLabelSelector(request.labelSelector);
 			const fieldSelector = parseFieldSelector(request.fieldSelector);
+			const list = await this.namespaces.listWithResourceVersion();
 			return {
 				metadata: {
-					resourceVersion: "",
+					resourceVersion: list.resourceVersion,
 				},
-				items: filterByFields(
-					filterByLabels(await this.namespaces.list(), selector),
-					fieldSelector,
-				),
+				items: filterByFields(filterByLabels(list.items, selector), fieldSelector),
 			};
 		});
 	}
@@ -240,11 +243,12 @@ export class CoreV1Api implements CoreV1ApiInterface {
 		return await rethrowApiErrors(async () => {
 			const selector = parseLabelSelector(request.labelSelector);
 			const fieldSelector = parseFieldSelector(request.fieldSelector);
+			const list = await this.nodes.listWithResourceVersion();
 			return {
 				metadata: {
-					resourceVersion: "",
+					resourceVersion: list.resourceVersion,
 				},
-				items: filterByFields(filterByLabels(await this.nodes.list(), selector), fieldSelector),
+				items: filterByFields(filterByLabels(list.items, selector), fieldSelector),
 			};
 		});
 	}
@@ -423,9 +427,10 @@ export class CoreV1Api implements CoreV1ApiInterface {
 
 	public async patchNamespacedPod(
 		request: CoreV1ApiPatchNamespacedPodRequest,
-		_options?: unknown,
+		options?: unknown,
 	): Promise<V1Pod> {
 		return await rethrowApiErrors(async () => {
+			validateMergePatchContentType(options);
 			return await retryConflicts(
 				async () => {
 					const pod = await this.pods.get(request.name, request.namespace);
@@ -433,6 +438,32 @@ export class CoreV1Api implements CoreV1ApiInterface {
 						throw new NotFound(`Pod "${request.name}" not found`);
 					}
 					validatePatchName(request.body, request.name);
+
+					const patched = mergePatch(pod, request.body);
+					patched.metadata ??= {};
+					patched.metadata.name = request.name;
+					patched.metadata.namespace ??= request.namespace;
+					return await this.pods.update(request.name, patched);
+				},
+				{ clock: this.cluster.clock },
+			);
+		});
+	}
+
+	public async patchNamespacedPodStatus(
+		request: CoreV1ApiPatchNamespacedPodStatusRequest,
+		options?: unknown,
+	): Promise<V1Pod> {
+		return await rethrowApiErrors(async () => {
+			validateMergePatchContentType(options);
+			return await retryConflicts(
+				async () => {
+					const pod = await this.pods.get(request.name, request.namespace);
+					if (!pod) {
+						throw new NotFound(`Pod "${request.name}" not found`);
+					}
+					validatePatchName(request.body, request.name);
+					validatePatchUid(request.body, request.name, pod.metadata?.uid);
 
 					const patched = mergePatch(pod, request.body);
 					patched.metadata ??= {};
@@ -483,9 +514,10 @@ export class CoreV1Api implements CoreV1ApiInterface {
 
 	public async patchNamespacedService(
 		request: CoreV1ApiPatchNamespacedServiceRequest,
-		_options?: unknown,
+		options?: unknown,
 	): Promise<V1Service> {
 		return await rethrowApiErrors(async () => {
+			validateMergePatchContentType(options);
 			return await retryConflicts(
 				async () => {
 					const service = await this.services.get(request.name, request.namespace);
@@ -515,9 +547,10 @@ export class CoreV1Api implements CoreV1ApiInterface {
 
 	public async patchNamespace(
 		request: CoreV1ApiPatchNamespaceRequest,
-		_options?: unknown,
+		options?: unknown,
 	): Promise<V1Namespace> {
 		return await rethrowApiErrors(async () => {
+			validateMergePatchContentType(options);
 			return await retryConflicts(
 				async () => {
 					const namespace = await this.namespaces.get(request.name);
@@ -544,8 +577,9 @@ export class CoreV1Api implements CoreV1ApiInterface {
 		});
 	}
 
-	public async patchNode(request: CoreV1ApiPatchNodeRequest, _options?: unknown): Promise<V1Node> {
+	public async patchNode(request: CoreV1ApiPatchNodeRequest, options?: unknown): Promise<V1Node> {
 		return await rethrowApiErrors(async () => {
+			validateMergePatchContentType(options);
 			return await retryConflicts(
 				async () => {
 					const node = await this.nodes.get(request.name);
@@ -568,6 +602,25 @@ export class CoreV1Api implements CoreV1ApiInterface {
 type PatchObject = { [key: string]: PatchValue };
 type PatchValue = PatchObject | PatchValue[] | string | number | boolean | null;
 
+function validateMergePatchContentType(options: unknown): void {
+	const contentType = getContentType(options);
+	if (contentType !== PatchStrategy.MergePatch) {
+		throw new UnsupportedMediaType(`Unsupported Media Type: ${contentType ?? ""}`);
+	}
+}
+
+function getContentType(options: unknown): string | undefined {
+	if (!isPatchObject(options) || !isPatchObject(options.headers)) {
+		return undefined;
+	}
+	for (const [key, value] of Object.entries(options.headers)) {
+		if (key.toLowerCase() === "content-type" && typeof value === "string") {
+			return value.split(";")[0]?.trim();
+		}
+	}
+	return undefined;
+}
+
 function validatePatchName(patch: unknown, name: string): void {
 	if (!isPatchObject(patch) || !isPatchObject(patch.metadata)) {
 		return;
@@ -576,6 +629,18 @@ function validatePatchName(patch: unknown, name: string): void {
 	if (patchedName !== undefined && patchedName !== name) {
 		throw new BadRequest(
 			`the name of the object (${patchedName}) does not match the name on the URL (${name})`,
+		);
+	}
+}
+
+function validatePatchUid(patch: unknown, name: string, uid: string | undefined): void {
+	if (!isPatchObject(patch) || !isPatchObject(patch.metadata)) {
+		return;
+	}
+	const patchedUid = patch.metadata.uid;
+	if (patchedUid !== undefined && patchedUid !== uid) {
+		throw new Invalid(
+			`Pod "${name}" is invalid: metadata.uid: Invalid value: "${patchedUid}": field is immutable`,
 		);
 	}
 }

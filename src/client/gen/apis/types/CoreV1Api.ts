@@ -157,6 +157,17 @@ export interface CoreV1ApiPatchNamespacedPodRequest {
 	force?: boolean;
 }
 
+export interface CoreV1ApiPatchNamespacedPodStatusRequest {
+	name: string;
+	namespace: string;
+	body: unknown;
+	pretty?: string;
+	dryRun?: string;
+	fieldManager?: string;
+	fieldValidation?: string;
+	force?: boolean;
+}
+
 export interface CoreV1ApiReplaceNamespacedPodRequest {
 	name: string;
 	namespace: string;
@@ -403,6 +414,10 @@ export interface CoreV1Api {
 	patchNode(request: CoreV1ApiPatchNodeRequest, options?: unknown): Promise<V1Node>;
 	patchNamespacedPod(
 		request: CoreV1ApiPatchNamespacedPodRequest,
+		options?: unknown,
+	): Promise<V1Pod>;
+	patchNamespacedPodStatus(
+		request: CoreV1ApiPatchNamespacedPodStatusRequest,
 		options?: unknown,
 	): Promise<V1Pod>;
 	patchNamespacedService(

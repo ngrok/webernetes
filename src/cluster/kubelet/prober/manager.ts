@@ -1,16 +1,23 @@
 import type { V1Container, V1ContainerStatus, V1Pod, V1PodStatus } from "../../../client";
 import type { Clock } from "../../../clock";
+import type { Context } from "../../../go/context";
 import type { Runtime } from "../../cri";
-import { type ContainerID, parseContainerID } from "../container";
+import { parseContainerID } from "../container";
 import type { StatusManager } from "../status";
 import { Prober } from "./prober";
 import { ProbeWorker } from "./worker";
-import { ResultsManager, type ProberResult, type ProbeType } from "./results";
+import { ResultsManager, type ProbeType } from "./results";
 
 export interface ProbeManagerOptions {
 	clock: Clock;
 	runtime: Runtime;
 	statusManager: StatusManager;
+}
+
+interface ProbeKey {
+	podUid: string;
+	containerName: string;
+	probeType: ProbeType;
 }
 
 export class ProbeManager {
@@ -20,7 +27,12 @@ export class ProbeManager {
 	readonly prober: Prober;
 	readonly runtime: Runtime;
 	readonly statusManager: StatusManager;
-	private readonly workers = new Map<string, ProbeWorker>();
+	private readonly workers = new WorkerMap();
+	// Go starts probe workers as goroutines and does not retain join handles.
+	// This simulator keeps the returned promises so close() can stop workers
+	// through their stop channel and then wait for their async cleanup to finish
+	// before the cluster clock and runtime are torn down.
+	private readonly workerRuns = new Map<ProbeWorker, Promise<void>>();
 	private readonly start: Date;
 
 	constructor(private readonly options: ProbeManagerOptions) {
@@ -35,37 +47,80 @@ export class ProbeManager {
 	}
 
 	// Models kubernetes/pkg/kubelet/prober/prober_manager.go AddPod.
-	addPod(pod: V1Pod): void {
+	addPod(ctx: Context, pod: V1Pod): void {
 		// TODO: if we ever support init containers, we'll need to make
 		// sure to add init containers with restart always to this list.
-		for (const container of pod.spec?.containers ?? []) {
-			if (container.startupProbe) {
-				this.addWorker(pod, container, "startup");
-			}
-			if (container.readinessProbe) {
-				this.addWorker(pod, container, "readiness");
-			}
-			if (container.livenessProbe) {
-				this.addWorker(pod, container, "liveness");
-			}
-		}
-	}
-
-	// Models kubernetes/pkg/kubelet/prober/prober_manager.go RemovePod.
-	removePod(pod: V1Pod): void {
 		const key = {
 			podUid: pod.metadata?.uid ?? "",
 			containerName: "",
-			probeType: "readiness" as ProbeType,
+			probeType: "startup" as ProbeType,
 		};
-		for (const container of pod.spec?.containers ?? []) {
-			key.containerName = container.name;
-			for (const probeType of ["readiness", "liveness", "startup"] as const) {
-				key.probeType = probeType;
-				const worker = this.workers.get(probeKeyString(key));
-				if (worker) {
-					worker.stop();
+		for (const c of pod.spec?.containers ?? []) {
+			key.containerName = c.name;
+
+			if (c.startupProbe) {
+				key.probeType = "startup";
+				if (this.workers.has(key)) {
+					return;
 				}
+				const w = new ProbeWorker({
+					clock: this.options.clock,
+					probeManager: this,
+					results: this.startupManager,
+					pod,
+					container: c,
+					probe: c.startupProbe,
+					probeType: "startup",
+				});
+				this.workers.set(key, w);
+				const run = w.run(ctx).finally(() => {
+					this.workerRuns.delete(w);
+				});
+				this.workerRuns.set(w, run);
+			}
+
+			if (c.readinessProbe) {
+				key.probeType = "readiness";
+				if (this.workers.has(key)) {
+					return;
+				}
+				const w = new ProbeWorker({
+					clock: this.options.clock,
+					probeManager: this,
+					results: this.readinessManager,
+					pod,
+					container: c,
+					probe: c.readinessProbe,
+					probeType: "readiness",
+				});
+				this.workers.set(key, w);
+				const run = w.run(ctx).finally(() => {
+					this.workerRuns.delete(w);
+				});
+				this.workerRuns.set(w, run);
+				void run;
+			}
+
+			if (c.livenessProbe) {
+				key.probeType = "liveness";
+				if (this.workers.has(key)) {
+					return;
+				}
+				const w = new ProbeWorker({
+					clock: this.options.clock,
+					probeManager: this,
+					results: this.livenessManager,
+					pod,
+					container: c,
+					probe: c.livenessProbe,
+					probeType: "liveness",
+				});
+				this.workers.set(key, w);
+				const run = w.run(ctx).finally(() => {
+					this.workerRuns.delete(w);
+				});
+				this.workerRuns.set(w, run);
+				void run;
 			}
 		}
 	}
@@ -81,7 +136,26 @@ export class ProbeManager {
 			key.containerName = container.name;
 			for (const probeType of ["liveness", "startup"] as const) {
 				key.probeType = probeType;
-				const worker = this.workers.get(probeKeyString(key));
+				const worker = this.workers.get(key);
+				if (worker) {
+					worker.stop();
+				}
+			}
+		}
+	}
+
+	// Models kubernetes/pkg/kubelet/prober/prober_manager.go RemovePod.
+	removePod(pod: V1Pod): void {
+		const key = {
+			podUid: pod.metadata?.uid ?? "",
+			containerName: "",
+			probeType: "readiness" as ProbeType,
+		};
+		for (const container of pod.spec?.containers ?? []) {
+			key.containerName = container.name;
+			for (const probeType of ["readiness", "liveness", "startup"] as const) {
+				key.probeType = probeType;
+				const worker = this.workers.get(key);
 				if (worker) {
 					worker.stop();
 				}
@@ -92,95 +166,70 @@ export class ProbeManager {
 	// Models kubernetes/pkg/kubelet/prober/prober_manager.go CleanupPods.
 	cleanupPods(desiredPods: Set<string>): void {
 		for (const [key, worker] of this.workers) {
-			if (!desiredPods.has(probeKeyPodUid(key))) {
+			if (!desiredPods.has(key.podUid)) {
 				worker.stop();
 			}
 		}
 	}
 
 	// Models kubernetes/pkg/kubelet/prober/prober_manager.go UpdatePodStatus.
-	updatePodStatus(pod: V1Pod, status: V1PodStatus): void {
-		for (const containerStatus of status.containerStatuses ?? []) {
-			const started = this.isContainerStarted(pod, containerStatus);
-			containerStatus.started = started;
+	updatePodStatus(pod: V1Pod, podStatus: V1PodStatus): void {
+		for (const c of podStatus.containerStatuses ?? []) {
+			const started = this.isContainerStarted(pod, c);
+			// Upstream writes through podStatus.ContainerStatuses[i] because Go
+			// range variables are copies. TypeScript iterates object references
+			// here, so mutating c updates the status entry in the array.
+			c.started = started;
 
 			if (!started) {
 				continue;
 			}
 
-			const containerId = parseContainerID(containerStatus.containerID);
 			let ready: boolean;
-			if (!containerStatus.state?.running || !containerId.id) {
+			if (!c.state?.running) {
 				ready = false;
-			} else if (this.readinessManager.get(containerId) === "success") {
+			} else if (this.readinessManager.get(parseContainerID(c.containerID)) === "success") {
 				ready = true;
 			} else {
-				const worker = this.getWorker(pod.metadata?.uid ?? "", containerStatus.name, "readiness");
-				ready = worker === undefined;
-				if (worker) {
-					worker.triggerManualRun();
+				const w = this.getWorker(pod.metadata?.uid ?? "", c.name, "readiness");
+				const exists = w !== undefined;
+				ready = !exists;
+				if (exists) {
+					w.triggerManualRun();
 				}
 
-				const containerSpec = pod.spec?.containers.find(
-					(container) => container.name === containerStatus.name,
-				);
+				const containerSpec = pod.spec?.containers.find((container) => container.name === c.name);
 				if (containerSpec) {
-					ready = this.setReadyStateOnKubeletRestart(ready, pod, containerStatus, containerSpec);
+					ready = this.setReadyStateOnKubeletRestart(ready, pod, c, containerSpec);
 				}
 			}
-			containerStatus.ready = ready;
+			c.ready = ready;
 		}
+
+		// Upstream there's a whole extra section here that does an exact copy of
+		// the above but for init containers. I've actually noticed throughout k8s
+		// that this pattern is quite common, making it feel like init containers
+		// were sort of bolted on to k8s in a bit of a hurry.
 	}
 
-	result(probeType: ProbeType, containerId: ContainerID): ProberResult | undefined {
-		return this.results(probeType).get(containerId);
-	}
-
+	// Models kubernetes/pkg/kubelet/prober/prober_manager.go removeWorker.
 	removeWorker(podUid: string, containerName: string, probeType: ProbeType): void {
-		this.workers.delete(probeKeyString({ podUid, containerName, probeType }));
+		this.workers.delete({ podUid, containerName, probeType });
 	}
 
-	close(): void {
+	// workerCount returns the total number of probe workers. For testing.
+	workerCount(): number {
+		return this.workers.size;
+	}
+
+	// Upstream has no prober manager Close method. This simulator adds one so
+	// tests and callers can fully tear down clusters when they are done with
+	// them.
+	async close(): Promise<void> {
 		for (const worker of this.workers.values()) {
 			worker.stop();
 		}
-		this.workers.clear();
-		this.livenessManager.close();
-		this.readinessManager.close();
-		this.startupManager.close();
-	}
-
-	private getProbe(container: V1Container, probeType: ProbeType) {
-		switch (probeType) {
-			case "liveness":
-				return container.livenessProbe;
-			case "readiness":
-				return container.readinessProbe;
-			case "startup":
-				return container.startupProbe;
-		}
-	}
-
-	private addWorker(pod: V1Pod, container: V1Container, probeType: ProbeType): void {
-		const probe = this.getProbe(container, probeType);
-		if (!probe) {
-			return;
-		}
-		const key = this.key(pod, container, probeType);
-		if (this.workers.has(key)) {
-			return;
-		}
-		const worker = new ProbeWorker({
-			clock: this.options.clock,
-			probeManager: this,
-			results: this.results(probeType),
-			pod,
-			container,
-			probe,
-			probeType,
-		});
-		this.workers.set(key, worker);
-		void worker.run();
+		await Promise.all(this.workerRuns.values());
 	}
 
 	// Models kubernetes/pkg/kubelet/prober/prober_manager.go isContainerStarted.
@@ -189,9 +238,9 @@ export class ProbeManager {
 			return false;
 		}
 
-		const containerId = parseContainerID(containerStatus.containerID);
-		if (containerId.id && this.startupManager.get(containerId) === "success") {
-			return true;
+		const result = this.startupManager.get(parseContainerID(containerStatus.containerID));
+		if (result !== undefined) {
+			return result === "success";
 		}
 
 		if (this.getWorker(pod.metadata?.uid ?? "", containerStatus.name, "startup")) {
@@ -222,8 +271,8 @@ export class ProbeManager {
 			}
 			if (containerSpec.readinessProbe) {
 				let podIsReady = false;
-				for (const condition of pod.status?.conditions ?? []) {
-					if (condition.type === "Ready" && condition.status === "True") {
+				for (const c of pod.status?.conditions ?? []) {
+					if (c.type === "Ready" && c.status === "True") {
 						podIsReady = true;
 						break;
 					}
@@ -241,41 +290,59 @@ export class ProbeManager {
 		containerName: string,
 		probeType: ProbeType,
 	): ProbeWorker | undefined {
-		return this.workers.get(probeKeyString({ podUid, containerName, probeType }));
+		return this.workers.get({ podUid, containerName, probeType });
+	}
+}
+
+// This exists because in Golang you can use structs as map keys and they
+// compare by value, but in TypeScript objects compare by identity. In order
+// for the code to look as close as possible to Go I've made this little Map
+// wrapper that uses a string key derived from the ProbeKey struct.
+class WorkerMap implements Iterable<[ProbeKey, ProbeWorker]> {
+	private readonly workers = new Map<string, { key: ProbeKey; worker: ProbeWorker }>();
+
+	get size(): number {
+		return this.workers.size;
 	}
 
-	private key(pod: V1Pod, container: V1Container, probeType: ProbeType): string {
-		return probeKeyString({
-			podUid: pod.metadata?.uid ?? "",
-			containerName: container.name,
-			probeType,
+	has(key: ProbeKey): boolean {
+		return this.workers.has(probeKeyString(key));
+	}
+
+	get(key: ProbeKey): ProbeWorker | undefined {
+		return this.workers.get(probeKeyString(key))?.worker;
+	}
+
+	set(key: ProbeKey, worker: ProbeWorker): void {
+		this.workers.set(probeKeyString(key), {
+			// We store key for the iterator later.
+			key: { ...key },
+			worker,
 		});
 	}
 
-	private results(probeType: ProbeType): ResultsManager {
-		switch (probeType) {
-			case "liveness":
-				return this.livenessManager;
-			case "readiness":
-				return this.readinessManager;
-			case "startup":
-				return this.startupManager;
+	delete(key: ProbeKey): void {
+		this.workers.delete(probeKeyString(key));
+	}
+
+	*values(): IterableIterator<ProbeWorker> {
+		for (const { worker } of this.workers.values()) {
+			yield worker;
+		}
+	}
+
+	*[Symbol.iterator](): IterableIterator<[ProbeKey, ProbeWorker]> {
+		for (const { key, worker } of this.workers.values()) {
+			yield [key, worker];
 		}
 	}
 }
 
-function probeKeyString(key: {
-	podUid: string;
-	containerName: string;
-	probeType: ProbeType;
-}): string {
+function probeKeyString(key: ProbeKey): string {
 	return `${key.podUid}:${key.containerName}:${key.probeType}`;
 }
 
-function probeKeyPodUid(key: string): string {
-	return key.split(":", 1)[0] ?? "";
-}
-
+// Models kubernetes/pkg/kubelet/prober/prober_manager.go kubeletRestartGracePeriod.
 function kubeletRestartGracePeriod(start: Date): Date {
 	return new Date(start.getTime() - 10_000);
 }

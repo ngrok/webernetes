@@ -132,6 +132,10 @@ export class Clock {
 		this.microtasks.length = 0;
 	}
 
+	public pendingTaskCount(): number {
+		return this.tasks.size;
+	}
+
 	private scheduleMicrotaskFlush() {
 		if (this.paused || this.microtaskFlushScheduled || this.flushingMicrotasks) {
 			return;

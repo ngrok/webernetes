@@ -1,5 +1,5 @@
 import * as k8s from "../../client";
-import { retryConflicts } from "../../retry-update";
+import { retryConflicts } from "../../retry";
 import { EventRecorder } from "../events";
 import type { ProcessContext } from "../cri";
 import { BaseImage } from "./base";

@@ -1,11 +1,11 @@
 import { expect, it } from "vitest";
 import type { V1Pod } from "../gen/models";
 import { kubernetes } from "../../test/harnesses/kubernetes";
-import { waitFor } from "../../test/wait";
 
 const IMAGE = "crccheck/hello-world:latest";
 
-kubernetes.describe("NodePort", ({ core, discovery, getSuiteNamespace, fetchNodePort }) => {
+kubernetes.describe("NodePort", ({ core, discovery, helpers }) => {
+	const { getSuiteNamespace, fetchNodePort, createPod, createNodePortFor, waitFor } = helpers;
 	it("should run a pod and reach it through a NodePort service", async () => {
 		const namespace = await getSuiteNamespace();
 
@@ -130,12 +130,49 @@ kubernetes.describe("NodePort", ({ core, discovery, getSuiteNamespace, fetchNode
 		await waitFor(async () => {
 			let rejected = false;
 			try {
-				await fetchNodePort(nodePort, { path: "/" });
+				await fetchNodePort(nodePort, { path: "/", retries: 0 });
 			} catch {
 				rejected = true;
 			}
 			expect(rejected).toBe(true);
 		});
+	});
+
+	it("should reject creating a NodePort for pods without a shared label", async () => {
+		const first = await createPod({
+			metadata: {
+				name: "no-shared-label-a",
+				labels: { app: "a" },
+			},
+			spec: {
+				containers: [
+					{
+						name: "a",
+						image: IMAGE,
+						ports: [{ name: "http", containerPort: 8000 }],
+					},
+				],
+			},
+		});
+		const second = await createPod({
+			metadata: {
+				name: "no-shared-label-b",
+				labels: { app: "b" },
+			},
+			spec: {
+				containers: [
+					{
+						name: "b",
+						image: IMAGE,
+						ports: [{ name: "http", containerPort: 8000 }],
+					},
+				],
+			},
+		});
+
+		await expect(createNodePortFor([first, second])).rejects.toThrow(
+			"Expected pods to share at least one label",
+		);
 	});
 });
 

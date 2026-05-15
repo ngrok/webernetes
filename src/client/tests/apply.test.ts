@@ -3,7 +3,8 @@ import { kubernetes } from "../../test/harnesses/kubernetes";
 
 const LAST_APPLIED_ANNOTATION = "kubectl.kubernetes.io/last-applied-configuration";
 
-kubernetes.describe("Apply", ({ apply, core, getTestNamespace, k8s }) => {
+kubernetes.describe("Apply", ({ core, k8s, helpers }) => {
+	const { apply, getTestNamespace } = helpers;
 	const mergePatchOptions = k8s.setHeaderOptions("Content-Type", k8s.PatchStrategy.MergePatch);
 
 	it("should apply pod and service resources", async () => {

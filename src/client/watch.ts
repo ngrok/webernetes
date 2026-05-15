@@ -112,7 +112,7 @@ export class Watch {
 		const fields = parseFieldSelector(fieldSelector);
 		const matchingKeys = new Set<string>();
 
-		const watcher = await store.watch(namespace);
+		const watcher = store.watch(namespace, watchStartRevision(queryParams.resourceVersion));
 		watcher.on("event", (phase, obj) => {
 			const key = objectKey(obj);
 			const matches = labelsMatch(obj, labels) && fieldSelectorMatches(obj, fields);
@@ -149,4 +149,17 @@ export class Watch {
 
 		return controller;
 	}
+}
+
+function watchStartRevision(
+	resourceVersion: string | number | boolean | undefined,
+): number | undefined {
+	if (resourceVersion === undefined || resourceVersion === "") {
+		return undefined;
+	}
+	const revision = Number(resourceVersion);
+	if (!Number.isInteger(revision) || revision < 0) {
+		return undefined;
+	}
+	return revision + 1;
 }

@@ -251,12 +251,16 @@ export class ListWatch<T extends KubernetesObject> implements ObjectCache<T>, In
 				return;
 			case "ADDED":
 			case "MODIFIED":
-				addOrUpdateObject(
-					this.objects,
-					object,
-					[...this.callbackCache[ADD]],
-					[...this.callbackCache[UPDATE]],
-				);
+				if (
+					!addOrUpdateObject(
+						this.objects,
+						object,
+						[...this.callbackCache[ADD]],
+						[...this.callbackCache[UPDATE]],
+					)
+				) {
+					return;
+				}
 				break;
 			case "DELETED":
 				deleteObject(this.objects, object, [...this.callbackCache[DELETE]]);
@@ -328,7 +332,7 @@ export function addOrUpdateObject<T extends KubernetesObject>(
 	obj: T,
 	addCallbacks?: Array<ObjectCallback<T>>,
 	updateCallbacks?: Array<ObjectCallback<T>>,
-): void {
+): boolean {
 	let namespaceObjects = objects.get(obj.metadata?.namespace ?? "");
 	if (!namespaceObjects) {
 		namespaceObjects = new Map();
@@ -342,17 +346,18 @@ export function addOrUpdateObject<T extends KubernetesObject>(
 		for (const callback of addCallbacks ?? []) {
 			callback(obj);
 		}
-		return;
+		return true;
 	}
 
 	if (sameResourceVersion(existing, obj)) {
-		return;
+		return false;
 	}
 
 	namespaceObjects.set(name, obj);
 	for (const callback of updateCallbacks ?? []) {
 		callback(obj);
 	}
+	return true;
 }
 
 export function deleteObject<T extends KubernetesObject>(

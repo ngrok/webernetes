@@ -13,8 +13,8 @@ let setupPromise: Promise<void> | undefined;
 
 const k8s = fakeK8s as unknown as K8s;
 
-afterAll(() => {
-	cluster.close();
+afterAll(async () => {
+	await cluster.close();
 });
 
 export function defineSuite(name: string, factory: KubernetesSuiteFactory): void;
@@ -65,18 +65,6 @@ export function defineSuite(
 async function setupSimulator(): Promise<void> {
 	setupPromise ??= (async () => {
 		await cluster.init();
-		cluster.imageRegistry.register("crccheck/hello-world:latest", {
-			async start(context) {
-				context.listenHttp(8000, async () => ({
-					status: 200,
-					body: "<xmp>\nHello World\n</xmp>\n",
-				}));
-				return await context.waitUntilKilled();
-			},
-			async exec() {
-				return 0;
-			},
-		});
 	})();
 	await setupPromise;
 }

@@ -1,19 +1,16 @@
 import { browser, currentTestEnvironment, node } from "../describe";
 import type { SuiteOptions } from "../describe";
 import type { CoreV1Api, DiscoveryV1Api } from "../../client/gen/apis/types";
-import type { K8s, KubeConfig, KubernetesObject } from "../../client/types";
+import type { K8s, KubeConfig } from "../../client/types";
+import type { KubernetesHelpers } from "./helpers";
 
 export interface KubernetesTestContext {
 	k8s: K8s;
 	kubeConfig: KubeConfig;
 	core: CoreV1Api;
 	discovery: DiscoveryV1Api;
+	helpers: KubernetesHelpers;
 	target: KubernetesTestTarget;
-	fetchNodePort: FetchNodePort;
-	apply<T extends KubernetesObject>(resources: T[]): Promise<T[]>;
-	getSuiteNamespace(): Promise<string>;
-	getTestNamespace(): Promise<string>;
-	createNamespace(generateName: string): Promise<string>;
 }
 
 export interface NodePortRequest {
@@ -21,6 +18,8 @@ export interface NodePortRequest {
 	path?: string;
 	headers?: Record<string, string>;
 	body?: string;
+	expectedCode?: number;
+	retries?: number;
 }
 
 export interface NodePortResponse {

@@ -1,11 +1,11 @@
 import { expect, it } from "vitest";
 import type { V1Endpoint, V1EndpointSlice, V1Pod } from "../gen/models";
 import { kubernetes } from "../../test/harnesses/kubernetes";
-import { waitFor } from "../../test/wait";
 
 const READY_IMAGE = "crccheck/hello-world:latest";
 
-kubernetes.describe("EndpointSlices", ({ core, discovery, getSuiteNamespace }) => {
+kubernetes.describe("EndpointSlices", ({ core, discovery, helpers }) => {
+	const { getSuiteNamespace, waitFor } = helpers;
 	function endpointSlice(
 		namespace: string,
 		overrides: Partial<V1EndpointSlice> = {},

@@ -1,5 +1,5 @@
-import type { CoreV1Api } from "../../client/gen/apis/types";
 import type { K8s, KubeConfig, KubernetesObject } from "../../client/types";
+import { createKubernetesHelpers } from "./helpers";
 import type { KubernetesTestContext, KubernetesTestTarget, FetchNodePort } from "./kubernetes";
 
 export interface KubernetesRuntimeContext extends KubernetesTestContext {
@@ -23,41 +23,27 @@ export function createKubernetesRuntimeContext({
 }): KubernetesRuntimeContext {
 	const core = lazyApiClient(() => kubeConfig.makeApiClient(k8s.CoreV1Api));
 	const discovery = lazyApiClient(() => kubeConfig.makeApiClient(k8s.DiscoveryV1Api));
-	let suiteNamespace: string | undefined;
-	let testNamespace: string | undefined;
+	const helpers = createKubernetesHelpers({
+		k8s,
+		kubeConfig,
+		core,
+		fetchNodePort,
+		apply,
+	});
 
 	const context: KubernetesRuntimeContext = {
 		k8s,
 		kubeConfig,
 		target,
-		fetchNodePort,
-		apply,
 		core,
 		discovery,
-		async getSuiteNamespace() {
-			suiteNamespace ??= await createNamespace(core, "test-");
-			return suiteNamespace;
-		},
-		async getTestNamespace() {
-			testNamespace ??= await createNamespace(core, "test-");
-			return testNamespace;
-		},
-		async createNamespace(generateName: string) {
-			return await createNamespace(core, generateName);
-		},
+		helpers,
 		async initialize() {},
 		async disposeTest() {
-			if (testNamespace) {
-				await core.deleteNamespace({ name: testNamespace });
-			}
-			testNamespace = undefined;
+			await helpers.disposeTest();
 		},
 		async dispose() {
-			await context.disposeTest();
-			if (suiteNamespace) {
-				await core.deleteNamespace({ name: suiteNamespace });
-			}
-			suiteNamespace = undefined;
+			await helpers.dispose();
 		},
 	};
 
@@ -73,20 +59,4 @@ function lazyApiClient<T extends object>(factory: () => T): T {
 			return typeof value === "function" ? value.bind(target) : value;
 		},
 	});
-}
-
-async function createNamespace(api: CoreV1Api, generateName: string): Promise<string> {
-	const resp = await api.createNamespace({
-		body: {
-			metadata: {
-				generateName,
-			},
-		},
-	});
-
-	if (!resp.metadata?.name) {
-		throw new Error("Failed to create namespace");
-	}
-
-	return resp.metadata.name;
 }

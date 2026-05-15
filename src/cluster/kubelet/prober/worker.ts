@@ -1,5 +1,6 @@
 import type { V1Container, V1Pod, V1Probe } from "../../../client";
 import { Channel, select } from "../../../go/channel";
+import type { Context } from "../../../go/context";
 import type { Clock } from "../../../clock";
 import * as time from "../../../go/time";
 import * as podutil from "../../pod-util";
@@ -56,23 +57,36 @@ export class ProbeWorker {
 	}
 
 	// Models kubernetes/pkg/kubelet/prober/worker.go run.
-	async run(): Promise<void> {
-		if (this.intervalMs > this.clock.nowMs() - this.probeManager.startedAt.getTime()) {
-			await this.clock.wait(Math.random() * this.intervalMs);
+	async run(ctx: Context): Promise<void> {
+		const probeTickerPeriod = this.intervalMs;
+		const sinceStart = this.clock.nowMs() - this.probeManager.startedAt.getTime();
+		if (probeTickerPeriod > sinceStart) {
+			const delay = time.after(this.clock, Math.random() * probeTickerPeriod);
+			const selected = await select()
+				.case(this.stopCh, () => "stop")
+				.case(delay, () => "continue");
+			if (selected !== "continue") {
+				this.probeManager.removeWorker(
+					this.pod.metadata?.uid ?? "",
+					this.container.name,
+					this.probeType,
+				);
+				return;
+			}
 		}
 
-		const probeTicker = new time.Ticker(this.clock, this.intervalMs);
+		const probeTicker = new time.Ticker(this.clock, probeTickerPeriod);
 		try {
-			probeLoop: for (; await this.doProbe(); ) {
+			for (; await this.doProbe(ctx); ) {
 				const selected = await select()
 					.case(this.stopCh, () => "stop")
 					.case(probeTicker.C, () => "tick")
 					.case(this.manualTriggerCh, () => "manual");
 				if (selected === "stop") {
-					break probeLoop;
+					break;
 				}
 				if (selected === "manual") {
-					probeTicker.reset(this.intervalMs);
+					probeTicker.reset(probeTickerPeriod);
 				}
 			}
 		} finally {
@@ -89,7 +103,7 @@ export class ProbeWorker {
 	}
 
 	// Models kubernetes/pkg/kubelet/prober/worker.go doProbe.
-	private async doProbe(): Promise<boolean> {
+	private async doProbe(_ctx: Context): Promise<boolean> {
 		const status = this.probeManager.statusManager.getPodStatus(this.pod.metadata?.uid ?? "");
 		if (!status) {
 			return true;

@@ -1,4 +1,4 @@
-import { BadRequest, Conflict, Invalid, NotFound } from "../../../errors";
+import { BadRequest, Conflict, Invalid, NotFound, UnsupportedMediaType } from "../../../errors";
 import { V1Status } from "../../models";
 
 export class ApiException<T> extends Error {
@@ -37,6 +37,8 @@ export async function rethrowApiErrors<T>(f: () => Promise<T>): Promise<T> {
 			code = 404;
 		} else if (e instanceof Conflict) {
 			code = 409;
+		} else if (e instanceof UnsupportedMediaType) {
+			code = 415;
 		}
 
 		const status: V1Status = {

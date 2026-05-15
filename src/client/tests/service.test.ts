@@ -1,9 +1,9 @@
 import { expect, it } from "vitest";
 import type { V1Pod, V1Service } from "../gen/models";
 import { kubernetes } from "../../test/harnesses/kubernetes";
-import { waitFor } from "../../test/wait";
 
-kubernetes.describe("Services", ({ core, getSuiteNamespace, fetchNodePort, k8s }) => {
+kubernetes.describe("Services", ({ core, k8s, helpers }) => {
+	const { getSuiteNamespace, fetchNodePort, waitFor } = helpers;
 	const mergePatchOptions = k8s.setHeaderOptions("Content-Type", k8s.PatchStrategy.MergePatch);
 
 	async function createService(service: Partial<V1Service>): Promise<V1Service> {

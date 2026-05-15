@@ -217,17 +217,29 @@ export class Store<T extends Storable> {
 	}
 
 	async list(namespace?: string): Promise<T[]> {
-		const k = this.listPrefix(namespace);
-		const response = await this.etcd.getAll().prefix(k).exec();
-		return response.kvs.map((kv) => {
-			const obj = JSON.parse(kv.value.toString()) as T;
-			return this.withResourceVersion(obj, kv.mod_revision);
-		});
+		return (await this.listWithResourceVersion(namespace)).items;
 	}
 
-	async watch(namespace?: string): Promise<Watcher<T>> {
+	async listWithResourceVersion(
+		namespace?: string,
+	): Promise<{ items: T[]; resourceVersion: string }> {
 		const k = this.listPrefix(namespace);
-		const watcher = await this.etcd.watch().prefix(k).withPreviousKV().create();
-		return new Watcher<T>(watcher);
+		const response = await this.etcd.getAll().prefix(k).exec();
+		return {
+			resourceVersion: response.header.revision,
+			items: response.kvs.map((kv) => {
+				const obj = JSON.parse(kv.value.toString()) as T;
+				return this.withResourceVersion(obj, kv.mod_revision);
+			}),
+		};
+	}
+
+	watch(namespace?: string, startRevision?: number): Watcher<T> {
+		const k = this.listPrefix(namespace);
+		let builder = this.etcd.watch().prefix(k).withPreviousKV();
+		if (startRevision !== undefined) {
+			builder = builder.startRevision(String(startRevision));
+		}
+		return new Watcher<T>(builder.watcher());
 	}
 }

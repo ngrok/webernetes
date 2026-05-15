@@ -1,5 +1,7 @@
 import * as k8s from "../client";
-import { retryConflicts } from "../retry-update";
+import { isNotFoundError } from "../client/errors";
+import { deepEqual } from "../deep-equal";
+import { retryConflicts } from "../retry";
 import type { KubernetesObject } from "../client";
 import type { Cluster } from "./cluster";
 
@@ -73,7 +75,7 @@ async function applyNamespace(
 			{ clock: cluster.clock },
 		);
 	} catch (error) {
-		if (!isNotFound(error)) {
+		if (!isNotFoundError(error)) {
 			throw error;
 		}
 		return await cluster.api.corev1.createNamespace({ body: withLastApplied(desired) });
@@ -98,7 +100,7 @@ async function applyNode(cluster: Cluster, resource: k8s.V1Node): Promise<k8s.V1
 			{ clock: cluster.clock },
 		);
 	} catch (error) {
-		if (!isNotFound(error)) {
+		if (!isNotFoundError(error)) {
 			throw error;
 		}
 		return await cluster.api.corev1.createNode({ body: withLastApplied(desired) });
@@ -125,7 +127,7 @@ async function applyPod(cluster: Cluster, resource: k8s.V1Pod): Promise<k8s.V1Po
 			{ clock: cluster.clock },
 		);
 	} catch (error) {
-		if (!isNotFound(error)) {
+		if (!isNotFoundError(error)) {
 			throw error;
 		}
 		return await cluster.api.corev1.createNamespacedPod({
@@ -155,7 +157,7 @@ async function applyService(cluster: Cluster, resource: k8s.V1Service): Promise<
 			{ clock: cluster.clock },
 		);
 	} catch (error) {
-		if (!isNotFound(error)) {
+		if (!isNotFoundError(error)) {
 			throw error;
 		}
 		return await cluster.api.corev1.createNamespacedService({
@@ -307,35 +309,4 @@ function ensurePlainObject(parent: PlainObject, key: string): PlainObject {
 
 function isPlainObject(value: unknown): value is PlainObject {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function deepEqual(left: unknown, right: unknown): boolean {
-	if (left === right) {
-		return true;
-	}
-	if (Array.isArray(left) || Array.isArray(right)) {
-		if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) {
-			return false;
-		}
-		return left.every((value, index) => deepEqual(value, right[index]));
-	}
-	if (isPlainObject(left) || isPlainObject(right)) {
-		if (!isPlainObject(left) || !isPlainObject(right)) {
-			return false;
-		}
-		const leftKeys = Object.keys(left);
-		const rightKeys = Object.keys(right);
-		return (
-			leftKeys.length === rightKeys.length &&
-			leftKeys.every((key) => key in right && deepEqual(left[key], right[key]))
-		);
-	}
-	return false;
-}
-
-function isNotFound(error: unknown): boolean {
-	return (
-		error instanceof Error &&
-		("code" in error ? error.code === 404 : error.message.includes("HTTP-Code: 404"))
-	);
 }

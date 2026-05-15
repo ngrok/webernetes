@@ -1,4 +1,5 @@
 import { Clock } from "../clock";
+import * as context from "../go/context";
 import { Etcd } from "./etcd";
 import * as k8s from "../client";
 import { Server } from "./server";
@@ -6,6 +7,7 @@ import { ClusterNetwork, type HttpRequest, type HttpResponse } from "./cni";
 import { ImageRegistry, type ExecResult } from "./cri";
 import { CoreDNS } from "./images/coredns";
 import { BusyBoxImage } from "./images/busybox";
+import { HelloWorldImage } from "./images/hello-world";
 import { HttpEchoImage } from "./images/http-echo";
 import { AgnhostImage } from "./images/agnhost";
 import { EndpointSliceController } from "./images/endpointslice-controller";
@@ -26,7 +28,7 @@ export interface ClusterOptions {
 	nodePortRange?: NodePortRange;
 }
 
-class K8sApi {
+export class KubeClient {
 	readonly corev1: k8s.CoreV1Api;
 	constructor(private readonly kubeConfig: k8s.KubeConfig) {
 		this.corev1 = this.kubeConfig.makeApiClient(k8s.CoreV1Api);
@@ -37,26 +39,31 @@ export class Cluster {
 	readonly clock: Clock;
 	readonly etcd: Etcd;
 	readonly kubeConfig: k8s.KubeConfig;
-	readonly api: K8sApi;
+	readonly api: KubeClient;
 	readonly servers: Server[];
 	readonly network: ClusterNetwork;
 	readonly imageRegistry: ImageRegistry;
 	readonly serviceCIDR: string | undefined;
 	readonly nodePortRange: NodePortRange;
 	readonly dnsServiceIp = KUBE_DNS_CLUSTER_IP;
+	private readonly ctx: context.Context;
+	private readonly cancelContext: context.CancelFunc;
+	private closePromise: Promise<void> | undefined;
 
 	public constructor(options: ClusterOptions = {}) {
 		this.clock = new Clock();
+		[this.ctx, this.cancelContext] = context.withCancel(context.background());
 		this.etcd = new Etcd(this.clock);
 		this.serviceCIDR = options.serviceCIDR;
 		this.nodePortRange = options.nodePortRange ?? DEFAULT_NODE_PORT_RANGE;
 		this.kubeConfig = new k8s.KubeConfig(this);
-		this.api = new K8sApi(this.kubeConfig);
+		this.api = new KubeClient(this.kubeConfig);
 		this.network = new ClusterNetwork();
 
 		this.imageRegistry = new ImageRegistry();
 		this.imageRegistry.register("registry.k8s.io/pause:3.10", new PauseImage());
 		this.imageRegistry.register("busybox:1.36", new BusyBoxImage());
+		this.imageRegistry.register("crccheck/hello-world:latest", new HelloWorldImage());
 		this.imageRegistry.register("hashicorp/http-echo:1.0", new HttpEchoImage());
 		this.imageRegistry.register("registry.k8s.io/e2e-test-images/agnhost:2.40", new AgnhostImage());
 
@@ -123,7 +130,7 @@ export class Cluster {
 		}
 
 		for (const server of this.servers) {
-			await server.boot();
+			await server.boot(this.ctx);
 		}
 
 		await this.createControlPlanePod("kube-scheduler", "k8s-web-simulator/kube-scheduler:latest");
@@ -132,7 +139,6 @@ export class Cluster {
 			"k8s-web-simulator/endpointslice-controller:latest",
 		);
 		await this.createControlPlanePod("kube-proxy", "k8s-web-simulator/kube-proxy:latest");
-
 		// kube-dns requires a ClusterIP to be set so we have an IP we can use in
 		// each pod's DNS config.
 		await this.api.corev1.createNamespacedService({
@@ -194,12 +200,16 @@ export class Cluster {
 		return await applyResources(this, resources);
 	}
 
-	public close() {
-		for (const server of this.servers) {
-			server.kubelet.close();
+	public close(): Promise<void> {
+		if (!this.closePromise) {
+			this.cancelContext();
+			this.closePromise = (async () => {
+				await Promise.all(this.servers.map(async (server) => await server.close()));
+				this.etcd.close();
+				this.clock.clear();
+			})();
 		}
-		this.etcd.close();
-		this.clock.clear();
+		return this.closePromise;
 	}
 
 	private async createControlPlanePod(

@@ -1,79 +1,28 @@
 import { expect, it } from "vitest";
 import { CIDR } from "../../net";
-import type { CoreV1Event, V1Pod } from "../gen/models";
 import { kubernetes } from "../../test/harnesses/kubernetes";
-import { waitFor } from "../../test/wait";
+import { apiErrorCode, apiStatusMessage } from "../../test/harnesses/helpers";
 
-kubernetes.describe("Pods", ({ core, getSuiteNamespace, createNamespace, target, k8s }) => {
+kubernetes.describe("Pods", (context) => {
+	const { core, target, k8s } = context;
+	const {
+		createPod,
+		replacePod,
+		getTestNamespace,
+		createNamespace,
+		createAgnhostPod,
+		createNodePortFor,
+		fetchNodePort,
+		readPod,
+		containerStatus,
+		waitFor,
+		waitForPodReady,
+		eventsFor,
+		eventReasonsFor,
+		eventReasonCountFor,
+	} = context.helpers;
 	const podImage = "registry.k8s.io/pause:3.10";
 	const mergePatchOptions = k8s.setHeaderOptions("Content-Type", k8s.PatchStrategy.MergePatch);
-
-	async function createPod(pod: Partial<V1Pod>, podNamespace?: string): Promise<V1Pod> {
-		const namespace = podNamespace ?? (await getSuiteNamespace());
-		return await core.createNamespacedPod({
-			namespace,
-			body: {
-				...pod,
-				metadata: {
-					...pod.metadata,
-				},
-				spec: {
-					...pod.spec,
-					containers: pod.spec?.containers ?? [{ name: "test", image: podImage }],
-				},
-			},
-		});
-	}
-
-	async function replacePod(name: string, mutate: (pod: V1Pod) => void): Promise<V1Pod> {
-		let lastError: unknown;
-		const namespace = await getSuiteNamespace();
-
-		for (let attempt = 0; attempt < 5; attempt++) {
-			const current = await core.readNamespacedPod({ name, namespace });
-			mutate(current);
-
-			try {
-				return await core.replaceNamespacedPod({
-					name,
-					namespace,
-					body: current,
-				});
-			} catch (error) {
-				if (
-					error instanceof Error &&
-					(error.message.includes("HTTP-Code: 409") ||
-						(error.message.includes("HTTP-Code: 422") && error.message.includes("NodeName")))
-				) {
-					lastError = error;
-					await new Promise((resolve) => setTimeout(resolve, 50));
-					continue;
-				}
-				throw error;
-			}
-		}
-
-		throw lastError ?? new Error(`Failed to replace pod ${name}`);
-	}
-
-	async function podEventReasons(name: string, namespace: string): Promise<string[]> {
-		const events = await core.listNamespacedEvent({ namespace });
-		return events.items
-			.filter((event) => event.involvedObject.kind === "Pod" && event.involvedObject.name === name)
-			.map((event) => event.reason)
-			.filter((reason): reason is string => reason !== undefined);
-	}
-
-	async function podEvents(name: string, namespace: string): Promise<CoreV1Event[]> {
-		const events = await core.listNamespacedEvent({ namespace });
-		return events.items.filter(
-			(event) => event.involvedObject.kind === "Pod" && event.involvedObject.name === name,
-		);
-	}
-
-	function eventComponent(event: CoreV1Event | undefined): string | undefined {
-		return event?.source?.component ?? event?.reportingComponent;
-	}
 
 	it("should be able to create a pod", async () => {
 		const pod = await createPod({ metadata: { name: "create-test" } });
@@ -100,7 +49,7 @@ kubernetes.describe("Pods", ({ core, getSuiteNamespace, createNamespace, target,
 	});
 
 	it("should reject pods without containers", async () => {
-		const namespace = await getSuiteNamespace();
+		const namespace = await getTestNamespace();
 
 		await expect(
 			core.createNamespacedPod({
@@ -119,7 +68,7 @@ kubernetes.describe("Pods", ({ core, getSuiteNamespace, createNamespace, target,
 
 	it("should be able to delete a pod", async () => {
 		await createPod({ metadata: { name: "delete-test" } });
-		const namespace = await getSuiteNamespace();
+		const namespace = await getTestNamespace();
 
 		const deleted = await core.deleteNamespacedPod({
 			name: "delete-test",
@@ -150,7 +99,7 @@ kubernetes.describe("Pods", ({ core, getSuiteNamespace, createNamespace, target,
 				terminationGracePeriodSeconds: 1,
 			},
 		});
-		const namespace = await getSuiteNamespace();
+		const namespace = await getTestNamespace();
 
 		const deleted = await core.deleteNamespacedPod({
 			name: "graceful-delete-test",
@@ -180,7 +129,7 @@ kubernetes.describe("Pods", ({ core, getSuiteNamespace, createNamespace, target,
 
 	it("should be able to read a pod", async () => {
 		await createPod({ metadata: { name: "read-test" } });
-		const namespace = await getSuiteNamespace();
+		const namespace = await getTestNamespace();
 
 		const pod = await core.readNamespacedPod({
 			name: "read-test",
@@ -193,7 +142,15 @@ kubernetes.describe("Pods", ({ core, getSuiteNamespace, createNamespace, target,
 	it("should emit scheduler and kubelet lifecycle events for a pod", async () => {
 		const podName = "event-lifecycle-test";
 		await createPod({ metadata: { name: podName } });
-		const namespace = await getSuiteNamespace();
+		const namespace = await getTestNamespace();
+		const podResource = {
+			apiVersion: "v1",
+			kind: "Pod",
+			metadata: {
+				name: podName,
+				namespace,
+			},
+		};
 
 		await waitFor(async () => {
 			const pod = await core.readNamespacedPod({ name: podName, namespace });
@@ -201,7 +158,7 @@ kubernetes.describe("Pods", ({ core, getSuiteNamespace, createNamespace, target,
 		});
 
 		await waitFor(async () => {
-			expect(await podEventReasons(podName, namespace)).toEqual(
+			expect(await eventReasonsFor(podResource)).toEqual(
 				expect.arrayContaining(["Scheduled", "Pulled", "Created", "Started"]),
 			);
 		});
@@ -216,25 +173,25 @@ kubernetes.describe("Pods", ({ core, getSuiteNamespace, createNamespace, target,
 		});
 
 		await waitFor(async () => {
-			expect(await podEventReasons(podName, namespace)).toContain("Killing");
+			expect(await eventReasonsFor(podResource)).toContain("Killing");
 		});
 
-		const events = await podEvents(podName, namespace);
-		expect(eventComponent(events.find((event) => event.reason === "Scheduled"))).toBe(
+		const events = await eventsFor(podResource);
+		expect(eventComponentFor(events.find((event) => event.reason === "Scheduled"))).toBe(
 			"default-scheduler",
 		);
-		expect(eventComponent(events.find((event) => event.reason === "Started"))).toBe("kubelet");
+		expect(eventComponentFor(events.find((event) => event.reason === "Started"))).toBe("kubelet");
 	});
 
 	it("should be able to replace a pod", async () => {
-		await createPod({
+		const original = await createPod({
 			metadata: {
 				name: "replace-test",
 				labels: { app: "original" },
 			},
 		});
 
-		const replaced = await replacePod("replace-test", (current) => {
+		const replaced = await replacePod(original, (current) => {
 			current.metadata = {
 				name: "replace-test",
 				labels: { app: "replaced" },
@@ -243,7 +200,7 @@ kubernetes.describe("Pods", ({ core, getSuiteNamespace, createNamespace, target,
 
 		expect(replaced.metadata?.labels?.app).toBe("replaced");
 
-		const namespace = await getSuiteNamespace();
+		const namespace = await getTestNamespace();
 		const pods = await core.listNamespacedPod({ namespace });
 		expect(
 			pods.items.find((pod) => pod.metadata?.name === "replace-test")?.metadata?.labels?.app,
@@ -251,7 +208,7 @@ kubernetes.describe("Pods", ({ core, getSuiteNamespace, createNamespace, target,
 	});
 
 	it("should be able to bind a pod to a node", async () => {
-		const namespace = await getSuiteNamespace();
+		const namespace = await getTestNamespace();
 		const nodeName = (await core.listNode()).items.find((node) => node.metadata?.name)?.metadata
 			?.name;
 		if (!nodeName) {
@@ -302,7 +259,7 @@ kubernetes.describe("Pods", ({ core, getSuiteNamespace, createNamespace, target,
 				},
 			},
 		});
-		const namespace = await getSuiteNamespace();
+		const namespace = await getTestNamespace();
 
 		const patched = await core.patchNamespacedPod(
 			{
@@ -333,7 +290,7 @@ kubernetes.describe("Pods", ({ core, getSuiteNamespace, createNamespace, target,
 				name,
 			},
 		});
-		const namespace = await getSuiteNamespace();
+		const namespace = await getTestNamespace();
 
 		await expect(
 			core.patchNamespacedPod(
@@ -353,6 +310,120 @@ kubernetes.describe("Pods", ({ core, getSuiteNamespace, createNamespace, target,
 		);
 	});
 
+	it("should reject patching pod status with a UID precondition mismatch", async () => {
+		const name = "patch-status-uid-precondition-test";
+		const mismatchedUid = "00000000-0000-0000-0000-000000000000";
+		await createPod({
+			metadata: {
+				name,
+			},
+		});
+		const namespace = await getTestNamespace();
+
+		let patchError: unknown;
+		try {
+			await core.patchNamespacedPodStatus(
+				{
+					name,
+					namespace,
+					body: {
+						metadata: {
+							uid: mismatchedUid,
+						},
+						status: {
+							phase: "Running",
+						},
+					},
+				},
+				mergePatchOptions,
+			);
+		} catch (error) {
+			patchError = error;
+		}
+		expect(apiErrorCode(patchError)).toBe(422);
+		expect(apiStatusMessage(patchError)).toBe(
+			`Pod "${name}" is invalid: metadata.uid: Invalid value: "${mismatchedUid}": field is immutable`,
+		);
+
+		const current = await readPod(name);
+		expect(current.status?.phase).not.toBe("Running");
+	});
+
+	it("should patch pod status with a matching UID precondition", async () => {
+		const name = "patch-status-uid-precondition-success-test";
+		let pod = await createPod({
+			metadata: {
+				name,
+			},
+		});
+		pod = await waitForPodReady(pod);
+		const namespace = await getTestNamespace();
+		const podUid = pod.metadata?.uid;
+		expect(podUid).toBeTruthy();
+		if (!podUid) {
+			throw new Error("Expected created pod to have metadata.uid");
+		}
+
+		const patched = await core.patchNamespacedPodStatus(
+			{
+				name,
+				namespace,
+				body: {
+					metadata: {
+						uid: podUid,
+					},
+					status: {
+						phase: "Running",
+						message: "uid precondition accepted",
+					},
+				},
+			},
+			mergePatchOptions,
+		);
+
+		expect(patched.status?.phase).toBe("Running");
+		expect(patched.status?.message).toBe("uid precondition accepted");
+	});
+
+	it("should reject non-merge pod status patches in the simulator", async () => {
+		if (target !== "simulator") {
+			return;
+		}
+
+		const name = "patch-status-non-merge-test";
+		const pod = await createPod({
+			metadata: {
+				name,
+			},
+		});
+		const namespace = await getTestNamespace();
+		const strategicPatchOptions = k8s.setHeaderOptions(
+			"Content-Type",
+			k8s.PatchStrategy.StrategicMergePatch,
+		);
+
+		await expect(
+			core.patchNamespacedPodStatus(
+				{
+					name,
+					namespace,
+					body: {
+						metadata: {
+							uid: pod.metadata?.uid,
+						},
+						status: {
+							phase: "Running",
+						},
+					},
+				},
+				strategicPatchOptions,
+			),
+		).rejects.toThrow(/415|Unsupported|Media/i);
+
+		const current = await readPod(name);
+		expect(current.status?.phase).not.toBe("Running");
+	});
+
 	it("should throw 409 when replacing a pod with a stale resourceVersion", async () => {
 		await createPod({
 			metadata: {
@@ -361,7 +432,7 @@ kubernetes.describe("Pods", ({ core, getSuiteNamespace, createNamespace, target,
 			},
 		});
 
-		const namespace = await getSuiteNamespace();
+		const namespace = await getTestNamespace();
 		const stale = await core.readNamespacedPod({
 			name: "replace-conflict-test",
 			namespace,
@@ -437,13 +508,13 @@ kubernetes.describe("Pods", ({ core, getSuiteNamespace, createNamespace, target,
 	});
 
 	it("should list pods across namespaces", async () => {
-		const namespace = await getSuiteNamespace();
+		const namespace = await getTestNamespace();
 		const otherNamespace = await createNamespace("list-all-namespaces-");
 		const podName = "list-all-primary";
 		const otherPodName = "list-all-secondary";
 
 		await createPod({ metadata: { name: podName } });
-		await createPod({ metadata: { name: otherPodName } }, otherNamespace);
+		await createPod({ metadata: { name: otherPodName, namespace: otherNamespace } });
 
 		try {
 			const pods = await core.listPodForAllNamespaces();
@@ -488,7 +559,7 @@ kubernetes.describe("Pods", ({ core, getSuiteNamespace, createNamespace, target,
 	});
 
 	it("should support label selectors when listing pods across namespaces", async () => {
-		const namespace = await getSuiteNamespace();
+		const namespace = await getTestNamespace();
 		const otherNamespace = await createNamespace("list-all-selected-");
 		const selectedPodName = "list-all-selected-primary";
 		const otherSelectedPodName = "list-all-selected-secondary";
@@ -500,24 +571,20 @@ kubernetes.describe("Pods", ({ core, getSuiteNamespace, createNamespace, target,
 				labels: { app: "selected" },
 			},
 		});
-		await createPod(
-			{
-				metadata: {
-					name: otherSelectedPodName,
-					labels: { app: "selected" },
-				},
+		await createPod({
+			metadata: {
+				name: otherSelectedPodName,
+				namespace: otherNamespace,
+				labels: { app: "selected" },
 			},
-			otherNamespace,
-		);
-		await createPod(
-			{
-				metadata: {
-					name: ignoredPodName,
-					labels: { app: "ignored" },
-				},
+		});
+		await createPod({
+			metadata: {
+				name: ignoredPodName,
+				namespace: otherNamespace,
+				labels: { app: "ignored" },
 			},
-			otherNamespace,
-		);
+		});
 
 		try {
 			const pods = await core.listPodForAllNamespaces({
@@ -584,7 +651,7 @@ kubernetes.describe("Pods", ({ core, getSuiteNamespace, createNamespace, target,
 	});
 
 	it("should support field selectors when listing namespaced pods", async () => {
-		const namespace = await getSuiteNamespace();
+		const namespace = await getTestNamespace();
 		const selectedName = "field-selected";
 		const ignoredName = "field-ignored";
 
@@ -607,13 +674,13 @@ kubernetes.describe("Pods", ({ core, getSuiteNamespace, createNamespace, target,
 	});
 
 	it("should support field selectors when listing pods across namespaces", async () => {
-		const namespace = await getSuiteNamespace();
+		const namespace = await getTestNamespace();
 		const otherNamespace = await createNamespace("list-all-field-selected-");
 		const selectedPodName = "list-all-field-selected";
 		const ignoredPodName = "list-all-field-ignored";
 
 		await createPod({ metadata: { name: selectedPodName } });
-		await createPod({ metadata: { name: ignoredPodName } }, otherNamespace);
+		await createPod({ metadata: { name: ignoredPodName, namespace: otherNamespace } });
 
 		try {
 			const pods = await core.listPodForAllNamespaces({
@@ -652,7 +719,7 @@ kubernetes.describe("Pods", ({ core, getSuiteNamespace, createNamespace, target,
 	});
 
 	it("should allocate pod IPs from the scheduled node pod CIDR", async () => {
-		const namespace = await getSuiteNamespace();
+		const namespace = await getTestNamespace();
 		const nodes = (await core.listNode()).items.filter((node) =>
 			Boolean(node.metadata?.name && node.spec?.podCIDR),
 		);
@@ -703,4 +770,131 @@ kubernetes.describe("Pods", ({ core, getSuiteNamespace, createNamespace, target,
 			}
 		}
 	});
+
+	it("should restart a spontaneously exited container when restartPolicy is Always", async () => {
+		const pod = await createAgnhostPod({
+			metadata: {
+				labels: { app: "exit-always" },
+			},
+			spec: { restartPolicy: "Always" },
+		});
+		await waitForPodReady(pod);
+		const nodePort = await createNodePortFor([pod]);
+		const startedEventsBeforeExit = await eventReasonCountFor(pod, "Started");
+
+		await fetchNodePort(nodePort, {
+			path: "/exit?code=1&timeout=1s",
+		});
+
+		await waitFor(async () => {
+			const current = await readPod(pod);
+			const status = containerStatus(current, "server");
+			expect(current.status?.phase).toBe("Running");
+			expect(status.restartCount).toBeGreaterThan(0);
+			expect(status.state?.running).toBeDefined();
+			expect(await eventReasonCountFor(pod, "Started")).toBeGreaterThan(startedEventsBeforeExit);
+		});
+	});
+
+	it("should restart a failed spontaneously exited container when restartPolicy is OnFailure", async () => {
+		const pod = await createAgnhostPod({
+			metadata: {
+				labels: { app: "exit-onfailure-failed" },
+			},
+			spec: { restartPolicy: "OnFailure" },
+		});
+		await waitForPodReady(pod);
+		const nodePort = await createNodePortFor([pod]);
+		const startedEventsBeforeExit = await eventReasonCountFor(pod, "Started");
+
+		await fetchNodePort(nodePort, {
+			path: "/exit?code=1&timeout=1s",
+		});
+
+		await waitFor(async () => {
+			const current = await readPod(pod);
+			const status = containerStatus(current, "server");
+			expect(current.status?.phase).toBe("Running");
+			expect(status.restartCount).toBeGreaterThan(0);
+			expect(status.state?.running).toBeDefined();
+			expect(await eventReasonCountFor(pod, "Started")).toBeGreaterThan(startedEventsBeforeExit);
+		});
+	});
+
+	it("should not restart a succeeded spontaneously exited container when restartPolicy is OnFailure", async () => {
+		const pod = await createAgnhostPod({
+			metadata: {
+				labels: { app: "exit-onfailure-succeeded" },
+			},
+			spec: { restartPolicy: "OnFailure" },
+		});
+		await waitForPodReady(pod);
+		const nodePort = await createNodePortFor([pod]);
+
+		await fetchNodePort(nodePort, {
+			// exit code 0 == succeeded
+			path: "/exit?code=0&timeout=1s",
+		});
+
+		await waitFor(async () => {
+			const current = await readPod(pod);
+			const status = containerStatus(current, "server");
+			expect(current.status?.phase).toBe("Succeeded");
+			expect(status.restartCount).toBe(0);
+			expect(status.state?.terminated?.exitCode).toBe(0);
+		});
+
+		// We wait here to give time for any spurious shenanigans to happen. The pod
+		// should sit in its succeeded state without changing.
+		await observeFor(2500);
+
+		const current = await readPod(pod);
+		const status = containerStatus(current, "server");
+		expect(current.status?.phase).toBe("Succeeded");
+		expect(status.restartCount).toBe(0);
+		expect(status.state?.terminated?.exitCode).toBe(0);
+	});
+
+	it("should not restart a spontaneously exited container when restartPolicy is Never", async () => {
+		const pod = await createAgnhostPod({
+			metadata: {
+				labels: { app: "exit-never" },
+			},
+			spec: { restartPolicy: "Never" },
+		});
+		await waitForPodReady(pod);
+		const nodePort = await createNodePortFor([pod]);
+
+		await fetchNodePort(nodePort, {
+			path: "/exit?code=1&timeout=1s",
+		});
+
+		await waitFor(async () => {
+			const current = await readPod(pod);
+			const status = containerStatus(current, "server");
+			expect(current.status?.phase).toBe("Failed");
+			expect(status.restartCount).toBe(0);
+			expect(status.state?.terminated?.exitCode).toBe(1);
+		});
+
+		// We wait here to give time for any spurious shenanigans to happen. The pod
+		// should sit in its failed state without changing.
+		await observeFor(2500);
+
+		const current = await readPod(pod);
+		const status = containerStatus(current, "server");
+		expect(current.status?.phase).toBe("Failed");
+		expect(status.restartCount).toBe(0);
+		expect(status.state?.terminated?.exitCode).toBe(1);
+	});
 });
+
+function eventComponentFor(
+	event: { source?: { component?: string }; reportingComponent?: string } | undefined,
+) {
+	return event?.source?.component ?? event?.reportingComponent;
+}
+
+async function observeFor(ms: number): Promise<void> {
+	await new Promise((resolve) => setTimeout(resolve, ms));
+}

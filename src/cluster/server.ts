@@ -1,6 +1,7 @@
 import { Cluster } from "./cluster";
 import { Runtime } from "./cri";
 import { Kubelet } from "./kubelet";
+import * as context from "../go/context";
 
 export interface ServerOptions {
 	name: string;
@@ -13,6 +14,9 @@ export class Server {
 	cluster: Cluster;
 	kubelet: Kubelet;
 	runtime: Runtime;
+	private ctx: context.Context | undefined;
+	private cancelContext: context.CancelFunc | undefined;
+	private closePromise: Promise<void> | undefined;
 
 	public constructor(cluster: Cluster, options: ServerOptions) {
 		this.name = options.name;
@@ -29,7 +33,19 @@ export class Server {
 		this.kubelet = new Kubelet(this);
 	}
 
-	async boot() {
-		await this.kubelet.start();
+	async boot(ctx: context.Context) {
+		[this.ctx, this.cancelContext] = context.withCancel(ctx);
+		await this.kubelet.start(this.ctx);
+	}
+
+	close(): Promise<void> {
+		if (!this.closePromise) {
+			this.cancelContext?.();
+			this.closePromise = (async () => {
+				await this.kubelet.close();
+				await this.runtime.close();
+			})();
+		}
+		return this.closePromise;
 	}
 }

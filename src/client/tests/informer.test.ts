@@ -1,57 +1,9 @@
 import { expect, it, vi } from "vitest";
-import type { V1Pod } from "../gen/models";
+import type { V1Namespace, V1Pod } from "../gen/models";
 import { kubernetes } from "../../test/harnesses/kubernetes";
-import { waitFor } from "../../test/wait";
-import { retryConflicts } from "../../retry-update";
-import { Clock } from "../../clock";
 
-kubernetes.describe("Informer", ({ core, k8s, kubeConfig, getTestNamespace, createNamespace }) => {
-	const retryClock = new Clock();
-
-	async function createPod(pod: Partial<V1Pod>, podNamespace?: string): Promise<V1Pod> {
-		const namespace = podNamespace ?? (await getTestNamespace());
-		const response = await core.createNamespacedPod({
-			namespace,
-			body: {
-				metadata: {
-					name: pod.metadata?.name ?? "test-pod",
-					...pod.metadata,
-				},
-				spec: {
-					containers: [{ name: "test", image: "registry.k8s.io/pause:3.10" }],
-					...pod.spec,
-				},
-			},
-		});
-
-		if (!response.metadata?.name) {
-			throw new Error("Failed to create pod");
-		}
-
-		return response;
-	}
-
-	async function replacePod(
-		name: string,
-		mutate: (pod: V1Pod) => void,
-		podNamespace?: string,
-	): Promise<V1Pod> {
-		const namespace = podNamespace ?? (await getTestNamespace());
-
-		return await retryConflicts(
-			async () => {
-				const current = await core.readNamespacedPod({ name, namespace });
-				mutate(current);
-				return await core.replaceNamespacedPod({
-					name,
-					namespace,
-					body: current,
-				});
-			},
-			{ clock: retryClock },
-		);
-	}
-
+kubernetes.describe("Informer", ({ core, k8s, kubeConfig, helpers }) => {
+	const { createPod, replacePod, getTestNamespace, createNamespace, waitFor } = helpers;
 	it("lists initial objects into the cache on start", async () => {
 		const connected = vi.fn<(err?: unknown) => void>();
 		const added = vi.fn<(obj: V1Pod) => void>();
@@ -95,6 +47,149 @@ kubernetes.describe("Informer", ({ core, k8s, kubeConfig, getTestNamespace, crea
 						}),
 					]),
 				);
+			});
+		} finally {
+			await informer.stop();
+		}
+	});
+
+	it("does not miss an object created after list and before watch", async () => {
+		const added = vi.fn<(obj: V1Pod) => void>();
+		const namespace = await getTestNamespace();
+		let interposedCreate = false;
+
+		const informer = k8s.makeInformer(
+			kubeConfig,
+			`/api/v1/namespaces/${namespace}/pods`,
+			async () => {
+				const list = await core.listNamespacedPod({ namespace });
+				if (!interposedCreate) {
+					interposedCreate = true;
+					await createPod({ metadata: { name: "created-between-list-and-watch" } });
+				}
+				return list;
+			},
+		);
+		informer.on("add", added);
+
+		try {
+			await informer.start();
+
+			await waitFor(() => {
+				expect(added).toHaveBeenCalledWith(
+					expect.objectContaining({
+						metadata: expect.objectContaining({
+							name: "created-between-list-and-watch",
+							namespace,
+						}),
+					}),
+				);
+				expect(informer.get("created-between-list-and-watch", namespace)).toEqual(
+					expect.objectContaining({
+						metadata: expect.objectContaining({
+							name: "created-between-list-and-watch",
+							namespace,
+						}),
+					}),
+				);
+			});
+		} finally {
+			await informer.stop();
+		}
+	});
+
+	it("does not miss a namespace update after list and before watch", async () => {
+		const updated = vi.fn<(obj: V1Namespace) => void>();
+		const namespace = await createNamespace({
+			metadata: {
+				generateName: "updated-between-list-and-watch-",
+				labels: { revision: "initial" },
+			},
+		});
+		let interposedUpdate = false;
+
+		const informer = k8s.makeInformer(kubeConfig, "/api/v1/namespaces", async () => {
+			const list = await core.listNamespace();
+			if (!interposedUpdate) {
+				interposedUpdate = true;
+				const current = await core.readNamespace({ name: namespace });
+				await core.replaceNamespace({
+					name: namespace,
+					body: {
+						...current,
+						metadata: {
+							...current.metadata,
+							labels: { revision: "updated-before-watch" },
+						},
+					},
+				});
+			}
+			return list;
+		});
+		informer.on("update", updated);
+
+		try {
+			await informer.start();
+
+			await waitFor(() => {
+				expect(updated).toHaveBeenCalledWith(
+					expect.objectContaining({
+						metadata: expect.objectContaining({
+							name: namespace,
+							labels: expect.objectContaining({
+								revision: "updated-before-watch",
+							}),
+						}),
+					}),
+				);
+				expect(informer.get(namespace)?.metadata?.labels?.revision).toBe("updated-before-watch");
+			});
+		} finally {
+			await informer.stop();
+			await core.deleteNamespace({ name: namespace });
+		}
+	});
+
+	it("does not miss a pod update after a list resourceVersion", async () => {
+		const updated = vi.fn<(obj: V1Pod) => void>();
+		const namespace = await getTestNamespace();
+		await createPod({
+			metadata: {
+				name: "updated-after-list-resource-version",
+				labels: { revision: "initial" },
+			},
+		});
+
+		const informer = k8s.makeInformer(kubeConfig, `/api/v1/namespaces/${namespace}/pods`, () =>
+			core.listNamespacedPod({ namespace }),
+		);
+		informer.on("update", updated);
+
+		try {
+			await informer.start();
+			await replacePod("updated-after-list-resource-version", (current) => {
+				current.metadata = {
+					...current.metadata,
+					labels: { revision: "updated-after-watch" },
+				};
+			});
+
+			await waitFor(() => {
+				expect(updated).toHaveBeenCalledWith(
+					expect.objectContaining({
+						metadata: expect.objectContaining({
+							name: "updated-after-list-resource-version",
+							namespace,
+							labels: expect.objectContaining({
+								revision: "updated-after-watch",
+							}),
+						}),
+					}),
+				);
+				expect(
+					informer.get("updated-after-list-resource-version", namespace)?.metadata?.labels
+						?.revision,
+				).toBe("updated-after-watch");
 			});
 		} finally {
 			await informer.stop();
@@ -454,7 +549,7 @@ kubernetes.describe("Informer", ({ core, k8s, kubeConfig, getTestNamespace, crea
 		const podName = "shared-name";
 
 		await createPod({ metadata: { name: podName } });
-		await createPod({ metadata: { name: podName } }, otherNamespace);
+		await createPod({ metadata: { name: podName, namespace: otherNamespace } });
 
 		const informer = k8s.makeInformer(kubeConfig, "/api/v1/pods", () =>
 			core.listPodForAllNamespaces(),

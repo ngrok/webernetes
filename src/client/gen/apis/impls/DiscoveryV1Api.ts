@@ -54,11 +54,12 @@ export class DiscoveryV1Api implements DiscoveryV1ApiInterface {
 	): Promise<V1EndpointSliceList> {
 		return await rethrowApiErrors(async () => {
 			const selector = parseLabelSelector(request.labelSelector);
+			const list = await this.endpointSlices.listWithResourceVersion();
 			return {
 				apiVersion: "discovery.k8s.io/v1",
 				kind: "EndpointSliceList",
-				metadata: { resourceVersion: "" },
-				items: filterByLabels(await this.endpointSlices.list(), selector),
+				metadata: { resourceVersion: list.resourceVersion },
+				items: filterByLabels(list.items, selector),
 			};
 		});
 	}
@@ -68,11 +69,12 @@ export class DiscoveryV1Api implements DiscoveryV1ApiInterface {
 	): Promise<V1EndpointSliceList> {
 		return await rethrowApiErrors(async () => {
 			const selector = parseLabelSelector(request.labelSelector);
+			const list = await this.endpointSlices.listWithResourceVersion(request.namespace);
 			return {
 				apiVersion: "discovery.k8s.io/v1",
 				kind: "EndpointSliceList",
-				metadata: { resourceVersion: "" },
-				items: filterByLabels(await this.endpointSlices.list(request.namespace), selector),
+				metadata: { resourceVersion: list.resourceVersion },
+				items: filterByLabels(list.items, selector),
 			};
 		});
 	}

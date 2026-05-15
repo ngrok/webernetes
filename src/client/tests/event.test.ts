@@ -2,7 +2,8 @@ import { expect, it } from "vitest";
 import type { CoreV1Event } from "../gen/models";
 import { kubernetes } from "../../test/harnesses/kubernetes";
 
-kubernetes.describe("Events", ({ core, getSuiteNamespace }) => {
+kubernetes.describe("Events", ({ core, helpers }) => {
+	const { getSuiteNamespace } = helpers;
 	async function createEvent(event: Partial<CoreV1Event>): Promise<CoreV1Event> {
 		const namespace = await getSuiteNamespace();
 		return await core.createNamespacedEvent({

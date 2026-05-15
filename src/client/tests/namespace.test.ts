@@ -1,8 +1,8 @@
 import { expect, it } from "vitest";
 import { kubernetes } from "../../test/harnesses/kubernetes";
-import { waitFor } from "../../test/wait";
 
-kubernetes.describe("Namespaces", ({ core, k8s }) => {
+kubernetes.describe("Namespaces", ({ core, k8s, helpers }) => {
+	const { waitFor } = helpers;
 	it("should be able to create a namespace", async () => {
 		const namespace = await core.createNamespace({
 			body: {

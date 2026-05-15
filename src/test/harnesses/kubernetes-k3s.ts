@@ -147,19 +147,80 @@ async function fetchNodePort(
 	const container = await getK3sContainer();
 	const path = request?.path ?? "/";
 	const target = `http://127.0.0.1:${nodePort}${path}`;
-	const result = await container.exec([
-		"sh",
-		"-c",
-		`if command -v wget >/dev/null 2>&1; then wget -q -O - ${shellQuote(
-			target,
-		)}; else curl -fsSL ${shellQuote(target)}; fi`,
-	]);
+	const result = await container.exec(["sh", "-c", nodePortFetchScript(target, request)]);
 	if (result.exitCode !== 0) {
 		throw new Error(result.stderr || result.output || `NodePort request failed: ${target}`);
 	}
+	const parsed = parseNodePortFetchOutput(result.stdout);
 	return {
-		status: 200,
-		body: result.stdout,
+		status: parsed.status,
+		body: parsed.body,
+	};
+}
+
+function nodePortFetchScript(target: string, request: NodePortRequest | undefined): string {
+	const curlArgs = [
+		"-sS",
+		"-o",
+		'"$body_file"',
+		"-w",
+		"%{http_code}",
+		...curlRequestArgs(request),
+		shellQuote(target),
+	];
+	return [
+		"body_file=$(mktemp)",
+		"headers_file=$(mktemp)",
+		'trap \'rm -f "$body_file" "$headers_file"\' EXIT',
+		"if command -v curl >/dev/null 2>&1; then",
+		`  status=$(curl ${curlArgs.join(" ")})`,
+		"  code=$?",
+		"else",
+		unsupportedWgetRequest(request)
+			? "  echo 'curl is required for this NodePort request' >&2; exit 1"
+			: `  wget -q -O "$body_file" -S ${shellQuote(target)} 2>"$headers_file"
+  code=$?
+  status=$(awk '/^  HTTP\\//{code=$2} END{print code}' "$headers_file")`,
+		"fi",
+		'if [ -z "$status" ] || [ "$status" = "000" ]; then',
+		"  exit $code",
+		"fi",
+		'printf "__WEBERNETES_NODEPORT_STATUS__%s\\n" "$status"',
+		'printf "__WEBERNETES_NODEPORT_BODY__"',
+		'base64 < "$body_file" | tr -d "\\n"',
+		'printf "\\n"',
+	].join("\n");
+}
+
+function curlRequestArgs(request: NodePortRequest | undefined): string[] {
+	const args: string[] = [];
+	if (request?.method) {
+		args.push("-X", shellQuote(request.method));
+	}
+	for (const [name, value] of Object.entries(request?.headers ?? {})) {
+		args.push("-H", shellQuote(`${name}: ${value}`));
+	}
+	if (request?.body !== undefined) {
+		args.push("--data-binary", shellQuote(request.body));
+	}
+	return args;
+}
+
+function unsupportedWgetRequest(request: NodePortRequest | undefined): boolean {
+	return Boolean(
+		request?.method || request?.body !== undefined || Object.keys(request?.headers ?? {}).length,
+	);
+}
+
+function parseNodePortFetchOutput(output: string): NodePortResponse {
+	const status = output.match(/^__WEBERNETES_NODEPORT_STATUS__(\d+)$/m)?.[1];
+	const body = output.match(/^__WEBERNETES_NODEPORT_BODY__(.*)$/m)?.[1];
+	if (!status || body === undefined) {
+		throw new Error("NodePort request did not return a parseable response");
+	}
+	return {
+		status: Number(status),
+		body: Buffer.from(body, "base64").toString("utf8"),
 	};
 }
 

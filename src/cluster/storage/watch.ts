@@ -13,6 +13,7 @@ export class Watcher<T> extends EventEmitter {
 
 		this.watcher.on("put", (event, prev) => {
 			const value = JSON.parse(event.value.toString()) as T;
+			this.withResourceVersion(value, event.mod_revision);
 			if (prev) {
 				this.emit("event", "MODIFIED", value);
 			} else {
@@ -22,6 +23,7 @@ export class Watcher<T> extends EventEmitter {
 
 		this.watcher.on("delete", (event) => {
 			const value = JSON.parse(event.value.toString()) as T;
+			this.withResourceVersion(value, event.mod_revision);
 			this.emit("event", "DELETED", value);
 		});
 
@@ -46,5 +48,11 @@ export class Watcher<T> extends EventEmitter {
 
 	public async cancel(): Promise<void> {
 		await this.watcher.cancel();
+	}
+
+	private withResourceVersion(value: T, resourceVersion: string): void {
+		const object = value as { metadata?: { resourceVersion?: string } };
+		object.metadata ??= {};
+		object.metadata.resourceVersion = resourceVersion;
 	}
 }

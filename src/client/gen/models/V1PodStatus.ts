@@ -1,5 +1,6 @@
 import { V1ContainerStatus } from "./V1ContainerStatus";
 import { V1HostIP } from "./V1HostIP";
+import { V1NodeAllocatableResourceClaimStatus } from "./V1NodeAllocatableResourceClaimStatus";
 import { V1PodCondition } from "./V1PodCondition";
 import { V1PodExtendedResourceClaimStatus } from "./V1PodExtendedResourceClaimStatus";
 import { V1PodIP } from "./V1PodIP";
@@ -14,6 +15,7 @@ export interface V1PodStatus {
 	initContainerStatuses?: Array<V1ContainerStatus>;
 	message?: string;
 	nominatedNodeName?: string;
+	nodeAllocatableResourceClaimStatuses?: Array<V1NodeAllocatableResourceClaimStatus>;
 	observedGeneration?: number;
 	phase?: string;
 	podIP?: string;
