@@ -167,7 +167,7 @@ export class Channel<T> implements AsyncIterable<T> {
 		});
 	}
 
-	private tryReceive(): ChannelReceive<T> | undefined {
+	tryReceive(): ChannelReceive<T> | undefined {
 		if (this.values.length > 0) {
 			const value = this.values.shift() as T;
 			this.drainSender();

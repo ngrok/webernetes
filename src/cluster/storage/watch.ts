@@ -7,6 +7,8 @@ function toError(value: unknown): Error {
 	return value instanceof Error ? value : new Error(String(value));
 }
 
+// Based off of kubernetes/staging/src/k8s.io/apimachinery/pkg/watch/watch.go.
+// TODO(samwho): rewrite this to use Channel instead of EventEmitter.
 export class Watcher<T> extends EventEmitter {
 	public constructor(private readonly watcher: EtcdWatcher) {
 		super();

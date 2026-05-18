@@ -20,17 +20,22 @@ General rules for this repository:
 - The simulator is not currently trying to support init containers, ephemeral
   containers, or Kubernetes' volumes / CSI subsystem. Keep new simulator work
   scoped to regular containers unless a task explicitly changes that scope.
-- The simulator's CRI/runtime state is owned by the kubelet and should not
-  independently contain pod sandboxes or containers for pods that are absent
-  from the apiserver. Unlike the real kubelet, there is currently no runtime-only
-  pod discovery/cleanup path for orphaned containers. If new code needs to
-  create or retain runtime containers without an apiserver Pod, add that
-  reconciliation path deliberately instead of treating orphan runtime state as
-  an expected condition.
+- The simulator is not currently modeling pod/container resource requests,
+  limits, resize policy, in-place pod vertical scaling, or kubelet
+  `allocationManager` behavior. Do not add allocation-manager parity code in
+  pod workers unless the task explicitly expands simulator resource handling.
+- The simulator has partial static pod bookkeeping, but does not currently
+  support static pods end to end. Do not add static-pod-specific behavior unless
+  the task explicitly expands static pod support.
 - In cluster simulation code, do not call global timer/time APIs such as
   `setTimeout`, `setInterval`, or `Date.now` directly. Route timeout, interval,
   and current-time behavior through the cluster `Clock` instance so the
   simulator can be paused and controlled deterministically.
+- When a function or constructor accepts a `context.Context`, make that argument
+  the first parameter and name it `ctx`, matching Kubernetes Go conventions.
+- When mirroring Go `iota` enums in TypeScript, use string unions for the named
+  enum values. If code needs to model the Go zero value, use the first `iota`
+  enum value; do not add an empty string to the union to emulate a zero value.
 - Simulator behavior is currently targeting Kubernetes 1.36. A local checkout
   of `kubernetes/kubernetes` at commit
   `ecf6decece6a6de25a57aad9ba90b6ce580f6f78` is available at

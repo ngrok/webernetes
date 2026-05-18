@@ -12,6 +12,9 @@ export const configHashAnnotationKey = "kubernetes.io/config.hash";
 // Models kubernetes/pkg/kubelet/types/pod_update.go ApiserverSource.
 export const apiserverSource = "api";
 
+// Models kubernetes/pkg/kubelet/types/pod_update.go SyncPodType.
+export type SyncPodType = "create" | "kill" | "sync" | "update";
+
 // Models kubernetes/pkg/kubelet/types/pod_update.go IsMirrorPod.
 export function isMirrorPod(pod: V1Pod): boolean {
 	return pod.metadata?.annotations?.[configMirrorAnnotationKey] !== undefined;

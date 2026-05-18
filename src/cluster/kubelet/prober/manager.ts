@@ -33,17 +33,13 @@ export class ProbeManager {
 	// through their stop channel and then wait for their async cleanup to finish
 	// before the cluster clock and runtime are torn down.
 	private readonly workerRuns = new Map<ProbeWorker, Promise<void>>();
-	private readonly start: Date;
+	readonly startedAt: Date;
 
 	constructor(private readonly options: ProbeManagerOptions) {
 		this.prober = new Prober(options.runtime);
 		this.runtime = options.runtime;
 		this.statusManager = options.statusManager;
-		this.start = options.clock.now();
-	}
-
-	get startedAt(): Date {
-		return this.start;
+		this.startedAt = options.clock.now();
 	}
 
 	// Models kubernetes/pkg/kubelet/prober/prober_manager.go AddPod.
@@ -261,7 +257,7 @@ export class ProbeManager {
 
 		if (
 			containerStartTime !== undefined &&
-			containerStartTime < kubeletRestartGracePeriod(this.start)
+			containerStartTime < kubeletRestartGracePeriod(this.startedAt)
 		) {
 			if (!ready) {
 				const containerId = parseContainerID(containerStatus.containerID);

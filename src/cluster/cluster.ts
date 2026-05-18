@@ -46,7 +46,7 @@ export class Cluster {
 	readonly serviceCIDR: string | undefined;
 	readonly nodePortRange: NodePortRange;
 	readonly dnsServiceIp = KUBE_DNS_CLUSTER_IP;
-	private readonly ctx: context.Context;
+	readonly ctx: context.Context;
 	private readonly cancelContext: context.CancelFunc;
 	private closePromise: Promise<void> | undefined;
 
@@ -74,27 +74,27 @@ export class Cluster {
 		];
 
 		this.imageRegistry.register(
-			"k8s-web-simulator/kube-scheduler:latest",
+			"webernetes/kube-scheduler:latest",
 			new Scheduler(
 				this.kubeConfig,
 				this.servers.map((server) => server.name),
 			),
 		);
 		this.imageRegistry.register(
-			"k8s-web-simulator/kube-proxy:latest",
+			"webernetes/kube-proxy:latest",
 			new KubeProxy({
 				kubeConfig: this.kubeConfig,
 				network: this.network,
 			}),
 		);
 		this.imageRegistry.register(
-			"k8s-web-simulator/endpointslice-controller:latest",
+			"webernetes/endpointslice-controller:latest",
 			new EndpointSliceController({
 				kubeConfig: this.kubeConfig,
 			}),
 		);
 		this.imageRegistry.register(
-			"k8s-web-simulator/coredns:latest",
+			"webernetes/coredns:latest",
 			new CoreDNS({
 				kubeConfig: this.kubeConfig,
 			}),
@@ -102,6 +102,9 @@ export class Cluster {
 	}
 
 	public async init() {
+		// This sets up some key spaces in this.etcd for allocating IP ranges and
+		// node port ranges for services. It's quite hacky and inelegant and I would
+		// like to find a better way in future.
 		await ServiceStore.initialize(this.etcd, {
 			serviceCIDR: this.serviceCIDR,
 			nodePortRange: this.nodePortRange,
@@ -117,7 +120,7 @@ export class Cluster {
 			body: { metadata: { name: "kube-system" } },
 		});
 
-		// Seed the initial servers.
+		// Create Nodes for the initial servers.
 		for (const server of this.servers) {
 			await this.api.corev1.createNode({
 				body: {
@@ -133,12 +136,12 @@ export class Cluster {
 			await server.boot(this.ctx);
 		}
 
-		await this.createControlPlanePod("kube-scheduler", "k8s-web-simulator/kube-scheduler:latest");
+		await this.createControlPlanePod("kube-scheduler", "webernetes/kube-scheduler:latest");
 		await this.createControlPlanePod(
 			"endpointslice-controller",
-			"k8s-web-simulator/endpointslice-controller:latest",
+			"webernetes/endpointslice-controller:latest",
 		);
-		await this.createControlPlanePod("kube-proxy", "k8s-web-simulator/kube-proxy:latest");
+		await this.createControlPlanePod("kube-proxy", "webernetes/kube-proxy:latest");
 		// kube-dns requires a ClusterIP to be set so we have an IP we can use in
 		// each pod's DNS config.
 		await this.api.corev1.createNamespacedService({
@@ -163,7 +166,7 @@ export class Cluster {
 		});
 		await this.createControlPlanePod(
 			"coredns",
-			"k8s-web-simulator/coredns:latest",
+			"webernetes/coredns:latest",
 			{
 				"k8s-app": "kube-dns",
 			},
@@ -204,7 +207,7 @@ export class Cluster {
 		if (!this.closePromise) {
 			this.cancelContext();
 			this.closePromise = (async () => {
-				await Promise.all(this.servers.map(async (server) => await server.close()));
+				await Promise.all(this.servers.map((server) => server.close()));
 				this.etcd.close();
 				this.clock.clear();
 			})();
@@ -231,6 +234,8 @@ export class Cluster {
 					},
 				},
 				spec: {
+					// For now, all control plane pods are scheduled to the first server.
+					// This is a fairly arbitrary choice.
 					nodeName: this.servers[0].name,
 					containers: [{ name, image, ports }],
 				},

@@ -1,5 +1,33 @@
 import type { V1Pod } from "../../../client";
 
+// Models kubernetes/pkg/kubelet/container/runtime.go State.
+export type State = "Created" | "Running" | "Exited";
+
+// Models kubernetes/pkg/kubelet/container/runtime.go Pod.
+export interface Pod {
+	id: string;
+	name: string;
+	namespace: string;
+	createdAt: number;
+	containers: Container[];
+	sandboxes: Container[];
+	timestamp: Date;
+}
+
+// Models kubernetes/pkg/kubelet/container/runtime.go Container.
+export interface Container {
+	id: string;
+	name: string;
+	image: string;
+	imageID: string;
+	imageRef: string;
+	imageRuntimeHandler: string;
+	hash: number;
+	state: State;
+	podSandboxID: string;
+	createdAt: number;
+}
+
 // Models kubernetes/pkg/kubelet/container/runtime.go GetPodFullName.
 export function getPodFullName(pod: V1Pod): string {
 	// Use underscore as the delimiter because it is not allowed in pod name
@@ -19,4 +47,21 @@ export function parsePodFullName(podFullName: string): [string, string] {
 		throw new Error(`failed to parse the pod full name "${podFullName}"`);
 	}
 	return [parts[0] ?? "", parts[1] ?? ""];
+}
+
+// Models kubernetes/pkg/kubelet/container/runtime.go Pod.ToAPIPod.
+export function toAPIPod(pod: Pod): V1Pod {
+	return {
+		metadata: {
+			uid: pod.id,
+			name: pod.name,
+			namespace: pod.namespace,
+		},
+		spec: {
+			containers: pod.containers.map((container) => ({
+				name: container.name,
+				image: container.image,
+			})),
+		},
+	};
 }

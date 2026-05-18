@@ -2,12 +2,18 @@ import type { Clock } from "../../clock";
 import { select } from "../../go/channel";
 import * as context from "../../go/context";
 import * as time from "../../go/time";
+import type { V1Pod } from "../../client";
 import type { KubeConfig } from "../../client/types";
 import { ipToNumber } from "../../net";
 import type { DnsHandler, DnsListener, DnsRecordType, DnsResponse } from "../cni/dns";
 import { NetworkError } from "../cni/error";
 import type { HttpHandler, HttpListener, HttpRequest, HttpResponse } from "../cni/http";
 import { ClusterNetwork, type NetworkRegistration } from "../cni/network";
+import type {
+	Container as KubeContainer,
+	Pod as RuntimePod,
+	State as ContainerState,
+} from "../kubelet/container/runtime";
 import type { ImageDefinition } from "./image";
 import { ImageRegistry } from "./image";
 
@@ -80,12 +86,18 @@ export interface ExecResult {
 }
 
 export interface RuntimeOptions {
+	ctx: context.Context;
 	clock: Clock;
 	kubeConfig: KubeConfig;
 	network: ClusterNetwork;
 	podCIDR: string;
 	imageRegistry: ImageRegistry;
 	idPrefix?: string;
+}
+
+interface ListOptions {
+	podUid?: string;
+	onlyRunningReady?: boolean;
 }
 
 class ProcessExit extends Error {
@@ -183,7 +195,6 @@ function getContainersToDeleteInPod(
 	return candidates.slice(containersToKeep);
 }
 
-export type ContainerState = "Created" | "Running" | "Exited";
 export type PodSandboxState = "Ready" | "NotReady";
 export type ProcessState = "Created" | "Running" | "Exited";
 
@@ -214,24 +225,6 @@ export interface ContainerStatus {
 	ready: boolean;
 }
 
-export interface RuntimeContainer {
-	id: string;
-	name: string;
-	state: ContainerState;
-	createdAt: number;
-}
-
-export interface RuntimePod {
-	id: string;
-	name: string;
-	namespace: string;
-	timestamp: Date;
-	containers: RuntimeContainer[];
-	sandboxes: RuntimeContainer[];
-	containerStatuses: ContainerStatus[];
-	sandboxStatuses: PodSandboxStatus[];
-}
-
 export interface PodRuntimeStatus {
 	id: string;
 	ip?: string;
@@ -240,6 +233,16 @@ export interface PodRuntimeStatus {
 	sandboxStatuses: PodSandboxStatus[];
 }
 
+// This doesn't _really_ model anything specific from k8s, it's more a rough
+// approximation of a container runtime that does what it needs to in order to
+// support what I need to work for probing. In future I would like this to
+// better reflect k8s in that we'll have a kubeGenericRuntimeManager sitting
+// between the kubelet and the CRI.
+//
+// Step 1 for that would likely be implementing the CRI interface found in
+// staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api.proto:24 and then making
+// this adhere to it, and anything above this accept the interface rather than
+// this class.
 export class Runtime {
 	readonly clock: Clock;
 	readonly kubeConfig: KubeConfig;
@@ -250,6 +253,8 @@ export class Runtime {
 	private readonly sandboxes = new Map<string, PodSandboxInstance>();
 	private readonly containers = new Map<string, ContainerInstance>();
 	private readonly processes = new Map<number, ProcessInstance>();
+	private readonly ctx: context.Context;
+	private readonly cancelContext: context.CancelFunc;
 	private nextSandboxId = 1;
 	private nextContainerId = 1;
 	private nextPid = 1;
@@ -261,13 +266,14 @@ export class Runtime {
 		this.imageRegistry = options.imageRegistry;
 		this.podCIDR = options.podCIDR;
 		this.idPrefix = options.idPrefix ?? "";
+		[this.ctx, this.cancelContext] = context.withCancel(options.ctx);
 	}
 
 	async runPodSandbox(config: PodSandboxConfig): Promise<string> {
 		const sandbox = new PodSandboxInstance(
 			`${this.idPrefix}sandbox-${this.nextSandboxId++}`,
 			config,
-			this.nowMs(),
+			this.clock.nowMs(),
 		);
 		sandbox.setNetworkRegistration(this.network.setupPodSandbox(sandbox, this.podCIDR));
 		this.sandboxes.set(sandbox.id, sandbox);
@@ -298,7 +304,23 @@ export class Runtime {
 		this.sandboxes.delete(podSandboxId);
 	}
 
+	// Models kubernetes/pkg/kubelet/kuberuntime/kuberuntime_manager.go KillPod.
+	async killPod(
+		pod: V1Pod | undefined,
+		runningPod: RuntimePod,
+		gracePeriodOverride: number | undefined,
+	): Promise<void> {
+		void pod;
+		for (const container of runningPod.containers) {
+			await this.stopContainer(container.id, gracePeriodOverride);
+		}
+		for (const sandbox of runningPod.sandboxes) {
+			await this.stopPodSandbox(sandbox.id);
+		}
+	}
+
 	async close(): Promise<void> {
+		this.cancelContext();
 		for (const sandbox of [...this.sandboxes.values()]) {
 			await this.removePodSandbox(sandbox.id);
 		}
@@ -339,8 +361,67 @@ export class Runtime {
 	}
 
 	getPodSandboxesByPodUid(podUid: string): PodSandboxInstance[] {
+		return this.getSandboxes({ podUid });
+	}
+
+	// Models kubernetes/pkg/kubelet/kuberuntime/kuberuntime_manager.go GetPods.
+	getPods(all: boolean): RuntimePod[] {
+		const pods = this.getPodsInternal({ onlyRunningReady: !all });
+		return [...pods.values()].toSorted((left, right) => right.createdAt - left.createdAt);
+	}
+
+	// Models kubernetes/pkg/kubelet/kuberuntime/kuberuntime_manager.go GetPod.
+	getPod(podUid: string): RuntimePod | undefined {
+		return this.getPodsInternal({ podUid }).get(podUid);
+	}
+
+	// Models kubernetes/pkg/kubelet/kuberuntime/kuberuntime_manager.go getPods.
+	private getPodsInternal(opts: ListOptions): Map<string, RuntimePod> {
+		const pods = new Map<string, RuntimePod>();
+		const timestamp = this.clock.now();
+		const sandboxes = this.getSandboxes(opts);
+		for (const sandbox of sandboxes) {
+			let pod = pods.get(sandbox.uid);
+			if (!pod) {
+				pod = {
+					id: sandbox.uid,
+					name: sandbox.name,
+					namespace: sandbox.namespace,
+					createdAt: 0,
+					timestamp,
+					containers: [],
+					sandboxes: [],
+				};
+				pods.set(sandbox.uid, pod);
+			}
+			pod.sandboxes.push(this.sandboxToKubeContainer(sandbox));
+			pod.createdAt = sandbox.createdAt;
+		}
+
+		const containers = this.getContainers(opts);
+		for (const container of containers) {
+			let pod = pods.get(container.sandbox.uid);
+			if (!pod) {
+				pod = {
+					id: container.sandbox.uid,
+					name: container.sandbox.name,
+					namespace: container.sandbox.namespace,
+					createdAt: 0,
+					timestamp,
+					containers: [],
+					sandboxes: [],
+				};
+				pods.set(container.sandbox.uid, pod);
+			}
+			pod.containers.push(this.toKubeContainer(container));
+		}
+		return pods;
+	}
+
+	private getSandboxes(opts: ListOptions): PodSandboxInstance[] {
 		return [...this.sandboxes.values()]
-			.filter((sandbox) => sandbox.uid === podUid)
+			.filter((sandbox) => opts.podUid === undefined || sandbox.uid === opts.podUid)
+			.filter((sandbox) => !opts.onlyRunningReady || sandbox.status().state === "Ready")
 			.toSorted(
 				(left, right) =>
 					right.createdAt - left.createdAt ||
@@ -349,45 +430,33 @@ export class Runtime {
 			);
 	}
 
-	getPods(_all: boolean): RuntimePod[] {
-		const podUIDs = new Set([...this.sandboxes.values()].map((sandbox) => sandbox.uid));
-		return [...podUIDs]
-			.map((podUID) => this.getPod(podUID))
-			.filter((pod): pod is RuntimePod => pod !== undefined);
-	}
-
-	getPod(podUid: string): RuntimePod | undefined {
-		const sandboxes = this.getPodSandboxesByPodUid(podUid);
-		const latest = sandboxes[0];
-		if (!latest) {
-			return undefined;
-		}
-		return {
-			id: podUid,
-			name: latest.name,
-			namespace: latest.namespace,
-			timestamp: this.clock.now(),
-			containers: sandboxes.flatMap((sandbox) =>
-				[...sandbox.containers.values()].map((container) => this.runtimeContainer(container)),
-			),
-			sandboxes: sandboxes.map((sandbox) => this.runtimeSandboxContainer(sandbox)),
-			containerStatuses: sandboxes.flatMap((sandbox) =>
-				[...sandbox.containers.values()].map((container) => container.status()),
-			),
-			sandboxStatuses: sandboxes.map((sandbox) => sandbox.status()),
-		};
+	private getContainers(opts: ListOptions): ContainerInstance[] {
+		return [...this.containers.values()]
+			.filter((container) => opts.podUid === undefined || container.sandbox.uid === opts.podUid)
+			.filter((container) => !opts.onlyRunningReady || container.status().state === "Running")
+			.toSorted(
+				(left, right) => right.createdAt - left.createdAt || right.id.localeCompare(left.id),
+			);
 	}
 
 	getPodStatus(pod: RuntimePod): PodRuntimeStatus {
-		const ips = pod.sandboxStatuses
+		const containerStatuses = pod.containers.flatMap((container) => {
+			const status = this.containers.get(container.id)?.status();
+			return status ? [status] : [];
+		});
+		const sandboxStatuses = pod.sandboxes.flatMap((sandbox) => {
+			const status = this.sandboxes.get(sandbox.id)?.status();
+			return status ? [status] : [];
+		});
+		const ips = sandboxStatuses
 			.map((status) => status.network?.ip)
 			.filter((ip): ip is string => ip !== undefined);
 		return {
 			id: pod.id,
 			ip: ips[0],
 			ips,
-			containerStatuses: pod.containerStatuses.map((status) => ({ ...status })),
-			sandboxStatuses: pod.sandboxStatuses.map((status) => ({
+			containerStatuses: containerStatuses.map((status) => ({ ...status })),
+			sandboxStatuses: sandboxStatuses.map((status) => ({
 				...status,
 				metadata: { ...status.metadata },
 				network: status.network ? { ...status.network } : undefined,
@@ -504,13 +573,12 @@ export class Runtime {
 		argv: readonly string[],
 		run: (context: ProcessContext, argv: readonly string[]) => Promise<number>,
 	): ProcessInstance {
-		const process = new ProcessInstance(this.nextPid++, container, argv, run, this);
+		const process = new ProcessInstance(this.ctx, this.nextPid++, container, argv, run, this);
 		this.processes.set(process.pid, process);
+		void process.wait().finally(() => {
+			this.processes.delete(process.pid);
+		});
 		return process;
-	}
-
-	forgetProcess(pid: number): void {
-		this.processes.delete(pid);
 	}
 
 	async sleepUntil(ctx: context.Context, ms: number, exitCode: () => number): Promise<void> {
@@ -523,10 +591,6 @@ export class Runtime {
 		if (selected === "done") {
 			throw new ProcessExit(exitCode());
 		}
-	}
-
-	nowMs(): number {
-		return this.clock.nowMs();
 	}
 
 	private async waitForProcess(
@@ -567,22 +631,37 @@ export class Runtime {
 		return container;
 	}
 
-	private runtimeContainer(container: ContainerInstance): RuntimeContainer {
+	// Models kubernetes/pkg/kubelet/kuberuntime/helpers.go toKubeContainer.
+	private toKubeContainer(container: ContainerInstance): KubeContainer {
 		const status = container.status();
+		const imageID = status.imageRef;
 		return {
 			id: status.id,
 			name: status.name,
+			imageID,
+			imageRef: status.imageRef,
+			imageRuntimeHandler: "",
+			image: container.config.image.image,
+			hash: 0,
 			state: status.state,
+			podSandboxID: container.sandbox.id,
 			createdAt: status.createdAt,
 		};
 	}
 
-	private runtimeSandboxContainer(sandbox: PodSandboxInstance): RuntimeContainer {
+	// Models kubernetes/pkg/kubelet/kuberuntime/helpers.go sandboxToKubeContainer.
+	private sandboxToKubeContainer(sandbox: PodSandboxInstance): KubeContainer {
 		const status = sandbox.status();
 		return {
 			id: status.id,
-			name: status.metadata.name,
+			name: "",
+			image: "",
+			imageID: "",
+			imageRef: "",
+			imageRuntimeHandler: "",
+			hash: 0,
 			state: status.state === "Ready" ? "Running" : "Exited",
+			podSandboxID: status.id,
 			createdAt: status.createdAt,
 		};
 	}
@@ -687,15 +766,11 @@ export class ContainerInstance {
 		this.args = config.args ?? [];
 		this.env = new Map(Object.entries(config.env ?? {}));
 		this.ports = config.ports ?? [];
-		this.createdAt = runtime.nowMs();
+		this.createdAt = runtime.clock.nowMs();
 	}
 
 	readonly name: string;
 	readonly imageRef: string;
-
-	get pod(): PodSandboxInstance {
-		return this.sandbox;
-	}
 
 	start(): ProcessInstance {
 		if (this.state === "Running") {
@@ -704,7 +779,7 @@ export class ContainerInstance {
 		const argv = this.startArgv();
 		const process = this.runtime.createProcess(this, argv, this.image.start.bind(this.image));
 		this.state = "Running";
-		this.startedAtMs = this.runtime.nowMs();
+		this.startedAtMs = this.runtime.clock.nowMs();
 		this.finishedAtMs = undefined;
 		this.lastExitCode = undefined;
 		this.mainProcess = process;
@@ -737,7 +812,7 @@ export class ContainerInstance {
 			);
 		}
 		this.state = "Exited";
-		this.finishedAtMs = this.runtime.nowMs();
+		this.finishedAtMs = this.runtime.clock.nowMs();
 		this.sandbox.setReady(false);
 	}
 
@@ -769,7 +844,7 @@ export class ProcessInstance {
 	private killedExitCode: number | undefined;
 	private stdoutBuffer = "";
 	private stderrBuffer = "";
-	private readonly ctx: context.Context;
+	readonly ctx: context.Context;
 	private readonly cancelContext: context.CancelFunc;
 	private readonly listeners: Array<{ close(): void }> = [];
 	private resolveWait: (code: number) => void = () => {};
@@ -778,14 +853,15 @@ export class ProcessInstance {
 	});
 
 	constructor(
+		ctx: context.Context,
 		readonly pid: number,
 		readonly container: ContainerInstance,
 		readonly argv: readonly string[],
 		private readonly run: (context: ProcessContext, argv: readonly string[]) => Promise<number>,
-		private readonly runtime: Runtime,
+		readonly runtime: Runtime,
 	) {
-		this.startedAt = runtime.nowMs();
-		[this.ctx, this.cancelContext] = context.withCancel(context.background());
+		this.startedAt = runtime.clock.nowMs();
+		[this.ctx, this.cancelContext] = context.withCancel(ctx);
 	}
 
 	readonly startedAt: number;
@@ -800,10 +876,6 @@ export class ProcessInstance {
 
 	get exitCode(): number | undefined {
 		return this.processExitCode;
-	}
-
-	get context(): context.Context {
-		return this.ctx;
 	}
 
 	get abortExitCode(): number {
@@ -823,7 +895,7 @@ export class ProcessInstance {
 			throw new Error(`process ${this.pid} was already started`);
 		}
 		this.processState = "Running";
-		const context = new ProcessContext(this, this.runtime);
+		const context = new ProcessContext(this);
 		void this.run(context, this.argv)
 			.then((code) => this.finish(code))
 			.catch((error: unknown) => {
@@ -881,10 +953,9 @@ export class ProcessInstance {
 			return;
 		}
 		this.processState = "Exited";
-		this.finishedAtMs = this.runtime.nowMs();
+		this.finishedAtMs = this.runtime.clock.nowMs();
 		this.processExitCode = code;
 		this.cancelContext();
-		this.runtime.forgetProcess(this.pid);
 		for (const listener of this.listeners.splice(0)) {
 			listener.close();
 		}
@@ -893,61 +964,34 @@ export class ProcessInstance {
 }
 
 export class ProcessContext implements context.Context {
-	constructor(
-		private readonly process: ProcessInstance,
-		private readonly runtime: Runtime,
-	) {}
+	readonly pid: number;
+	readonly argv: readonly string[];
+	readonly env: ReadonlyMap<string, string>;
+	readonly container: ContainerInstance;
+	readonly pod: PodSandboxInstance;
+	readonly fs: ContainerFileSystem;
+	readonly runtime: Runtime;
+	readonly kubeConfig: KubeConfig;
+	readonly clock: Clock;
 
-	get pid(): number {
-		return this.process.pid;
-	}
-
-	get argv(): readonly string[] {
-		return this.process.argv;
-	}
-
-	get env(): ReadonlyMap<string, string> {
-		return this.process.container.env;
-	}
-
-	get container(): ContainerInstance {
-		return this.process.container;
-	}
-
-	fsRead(path: string): string | undefined {
-		return this.process.container.fs.read(path);
-	}
-
-	fsWrite(path: string, contents = ""): void {
-		this.process.container.fs.write(path, contents);
-	}
-
-	fsDelete(path: string): boolean {
-		return this.process.container.fs.delete(path);
-	}
-
-	fsHas(path: string): boolean {
-		return this.process.container.fs.has(path);
-	}
-
-	get pod(): PodSandboxInstance {
-		return this.process.container.pod;
-	}
-
-	get kubeConfig(): KubeConfig {
-		return this.runtime.kubeConfig;
-	}
-
-	get clock(): Clock {
-		return this.runtime.clock;
+	constructor(private readonly process: ProcessInstance) {
+		this.pid = process.pid;
+		this.argv = process.argv;
+		this.env = process.container.env;
+		this.container = process.container;
+		this.pod = process.container.sandbox;
+		this.fs = process.container.fs;
+		this.runtime = process.runtime;
+		this.kubeConfig = process.runtime.kubeConfig;
+		this.clock = process.runtime.clock;
 	}
 
 	done(): ReturnType<context.Context["done"]> {
-		return this.process.context.done();
+		return this.process.ctx.done();
 	}
 
 	err(): ReturnType<context.Context["err"]> {
-		return this.process.context.err();
+		return this.process.ctx.err();
 	}
 
 	exec(argv: string[], options?: ExecOptions): ProcessInstance {
@@ -963,13 +1007,13 @@ export class ProcessContext implements context.Context {
 	}
 
 	listenHttp(port: number, handler: HttpHandler): HttpListener {
-		const listener = this.process.container.pod.networkRegistration().bindHttp(port, handler);
+		const listener = this.pod.networkRegistration().bindHttp(port, handler);
 		this.process.trackListener(listener);
 		return listener;
 	}
 
 	listenDns(port: number, handler: DnsHandler): DnsListener {
-		const listener = this.process.container.pod.networkRegistration().bindDns(port, handler);
+		const listener = this.pod.networkRegistration().bindDns(port, handler);
 		this.process.trackListener(listener);
 		return listener;
 	}
@@ -991,7 +1035,7 @@ export class ProcessContext implements context.Context {
 	}
 
 	async resolveDns(name: string, type: DnsRecordType = "A"): Promise<DnsResponse> {
-		const dnsConfig = this.process.container.pod.config.dnsConfig;
+		const dnsConfig = this.pod.config.dnsConfig;
 		const serverIp = dnsConfig?.servers[0];
 		if (!serverIp) {
 			return { rcode: "NXDOMAIN", answers: [] };
@@ -1015,7 +1059,7 @@ export class ProcessContext implements context.Context {
 	}
 
 	sleep(ms: number): Promise<void> {
-		return this.runtime.sleepUntil(this.process.context, ms, () => this.process.abortExitCode);
+		return this.process.runtime.sleepUntil(this.process.ctx, ms, () => this.process.abortExitCode);
 	}
 
 	waitUntilKilled(): Promise<number> {

@@ -79,7 +79,7 @@ export class BaseImage implements ImageDefinition {
 			output.stderr("cat: missing operand\n");
 			return 1;
 		}
-		const contents = context.fsRead(path);
+		const contents = context.fs.read(path);
 		if (contents === undefined) {
 			output.stderr(`cat: can't open '${path}': No such file or directory\n`);
 			return 1;
@@ -90,7 +90,7 @@ export class BaseImage implements ImageDefinition {
 
 	private rm(context: ProcessContext, argv: readonly string[]): number {
 		for (const path of argv.filter((arg) => arg !== "-f")) {
-			context.fsDelete(path);
+			context.fs.delete(path);
 		}
 		return 0;
 	}
@@ -122,14 +122,14 @@ export class BaseImage implements ImageDefinition {
 
 	private test(context: ProcessContext, argv: readonly string[]): number {
 		if (argv[0] === "-f" && argv[1]) {
-			return context.fsHas(argv[1]) ? 0 : 1;
+			return context.fs.has(argv[1]) ? 0 : 1;
 		}
 		return 2;
 	}
 
 	private touch(context: ProcessContext, argv: readonly string[]): number {
 		for (const path of argv) {
-			context.fsWrite(path);
+			context.fs.write(path);
 		}
 		return 0;
 	}

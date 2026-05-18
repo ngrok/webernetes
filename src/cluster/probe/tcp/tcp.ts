@@ -16,7 +16,7 @@ export class TCPProber {
 		if (port === undefined) {
 			return "failure";
 		}
-		const host = action.host || container.pod.ip;
+		const host = action.host || container.sandbox.ip;
 		return this.runtime.network.canConnect(host, port) ? "success" : "failure";
 	}
 }

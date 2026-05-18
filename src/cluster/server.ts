@@ -23,6 +23,7 @@ export class Server {
 		this.podCIDR = options.podCIDR;
 		this.cluster = cluster;
 		this.runtime = new Runtime({
+			ctx: cluster.ctx,
 			clock: cluster.clock,
 			kubeConfig: cluster.kubeConfig,
 			network: cluster.network,

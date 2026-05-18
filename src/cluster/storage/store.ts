@@ -29,6 +29,11 @@ export interface StoreUpdateOptions {
 	skipValidateUpdate?: boolean;
 }
 
+// This is _sort of_ based off of the storage interface in
+// kubernetes/staging/src/k8s.io/apiserver/pkg/storage/interfaces.go. It's not
+// an exact replica in the same way that a lot of the kubelet code was written
+// to be, but it's designed to serve the same purpose: be the bridge between k8s
+// and etcd.
 export class Store<T extends Storable> {
 	constructor(
 		protected readonly etcd: Etcd,

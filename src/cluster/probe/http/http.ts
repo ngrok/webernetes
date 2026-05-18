@@ -22,7 +22,7 @@ export class HTTPProber {
 			return "failure";
 		}
 
-		const [target, request] = newRequestForHTTPGetAction(action, container.pod.ip, port);
+		const [target, request] = newRequestForHTTPGetAction(action, container.sandbox.ip, port);
 		try {
 			const response = await this.runtime.network.fetch(target, request);
 			return response.status >= 200 && response.status < 400 ? "success" : "failure";
