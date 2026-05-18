@@ -205,6 +205,8 @@ function makeDefaultData(id: string): Data {
 function makeDefaultStatus(id: string): PodRuntimeStatus {
 	return {
 		id,
+		name: "",
+		namespace: "default",
 		ips: [],
 		containerStatuses: [],
 		sandboxStatuses: [],

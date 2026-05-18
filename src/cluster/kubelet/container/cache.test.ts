@@ -58,6 +58,8 @@ describe("PodStatusCache", () => {
 function podStatus(id: string): PodRuntimeStatus {
 	return {
 		id,
+		name: "",
+		namespace: "default",
 		ip: "10.0.0.1",
 		ips: ["10.0.0.1"],
 		containerStatuses: [],

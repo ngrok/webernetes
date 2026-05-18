@@ -1,7 +1,20 @@
 import type { V1Pod } from "../../../client";
+import type { ContainerStatus, PodRuntimeStatus } from "../../cri";
+
+// Models kubernetes/pkg/kubelet/container/runtime.go ContainerID.
+export class ContainerID {
+	constructor(
+		readonly type: string,
+		readonly id: string,
+	) {}
+
+	toString(): string {
+		return `${this.type}://${this.id}`;
+	}
+}
 
 // Models kubernetes/pkg/kubelet/container/runtime.go State.
-export type State = "Created" | "Running" | "Exited";
+export type State = "Created" | "Running" | "Exited" | "Unknown";
 
 // Models kubernetes/pkg/kubelet/container/runtime.go Pod.
 export interface Pod {
@@ -26,6 +39,30 @@ export interface Container {
 	state: State;
 	podSandboxID: string;
 	createdAt: number;
+}
+
+// Models kubernetes/pkg/kubelet/container/runtime.go PodStatus.FindContainerStatusByName.
+export function findContainerStatusByName(
+	podStatus: PodRuntimeStatus,
+	containerName: string,
+): ContainerStatus | undefined {
+	return podStatus.containerStatuses.find(
+		(containerStatus) => containerStatus.name === containerName,
+	);
+}
+
+// Models kubernetes/pkg/kubelet/container/runtime.go BuildContainerID.
+export function buildContainerID(type: string, id: string): ContainerID {
+	return new ContainerID(type, id);
+}
+
+// Models kubernetes/pkg/kubelet/container/runtime.go ParseContainerID.
+export function parseContainerID(containerID: string | undefined): ContainerID {
+	const parts = containerID?.replace(/^"+|"+$/g, "").split("://") ?? [];
+	if (parts.length !== 2) {
+		return new ContainerID("", "");
+	}
+	return new ContainerID(parts[0] ?? "", parts[1] ?? "");
 }
 
 // Models kubernetes/pkg/kubelet/container/runtime.go GetPodFullName.
