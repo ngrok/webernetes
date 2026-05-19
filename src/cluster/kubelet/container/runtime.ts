@@ -1,5 +1,6 @@
 import type { V1Pod } from "../../../client";
 import type { ContainerStatus, PodRuntimeStatus } from "../../cri";
+import type { ExecSyncResponse } from "../../cri/runtime/v1/api";
 
 // Models kubernetes/pkg/kubelet/container/runtime.go ContainerID.
 export class ContainerID {
@@ -39,6 +40,33 @@ export interface Container {
 	state: State;
 	podSandboxID: string;
 	createdAt: number;
+}
+
+// Models kubernetes/pkg/kubelet/container/runtime.go Runtime.
+export interface Runtime {
+	getPods(all: boolean): Pod[];
+	getPod(podUid: string): Pod | undefined;
+	getPodStatus(pod: Pod): PodRuntimeStatus;
+	killPod(
+		pod: V1Pod | undefined,
+		runningPod: Pod,
+		gracePeriodOverride: number | undefined,
+	): Promise<void>;
+	deleteContainer(containerID: ContainerID): Promise<void>;
+	runInContainer(
+		containerID: ContainerID,
+		cmd: string[],
+		timeoutSeconds?: number,
+	): Promise<ExecSyncResponse>;
+}
+
+// Models kubernetes/pkg/kubelet/container/runtime.go CommandRunner.
+export interface CommandRunner {
+	runInContainer(
+		id: ContainerID,
+		cmd: string[],
+		timeoutSeconds?: number,
+	): Promise<ExecSyncResponse>;
 }
 
 // Models kubernetes/pkg/kubelet/container/runtime.go PodStatus.FindContainerStatusByName.
