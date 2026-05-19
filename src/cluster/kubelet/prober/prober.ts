@@ -1,5 +1,5 @@
 import type { V1Container, V1Pod, V1PodStatus, V1Probe } from "../../../client";
-import type { Runtime } from "../../cri";
+import type { InProcessRuntimeService } from "../../cri";
 import type { ContainerID } from "../container";
 import { ExecProber, HTTPProber, TCPProber } from "../../probe";
 import type { ProbeResult } from "../../probe";
@@ -12,7 +12,7 @@ export class Prober {
 	private readonly http: HTTPProber;
 	private readonly tcp: TCPProber;
 
-	constructor(private readonly runtime: Runtime) {
+	constructor(private readonly runtime: InProcessRuntimeService) {
 		this.exec = new ExecProber(runtime);
 		this.http = new HTTPProber(runtime);
 		this.tcp = new TCPProber(runtime);

@@ -105,7 +105,29 @@ export class CoreV1Api implements CoreV1ApiInterface {
 
 	async deleteNamespace(request: CoreV1ApiDeleteNamespaceRequest): Promise<V1Status> {
 		return await rethrowApiErrors(async () => {
-			await this.namespaces.delete(request.name);
+			await retryConflicts(
+				async () => {
+					const namespace = await this.namespaces.get(request.name);
+					if (!namespace) {
+						throw new NotFound(`namespaces "${request.name}" not found`);
+					}
+
+					const finalizers = namespace.spec?.finalizers ?? [];
+					if (namespace.metadata?.deletionTimestamp && finalizers.length === 0) {
+						await this.namespaces.delete(request.name);
+						return;
+					}
+
+					if (!namespace.metadata?.deletionTimestamp) {
+						namespace.metadata ??= {};
+						namespace.metadata.deletionTimestamp = this.cluster.clock.now();
+						namespace.status ??= {};
+						namespace.status.phase = "Terminating";
+						await this.namespaces.update(request.name, namespace, { skipValidateUpdate: true });
+					}
+				},
+				{ clock: this.cluster.clock },
+			);
 			return {
 				status: "Success",
 			};
