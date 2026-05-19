@@ -1,4 +1,5 @@
 import * as k8s from "../client";
+import { isNotFoundError } from "../client/errors";
 import type { KubernetesObject } from "../client/types";
 import type { Clock } from "../clock";
 
@@ -25,34 +26,40 @@ export class EventRecorder {
 		}
 
 		const now = this.options.clock.now();
-		await this.options.api.createNamespacedEvent({
-			namespace,
-			body: {
-				metadata: {
-					generateName: `${name}.`,
-					namespace,
+		try {
+			await this.options.api.createNamespacedEvent({
+				namespace,
+				body: {
+					metadata: {
+						generateName: `${name}.`,
+						namespace,
+					},
+					involvedObject: {
+						apiVersion: involvedObject.apiVersion,
+						kind: involvedObject.kind,
+						name,
+						namespace,
+						resourceVersion: involvedObject.metadata?.resourceVersion,
+						uid: involvedObject.metadata?.uid,
+					},
+					count: 1,
+					firstTimestamp: now,
+					lastTimestamp: now,
+					message,
+					reason,
+					reportingComponent: this.options.component,
+					reportingInstance: this.options.host ?? this.options.component,
+					source: {
+						component: this.options.component,
+						host: this.options.host,
+					},
+					type,
 				},
-				involvedObject: {
-					apiVersion: involvedObject.apiVersion,
-					kind: involvedObject.kind,
-					name,
-					namespace,
-					resourceVersion: involvedObject.metadata?.resourceVersion,
-					uid: involvedObject.metadata?.uid,
-				},
-				count: 1,
-				firstTimestamp: now,
-				lastTimestamp: now,
-				message,
-				reason,
-				reportingComponent: this.options.component,
-				reportingInstance: this.options.host ?? this.options.component,
-				source: {
-					component: this.options.component,
-					host: this.options.host,
-				},
-				type,
-			},
-		});
+			});
+		} catch (error) {
+			if (!isNotFoundError(error)) {
+				throw error;
+			}
+		}
 	}
 }
