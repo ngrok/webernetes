@@ -65,6 +65,8 @@ General rules for this repository:
 Client-specific rules:
 
 - Read `src/client/AGENTS.md` before changing files under `src/client/`.
+- Read `src/client/tests/AGENTS.md` before changing parity tests under
+  `src/client/tests/`.
 - Read `src/client/gen/models/AGENTS.md` before adding or editing files under
   `src/client/gen/models/`.
 - If adding API files under `src/client/gen/apis/`, keep them aligned with the
