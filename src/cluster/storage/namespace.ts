@@ -2,6 +2,8 @@ import { V1Namespace } from "../../client";
 import { Etcd } from "../etcd";
 import { Store } from "./store";
 
+const finalizerKubernetes = "kubernetes";
+
 export class NamespaceStore extends Store<V1Namespace> {
 	public constructor(etcd: Etcd) {
 		super(etcd, {
@@ -32,5 +34,12 @@ export class NamespaceStore extends Store<V1Namespace> {
 	protected async validateCreate(namespace: V1Namespace): Promise<void> {
 		const name = namespace.metadata?.name ?? "";
 		this.validateName(name);
+	}
+
+	protected async prepareCreate(namespace: V1Namespace): Promise<void> {
+		namespace.spec ??= {};
+		namespace.spec.finalizers ??= [finalizerKubernetes];
+		namespace.status ??= {};
+		namespace.status.phase ??= "Active";
 	}
 }
