@@ -2,12 +2,18 @@ import * as k8s from "../../client";
 import { isNotFoundError } from "../../client/errors";
 import type { Clock } from "../../clock";
 import { retryConflicts } from "../../retry";
+import { isPodReadyConditionTrue } from "../api/v1/pod/util";
 import type { ProcessContext } from "../cri";
 import { BaseImage } from "./base";
 
 export interface EndpointSliceControllerOptions {
 	kubeConfig: k8s.KubeConfig;
 }
+
+const controllerName = "endpointslice-controller.k8s.io";
+const labelServiceName = "kubernetes.io/service-name";
+const labelManagedBy = "endpointslice.kubernetes.io/managed-by";
+const labelHeadlessService = "service.kubernetes.io/headless";
 
 export class EndpointSliceController extends BaseImage {
 	private readonly coreApi: k8s.CoreV1Api;
@@ -148,7 +154,7 @@ export class EndpointSliceController extends BaseImage {
 			.map((key) => this.pods.get(key))
 			.filter((pod): pod is k8s.V1Pod => pod !== undefined)
 			.filter((pod) => labelsMatch(selector, new Map(Object.entries(pod.metadata?.labels ?? {}))))
-			.filter((pod) => pod.status?.podIP);
+			.filter((pod) => shouldPodBeInEndpointSlice(pod));
 		const slice = this.endpointSliceForService(service, matchingPods);
 		await this.applyEndpointSlice(slice);
 	}
@@ -156,27 +162,27 @@ export class EndpointSliceController extends BaseImage {
 	private endpointSliceForService(service: k8s.V1Service, pods: k8s.V1Pod[]): k8s.V1EndpointSlice {
 		const namespace = service.metadata?.namespace ?? "default";
 		const name = service.metadata?.name ?? "";
+		const addressType = endpointSliceAddressType(service, pods);
 		return {
 			apiVersion: "discovery.k8s.io/v1",
 			kind: "EndpointSlice",
-			addressType: "IPv4",
+			addressType,
 			metadata: {
 				name: generatedSliceName(name),
 				namespace,
-				labels: {
-					"kubernetes.io/service-name": name,
-					"endpointslice.kubernetes.io/managed-by": "k8s-web-simulator",
-				},
+				labels: endpointSliceLabels(service),
+				ownerReferences: serviceOwnerReferences(service),
 			},
 			ports:
 				pods.length === 0
 					? []
 					: (service.spec?.ports ?? []).flatMap((port) => {
-							const endpointPort = resolveEndpointPort(port.targetPort ?? port.port, pods);
+							const endpointPort = resolveEndpointPort(port, pods);
 							return endpointPort === undefined
 								? []
 								: [
 										{
+											appProtocol: port.appProtocol,
 											name: port.name,
 											port: endpointPort,
 											protocol: port.protocol ?? "TCP",
@@ -184,18 +190,20 @@ export class EndpointSliceController extends BaseImage {
 									];
 						}),
 			endpoints: pods.flatMap((pod) => {
-				const podIp = pod.status?.podIP;
-				if (!podIp) {
+				const addresses = endpointAddresses(pod, addressType);
+				if (addresses.length === 0) {
 					return [];
 				}
-				const ready = isReadyPod(pod);
+				const serving = isReadyPod(pod);
+				const terminating = pod.metadata?.deletionTimestamp !== undefined;
+				const ready = service.spec?.publishNotReadyAddresses === true || (serving && !terminating);
 				return [
 					{
-						addresses: [podIp],
+						addresses,
 						conditions: {
 							ready,
-							serving: ready,
-							terminating: false,
+							serving,
+							terminating,
 						},
 						nodeName: pod.spec?.nodeName,
 						targetRef: {
@@ -339,9 +347,53 @@ function removeFromNamespaceIndex(
 	}
 }
 
+function endpointSliceLabels(service: k8s.V1Service): { [key: string]: string } {
+	const labels: { [key: string]: string } = {};
+	for (const [key, value] of Object.entries(service.metadata?.labels ?? {})) {
+		if (!isReservedEndpointSliceLabel(key)) {
+			labels[key] = value;
+		}
+	}
+	if (service.spec?.clusterIP === "None") {
+		labels[labelHeadlessService] = "";
+	}
+	labels[labelServiceName] = service.metadata?.name ?? "";
+	labels[labelManagedBy] = controllerName;
+	return labels;
+}
+
+function isReservedEndpointSliceLabel(label: string): boolean {
+	return label === labelServiceName || label === labelManagedBy || label === labelHeadlessService;
+}
+
+function serviceOwnerReferences(service: k8s.V1Service): k8s.V1OwnerReference[] {
+	const name = service.metadata?.name;
+	const uid = service.metadata?.uid;
+	if (!name || !uid) {
+		return [];
+	}
+	return [
+		{
+			apiVersion: "v1",
+			blockOwnerDeletion: true,
+			controller: true,
+			kind: "Service",
+			name,
+			uid,
+		},
+	];
+}
+
+function shouldPodBeInEndpointSlice(pod: k8s.V1Pod): boolean {
+	return podIPs(pod).length > 0;
+}
+
 function isReadyPod(pod: k8s.V1Pod): boolean {
-	if (pod.status?.phase !== "Running" || !pod.status.podIP) {
+	if (!pod.status || pod.status.phase !== "Running") {
 		return false;
+	}
+	if ((pod.status.conditions ?? []).some((condition) => condition.type === "Ready")) {
+		return isPodReadyConditionTrue(pod.status);
 	}
 	const statuses = pod.status.containerStatuses ?? [];
 	return statuses.length > 0 && statuses.every((status) => status.ready);
@@ -359,16 +411,75 @@ function labelsMatch(
 	return true;
 }
 
+function endpointSliceAddressType(service: k8s.V1Service, pods: readonly k8s.V1Pod[]): string {
+	const supportedAddressTypes = serviceSupportedAddressTypes(service);
+	for (const addressType of supportedAddressTypes) {
+		if (pods.some((pod) => endpointAddresses(pod, addressType).length > 0)) {
+			return addressType;
+		}
+	}
+	return supportedAddressTypes[0] ?? "IPv4";
+}
+
+function serviceSupportedAddressTypes(service: k8s.V1Service): string[] {
+	const ipFamilies = service.spec?.ipFamilies ?? [];
+	const addressTypes = ipFamilies.flatMap((family) => {
+		if (family === "IPv4") {
+			return ["IPv4"];
+		}
+		if (family === "IPv6") {
+			return ["IPv6"];
+		}
+		return [];
+	});
+	if (addressTypes.length > 0) {
+		return addressTypes;
+	}
+
+	const clusterIP = service.spec?.clusterIP;
+	if (clusterIP && clusterIP !== "None") {
+		return [isIPv6String(clusterIP) ? "IPv6" : "IPv4"];
+	}
+	return ["IPv4", "IPv6"];
+}
+
+function endpointAddresses(pod: k8s.V1Pod, addressType: string): string[] {
+	return podIPs(pod).filter((ip) => addressTypeForIP(ip) === addressType);
+}
+
+function podIPs(pod: k8s.V1Pod): string[] {
+	const podIPs = (pod.status?.podIPs ?? [])
+		.map((podIP) => podIP.ip)
+		.filter((ip): ip is string => ip !== undefined && ip !== "");
+	if (podIPs.length > 0) {
+		return podIPs;
+	}
+	return pod.status?.podIP ? [pod.status.podIP] : [];
+}
+
+function addressTypeForIP(ip: string): string {
+	return isIPv6String(ip) ? "IPv6" : "IPv4";
+}
+
+function isIPv6String(ip: string): boolean {
+	return ip.includes(":");
+}
+
 function resolveEndpointPort(
-	targetPort: number | string,
+	servicePort: k8s.V1ServicePort,
 	pods: readonly k8s.V1Pod[],
 ): number | undefined {
+	const targetPort = servicePort.targetPort ?? servicePort.port;
 	if (typeof targetPort === "number") {
 		return targetPort;
 	}
+	const protocol = servicePort.protocol ?? "TCP";
 	for (const pod of pods) {
 		for (const container of pod.spec?.containers ?? []) {
-			const match = container.ports?.find((containerPort) => containerPort.name === targetPort);
+			const match = container.ports?.find(
+				(containerPort) =>
+					containerPort.name === targetPort && (containerPort.protocol ?? "TCP") === protocol,
+			);
 			if (match) {
 				return match.containerPort;
 			}
