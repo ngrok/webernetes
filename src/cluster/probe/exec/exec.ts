@@ -1,30 +1,36 @@
-import type { V1ExecAction } from "../../../client";
-import type { ContainerInstance, Runtime } from "../../cri";
+import type { V1Container, V1ExecAction } from "../../../client";
+import type { CommandRunner, ContainerID } from "../../kubelet/container";
 import type { ProbeResult } from "../probe";
 
 export class ExecProber {
-	constructor(private readonly runtime: Runtime) {}
+	constructor(private readonly runner: CommandRunner) {}
 
 	// Models kubernetes/pkg/probe/exec/exec.go Probe.
 	async probe(
-		container: ContainerInstance,
+		containerId: ContainerID,
+		container: V1Container,
 		action: V1ExecAction,
 		timeoutMs: number,
 	): Promise<ProbeResult> {
-		const result = await this.runtime.execSync(
-			container.id,
-			expandCommand(action.command ?? [], container.env),
-			{ timeoutMs },
+		const result = await this.runner.runInContainer(
+			containerId,
+			expandCommand(action.command ?? [], container.env ?? []),
+			timeoutMs / 1000,
 		);
 		return result.exitCode === 0 ? "success" : "failure";
 	}
 }
 
-function expandCommand(command: readonly string[], env: ReadonlyMap<string, string>): string[] {
+function expandCommand(command: readonly string[], env: NonNullable<V1Container["env"]>): string[] {
+	const values = new Map(
+		env
+			.filter((entry) => entry.value !== undefined)
+			.map((entry) => [entry.name, entry.value ?? ""]),
+	);
 	return command.map((arg) =>
 		arg.replace(
 			/\$\(([-._a-zA-Z][-._a-zA-Z0-9]*)\)/g,
-			(match, name: string) => env.get(name) ?? match,
+			(match, name: string) => values.get(name) ?? match,
 		),
 	);
 }

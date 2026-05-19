@@ -1,6 +1,6 @@
 import type { V1Container, V1Pod, V1PodStatus, V1Probe } from "../../../client";
-import type { InProcessRuntimeService } from "../../cri";
-import type { ContainerID } from "../container";
+import type { ClusterNetwork } from "../../cni";
+import type { CommandRunner, ContainerID } from "../container";
 import { ExecProber, HTTPProber, TCPProber } from "../../probe";
 import type { ProbeResult } from "../../probe";
 import type { ProbeType, ProberResult } from "./results";
@@ -12,10 +12,10 @@ export class Prober {
 	private readonly http: HTTPProber;
 	private readonly tcp: TCPProber;
 
-	constructor(private readonly runtime: InProcessRuntimeService) {
-		this.exec = new ExecProber(runtime);
-		this.http = new HTTPProber(runtime);
-		this.tcp = new TCPProber(runtime);
+	constructor(runner: CommandRunner, network: ClusterNetwork) {
+		this.exec = new ExecProber(runner);
+		this.http = new HTTPProber(network);
+		this.tcp = new TCPProber(network);
 	}
 
 	// Models kubernetes/pkg/kubelet/prober/prober.go probe.
@@ -89,19 +89,15 @@ export class Prober {
 		container: V1Container,
 		containerId: ContainerID,
 	): Promise<ProbeResult> {
-		const runtimeContainer = this.runtime.getContainer(containerId.id);
-		if (!runtimeContainer) {
-			throw new Error(`container ${containerId.toString()} not found`);
-		}
 		const timeoutMs = (probe.timeoutSeconds ?? 1) * 1000;
 		if (probe.exec) {
-			return await this.exec.probe(runtimeContainer, probe.exec, timeoutMs);
+			return await this.exec.probe(containerId, container, probe.exec, timeoutMs);
 		}
 		if (probe.httpGet) {
-			return await this.http.probe(runtimeContainer, container, probe.httpGet);
+			return await this.http.probe(status.podIP, container, probe.httpGet);
 		}
 		if (probe.tcpSocket) {
-			return this.tcp.probe(runtimeContainer, container, probe.tcpSocket);
+			return this.tcp.probe(status.podIP, container, probe.tcpSocket);
 		}
 		throw new Error(
 			`missing probe handler for ${pod.metadata?.namespace ?? "default"}/${pod.metadata?.name ?? ""}:${container.name}`,

@@ -3,9 +3,9 @@ import { Channel, select } from "../../../go/channel";
 import type { Context } from "../../../go/context";
 import type { Clock } from "../../../clock";
 import * as time from "../../../go/time";
-import * as podutil from "../../pod-util";
+import * as podutil from "../../api/v1/pod/util";
 import { type ContainerID, parseContainerID } from "../container";
-import type { ProbeManager } from "./manager";
+import type { ProbeManager } from "./prober-manager";
 import type { ProberResult, ProbeType, ResultsManager } from "./results";
 
 export interface WorkerOptions {
