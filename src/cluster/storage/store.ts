@@ -69,7 +69,7 @@ export class Store<T extends Storable> {
 	private async namespaceExists(namespace: string): Promise<boolean> {
 		const k = `/registry/namespaces/${namespace}`;
 		const value = await this.etcd.get(k).json();
-		return !!value;
+		return !!value && !hasDeletionTimestamp(value);
 	}
 
 	private withResourceVersion(obj: T, resourceVersion: string): T {
@@ -247,4 +247,17 @@ export class Store<T extends Storable> {
 		}
 		return new Watcher<T>(builder.watcher());
 	}
+}
+
+function hasDeletionTimestamp(value: unknown): boolean {
+	if (typeof value !== "object" || value === null || !("metadata" in value)) {
+		return false;
+	}
+	const metadata = value.metadata;
+	return (
+		typeof metadata === "object" &&
+		metadata !== null &&
+		"deletionTimestamp" in metadata &&
+		metadata.deletionTimestamp !== undefined
+	);
 }
