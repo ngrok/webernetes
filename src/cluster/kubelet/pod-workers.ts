@@ -4,6 +4,7 @@ import type { V1Pod, V1PodStatus } from "../../client";
 import type { Clock } from "../../clock";
 import type { PodRuntimeStatus } from "../cri";
 import * as kubecontainer from "./container";
+import { networkNotReadyErrorMsg } from "./errors";
 import { isStaticPod, type SyncPodType } from "./types/pod-update";
 import type { WorkQueue } from "./util/queue/work-queue";
 
@@ -13,9 +14,6 @@ const workerResyncIntervalJitterFactor = 0.5;
 const workerBackOffPeriodJitterFactor = 0.5;
 // Models kubernetes/pkg/kubelet/pod_workers.go backOffOnTransientErrorPeriod.
 const backOffOnTransientErrorPeriodMs = 1000;
-// Models kubernetes/pkg/kubelet/errors.go NetworkNotReadyErrorMsg.
-const networkNotReadyErrorMsg = "network is not ready";
-
 // Models kubernetes/pkg/kubelet/pod_workers.go PodStatusFunc.
 type PodStatusFunc = (podStatus: V1PodStatus) => void;
 
@@ -468,6 +466,7 @@ export class PodWorkers {
 			}
 
 			let isTerminal = false;
+			let postSync: (() => void) | undefined;
 			let err: unknown;
 			try {
 				let status: PodRuntimeStatus | undefined;
@@ -542,11 +541,12 @@ export class PodWorkers {
 								podStatus,
 							);
 							isTerminal = result.isTerminal;
-							result.postSync?.();
+							postSync = result.postSync;
 						}
 						break;
 				}
 				lastSyncTime = this.clock.now();
+				postSync?.();
 			} catch (error) {
 				err = error;
 			}

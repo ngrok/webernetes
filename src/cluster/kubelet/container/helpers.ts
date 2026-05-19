@@ -1,4 +1,6 @@
 import type { V1Container, V1Pod } from "../../../client";
+import * as fnv from "../../../fnv";
+import * as hashutil from "../../../hashutil";
 import type { ContainerPort, PodRuntimeStatus, PodSandboxState, PortMapping } from "../../cri";
 import { containerShouldRestart } from "../../api/v1/pod/util";
 import { buildContainerID, findContainerStatusByName, type Pod, type State } from "./runtime";
@@ -14,6 +16,22 @@ export function runtimeProtocol(
 		default:
 			return undefined;
 	}
+}
+
+// Models kubernetes/pkg/kubelet/container/helpers.go HashContainer.
+export function hashContainer(container: V1Container): number {
+	const hash = fnv.new32a();
+	const containerJSON = hashutil.jsonMarshal(pickFieldsToHash(container));
+	hashutil.DeepHashObject(hash, containerJSON);
+	return hash.sum32();
+}
+
+// Models kubernetes/pkg/kubelet/container/helpers.go pickFieldsToHash.
+function pickFieldsToHash(container: V1Container): Record<string, string> {
+	return {
+		image: container.image ?? "",
+		name: container.name,
+	};
 }
 
 // Models kubernetes/pkg/kubelet/container/helpers.go ConvertPodStatusToRunningPod.
@@ -69,6 +87,11 @@ export function sandboxToContainerState(state: PodSandboxState): State {
 		default:
 			return "Unknown";
 	}
+}
+
+// Models kubernetes/pkg/kubelet/container/helpers.go IsHostNetworkPod.
+export function isHostNetworkPod(pod: V1Pod): boolean {
+	return pod.spec?.hostNetwork === true;
 }
 
 // Models kubernetes/pkg/kubelet/container/helpers.go MakePortMappings.
