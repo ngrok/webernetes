@@ -13,8 +13,8 @@ import { deepEqual } from "../../../deep-equal";
 import { Channel, select } from "../../../go/channel";
 import type { Context } from "../../../go/context";
 import * as time from "../../../go/time";
-import * as podutil from "../../pod-util";
-import * as statusutil from "../../util/pod";
+import * as podutil from "../../api/v1/pod/util";
+import * as statusutil from "../../util/pod/pod";
 import { type ContainerID, parseContainerID } from "../container";
 import type { PodManager } from "../pod";
 import * as kubetypes from "../types";
@@ -785,7 +785,7 @@ export class StatusManager {
 				if (c.type === "DisruptionTarget") {
 					if (transitioningToTerminalPhase && !couldHaveRunningContainers) {
 						this.updateLastTransitionTime(newPodStatus, oldPodStatus, c.type);
-						const updatedCondition = podutil.getPodConditionFromList(
+						const [, updatedCondition] = podutil.getPodConditionFromList(
 							newPodStatus.conditions,
 							c.type,
 						);

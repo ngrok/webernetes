@@ -1,5 +1,5 @@
 import type { V1ContainerStatus, V1Pod, V1PodCondition, V1PodStatus } from "../../../client";
-import * as podutil from "../../pod-util";
+import * as podutil from "../../api/v1/pod/util";
 
 // Models kubernetes/pkg/kubelet/status/generate.go GenerateContainersReadyCondition.
 export function generateContainersReadyCondition(
@@ -110,7 +110,7 @@ export function generatePodReadyCondition(
 
 	const unreadyMessages: string[] = [];
 	for (const readinessGate of pod.spec?.readinessGates ?? []) {
-		const condition = podutil.getPodConditionFromList(conditions, readinessGate.conditionType);
+		const [, condition] = podutil.getPodConditionFromList(conditions, readinessGate.conditionType);
 		if (!condition) {
 			unreadyMessages.push(
 				`corresponding condition of pod readiness gate "${readinessGate.conditionType}" does not exist.`,

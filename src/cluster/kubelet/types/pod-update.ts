@@ -12,6 +12,15 @@ export const configHashAnnotationKey = "kubernetes.io/config.hash";
 // Models kubernetes/pkg/kubelet/types/pod_update.go ApiserverSource.
 export const apiserverSource = "api";
 
+// Models kubernetes/pkg/kubelet/types/pod_update.go PodOperation.
+export type PodOperation = "ADD" | "DELETE" | "REMOVE" | "UPDATE";
+
+// Models kubernetes/pkg/kubelet/types/pod_update.go PodUpdate.
+export interface PodUpdate {
+	pods: V1Pod[];
+	op: PodOperation;
+}
+
 // Models kubernetes/pkg/kubelet/types/pod_update.go SyncPodType.
 export type SyncPodType = "create" | "kill" | "sync" | "update";
 
