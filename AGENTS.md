@@ -47,6 +47,11 @@ General rules for this repository:
 - Unless it is literally impossible to do so, test Kubernetes behavior through
   the parity tests in `src/client/tests/` so the simulated cluster is checked
   against real Kubernetes behavior.
+- When adding functionality or fixing a behavior mismatch, write the test first
+  and run it before the fix. For Kubernetes-facing behavior, observe the test
+  fail against the simulator and pass against k3s before changing the
+  implementation. If a simulator-only unit test is more appropriate, still
+  observe the targeted simulator failure before implementing the fix.
 - Do not introduce adapter-only type shims just to paper over mismatches between
   the real and fake clients.
 - Do not introduce interfaces or types with names ending in `Like`.

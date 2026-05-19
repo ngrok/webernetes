@@ -1,8 +1,9 @@
 import { expect, it } from "vitest";
 import type { V1Pod, V1Service } from "../gen/models";
 import { kubernetes } from "../../test/harnesses/kubernetes";
+import { apiStatusMessage } from "../../test/harnesses/helpers";
 
-kubernetes.describe("Services", ({ core, k8s, helpers }) => {
+kubernetes.describe("Services", ({ core, k8s, helpers, target }) => {
 	const { getSuiteNamespace, fetchNodePort, waitFor } = helpers;
 	const mergePatchOptions = k8s.setHeaderOptions("Content-Type", k8s.PatchStrategy.MergePatch);
 
@@ -279,6 +280,58 @@ kubernetes.describe("Services", ({ core, k8s, helpers }) => {
 		expect(second.spec?.ports?.[0]?.nodePort).toBe(nodePort);
 	});
 
+	it("should keep another Service's NodePort allocated after a failed create", async () => {
+		const owner = await createService({
+			metadata: {
+				name: "failed-create-node-port-owner",
+			},
+			spec: {
+				type: "NodePort",
+				ports: [{ port: 80 }],
+			},
+		});
+		const nodePort = owner.spec?.ports?.[0]?.nodePort;
+		if (nodePort === undefined) {
+			throw new Error("Expected Service to allocate a NodePort");
+		}
+
+		let failedCreateError: unknown;
+		try {
+			await createService({
+				metadata: {
+					name: "failed-create-node-port-contender",
+				},
+				spec: {
+					type: "NodePort",
+					ports: [{ port: 81, nodePort }],
+				},
+			});
+		} catch (error) {
+			failedCreateError = error;
+		}
+		expect(apiStatusMessage(failedCreateError)).toBe(
+			nodePortAlreadyAllocatedMessage(target, "failed-create-node-port-contender", nodePort),
+		);
+
+		let stillAllocatedError: unknown;
+		try {
+			await createService({
+				metadata: {
+					name: "failed-create-node-port-reuse",
+				},
+				spec: {
+					type: "NodePort",
+					ports: [{ port: 82, nodePort }],
+				},
+			});
+		} catch (error) {
+			stillAllocatedError = error;
+		}
+		expect(apiStatusMessage(stillAllocatedError)).toBe(
+			nodePortAlreadyAllocatedMessage(target, "failed-create-node-port-reuse", nodePort),
+		);
+	});
+
 	it("should load balance NodePort traffic across selected pods", async () => {
 		const firstText = "echo-one";
 		const secondText = "echo-two";
@@ -334,4 +387,15 @@ function expectPodReady(pod: V1Pod): void {
 	expect(pod.status?.phase).toBe("Running");
 	expect(pod.status?.podIP).toBeTruthy();
 	expect(pod.status?.containerStatuses?.[0]?.ready).toBe(true);
+}
+
+function nodePortAlreadyAllocatedMessage(
+	target: "k3s" | "simulator",
+	serviceName: string,
+	nodePort: number,
+): string {
+	if (target === "k3s") {
+		return `Service "${serviceName}" is invalid: spec.ports[0].nodePort: Invalid value: ${nodePort}: provided port is already allocated`;
+	}
+	return `nodePort ${nodePort} is already allocated`;
 }

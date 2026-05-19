@@ -1,7 +1,7 @@
 import { V1Service, V1ServicePort, V1ServiceSpec } from "../../client";
 import { Etcd } from "../etcd";
 import { IpRange, PortRange } from "./allocatable";
-import { Store } from "./store";
+import { FinishFunc, Store } from "./store";
 
 const DEFAULT_SERVICE_CIDR = "10.96.0.0/12";
 
@@ -13,6 +13,11 @@ export interface NodePortRange {
 export interface ServiceStoreOptions {
 	serviceCIDR?: string;
 	nodePortRange: NodePortRange;
+}
+
+interface ServiceAllocationSnapshot {
+	clusterIPs: string[];
+	nodePorts: number[];
 }
 
 function serviceType(service: V1Service): string {
@@ -95,28 +100,60 @@ export class ServiceStore extends Store<V1Service> {
 		await this.validateCreate(service);
 	}
 
-	protected override async prepareCreate(service: V1Service): Promise<void> {
+	protected override async beginCreate(service: V1Service): Promise<FinishFunc> {
 		service.spec ??= {};
 		service.spec.type ??= "ClusterIP";
 		this.defaultPorts(service.spec.ports);
 
-		await this.allocateClusterIP(service);
-		await this.allocateNodePorts(service);
+		let allocated = emptyAllocations();
+		try {
+			allocated = combineAllocations(allocated, await this.allocateClusterIP(service));
+			allocated = combineAllocations(allocated, await this.allocateNodePorts(service));
+		} catch (error) {
+			await this.releaseAllocations(allocated);
+			throw error;
+		}
+
+		return async (success) => {
+			if (!success) {
+				await this.releaseAllocations(allocated);
+			}
+		};
 	}
 
-	protected override async prepareUpdate(service: V1Service, existing: V1Service): Promise<void> {
+	protected override async beginUpdate(
+		service: V1Service,
+		existing: V1Service,
+	): Promise<FinishFunc> {
+		const previous = this.serviceAllocations(existing);
+
 		service.spec ??= {};
 		service.spec.type ??= existing.spec?.type ?? "ClusterIP";
 		this.defaultPorts(service.spec.ports);
 		this.preserveClusterIP(service, existing);
 		this.preserveNodePorts(service, existing);
 
-		await this.allocateClusterIP(service, existing);
-		await this.allocateNodePorts(service, existing);
-		await this.releaseOldAllocations(service, existing);
+		let allocated = emptyAllocations();
+		try {
+			allocated = combineAllocations(allocated, await this.allocateClusterIP(service, existing));
+			allocated = combineAllocations(allocated, await this.allocateNodePorts(service, existing));
+		} catch (error) {
+			await this.releaseAllocations(allocated);
+			throw error;
+		}
+
+		const updated = this.serviceAllocations(service);
+		const released = difference(previous, updated);
+		return async (success) => {
+			if (success) {
+				await this.releaseAllocations(released);
+				return;
+			}
+			await this.releaseAllocations(allocated);
+		};
 	}
 
-	protected override async prepareDelete(service: V1Service): Promise<void> {
+	protected override async afterDelete(service: V1Service): Promise<void> {
 		await this.releaseServiceAllocations(service);
 	}
 
@@ -167,10 +204,13 @@ export class ServiceStore extends Store<V1Service> {
 		}
 	}
 
-	private async allocateClusterIP(service: V1Service, existing?: V1Service): Promise<void> {
+	private async allocateClusterIP(
+		service: V1Service,
+		existing?: V1Service,
+	): Promise<ServiceAllocationSnapshot> {
 		const spec = specFor(service);
 		if (!requiresClusterIP(service)) {
-			return;
+			return emptyAllocations();
 		}
 
 		if (spec.clusterIP === "None") {
@@ -183,15 +223,22 @@ export class ServiceStore extends Store<V1Service> {
 			this.validateClusterIP(spec.clusterIP);
 			await this.claimClusterIP(spec.clusterIP, existing);
 			spec.clusterIPs = [spec.clusterIP];
-			return;
+			return this.serviceClusterIPs(existing).includes(spec.clusterIP)
+				? emptyAllocations()
+				: { clusterIPs: [spec.clusterIP], nodePorts: [] };
 		}
 
 		const allocatedIP = await this.nextClusterIP(service);
 		spec.clusterIP = allocatedIP;
 		spec.clusterIPs = [allocatedIP];
+		return { clusterIPs: [allocatedIP], nodePorts: [] };
 	}
 
-	private async allocateNodePorts(service: V1Service, existing?: V1Service): Promise<void> {
+	private async allocateNodePorts(
+		service: V1Service,
+		existing?: V1Service,
+	): Promise<ServiceAllocationSnapshot> {
+		const allocated = emptyAllocations();
 		const ports = specFor(service).ports ?? [];
 		if (!requiresNodePorts(service)) {
 			for (const port of ports) {
@@ -199,18 +246,28 @@ export class ServiceStore extends Store<V1Service> {
 					throw new Error("nodePort may only be set for NodePort or LoadBalancer Services");
 				}
 			}
-			return;
+			return allocated;
 		}
 
-		for (const port of ports) {
-			if (port.nodePort !== undefined) {
-				this.validateNodePort(port.nodePort);
-				await this.claimNodePort(port.nodePort, existing);
-				continue;
+		try {
+			for (const port of ports) {
+				if (port.nodePort !== undefined) {
+					this.validateNodePort(port.nodePort);
+					await this.claimNodePort(port.nodePort, existing);
+					if (!this.serviceNodePorts(existing).includes(port.nodePort)) {
+						allocated.nodePorts.push(port.nodePort);
+					}
+					continue;
+				}
+
+				port.nodePort = await this.nextNodePort(service);
+				allocated.nodePorts.push(port.nodePort);
 			}
-
-			port.nodePort = await this.nextNodePort(service);
+		} catch (error) {
+			await this.releaseAllocations(allocated);
+			throw error;
 		}
+		return allocated;
 	}
 
 	private validateClusterIP(clusterIP: string): void {
@@ -279,29 +336,24 @@ export class ServiceStore extends Store<V1Service> {
 		}
 	}
 
-	private async releaseOldAllocations(service: V1Service, existing: V1Service): Promise<void> {
-		const currentClusterIPs = new Set(this.serviceClusterIPs(service));
-		for (const clusterIP of this.serviceClusterIPs(existing)) {
-			if (!currentClusterIPs.has(clusterIP)) {
-				await this.clusterIPs.release(clusterIP);
-			}
-		}
+	private async releaseServiceAllocations(service: V1Service): Promise<void> {
+		await this.releaseAllocations(this.serviceAllocations(service));
+	}
 
-		const currentNodePorts = new Set(this.serviceNodePorts(service));
-		for (const nodePort of this.serviceNodePorts(existing)) {
-			if (!currentNodePorts.has(nodePort)) {
-				await this.nodePorts.release(nodePort);
-			}
+	private async releaseAllocations(allocations: ServiceAllocationSnapshot): Promise<void> {
+		for (const clusterIP of allocations.clusterIPs) {
+			await this.clusterIPs.release(clusterIP);
+		}
+		for (const nodePort of allocations.nodePorts) {
+			await this.nodePorts.release(nodePort);
 		}
 	}
 
-	private async releaseServiceAllocations(service: V1Service): Promise<void> {
-		for (const clusterIP of this.serviceClusterIPs(service)) {
-			await this.clusterIPs.release(clusterIP);
-		}
-		for (const nodePort of this.serviceNodePorts(service)) {
-			await this.nodePorts.release(nodePort);
-		}
+	private serviceAllocations(service: V1Service | undefined): ServiceAllocationSnapshot {
+		return {
+			clusterIPs: this.serviceClusterIPs(service),
+			nodePorts: this.serviceNodePorts(service),
+		};
 	}
 
 	private serviceClusterIPs(service: V1Service | undefined): string[] {
@@ -326,4 +378,30 @@ export class ServiceStore extends Store<V1Service> {
 		}
 		return nodePorts;
 	}
+}
+
+function difference(
+	left: ServiceAllocationSnapshot,
+	right: ServiceAllocationSnapshot,
+): ServiceAllocationSnapshot {
+	const rightClusterIPs = new Set(right.clusterIPs);
+	const rightNodePorts = new Set(right.nodePorts);
+	return {
+		clusterIPs: left.clusterIPs.filter((clusterIP) => !rightClusterIPs.has(clusterIP)),
+		nodePorts: left.nodePorts.filter((nodePort) => !rightNodePorts.has(nodePort)),
+	};
+}
+
+function emptyAllocations(): ServiceAllocationSnapshot {
+	return { clusterIPs: [], nodePorts: [] };
+}
+
+function combineAllocations(
+	left: ServiceAllocationSnapshot,
+	right: ServiceAllocationSnapshot,
+): ServiceAllocationSnapshot {
+	return {
+		clusterIPs: [...left.clusterIPs, ...right.clusterIPs],
+		nodePorts: [...left.nodePorts, ...right.nodePorts],
+	};
 }

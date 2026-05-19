@@ -12,6 +12,11 @@ simulator implementation details. If a test needs supporting resources, create
 them locally in that resource file, but keep the main assertions scoped to the
 file's primary resource.
 
+For new functionality or behavior fixes, add the parity test before changing the
+simulator. Run the focused test against the simulator and confirm it fails, then
+run the same focused test against k3s and confirm it passes. Only then update
+the simulator implementation.
+
 When asserting errors in these tests:
 
 - Match the exact upstream Kubernetes status message.

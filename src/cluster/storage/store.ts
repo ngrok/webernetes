@@ -29,6 +29,10 @@ export interface StoreUpdateOptions {
 	skipValidateUpdate?: boolean;
 }
 
+export type FinishFunc = (success: boolean) => void | Promise<void>;
+
+const finishNothing: FinishFunc = () => undefined;
+
 // This is _sort of_ based off of the storage interface in
 // kubernetes/staging/src/k8s.io/apiserver/pkg/storage/interfaces.go. It's not
 // an exact replica in the same way that a lot of the kubelet code was written
@@ -49,6 +53,18 @@ export class Store<T extends Storable> {
 	protected async prepareUpdate(_: T, _existing: T): Promise<void> {}
 
 	protected async prepareDelete(_: T): Promise<void> {}
+
+	protected async beginCreate(obj: T): Promise<FinishFunc> {
+		await this.prepareCreate(obj);
+		return finishNothing;
+	}
+
+	protected async beginUpdate(obj: T, existing: T): Promise<FinishFunc> {
+		await this.prepareUpdate(obj, existing);
+		return finishNothing;
+	}
+
+	protected async afterDelete(_: T): Promise<void> {}
 
 	private key(name: string, namespace?: string): string {
 		let k = `/registry/${this.opts.defaultQualifiedResource}`;
@@ -159,12 +175,28 @@ export class Store<T extends Storable> {
 			throw new Error(`Object with name ${obj.metadata.name} already exists`);
 		}
 
-		await this.prepareCreate(obj);
-		await this.validateCreate(obj);
-
 		const k = this.key(obj.metadata.name, obj.metadata.namespace);
-		const response = await this.etcd.put(k).value(JSON.stringify(obj)).exec();
-		return this.withResourceVersion(obj, response.header.revision);
+		let finishCreate = finishNothing;
+		try {
+			finishCreate = await this.beginCreate(obj);
+			await this.validateCreate(obj);
+
+			const response = await this.etcd
+				.if(k, "Version", "==", 0)
+				.then(this.etcd.put(k).value(JSON.stringify(obj)))
+				.commit();
+			if (!response.succeeded) {
+				throw new Error(`Object with name ${obj.metadata.name} already exists`);
+			}
+
+			const finish = finishCreate;
+			finishCreate = finishNothing;
+			await finish(true);
+
+			return this.withResourceVersion(obj, response.header.revision);
+		} finally {
+			await finishCreate(false);
+		}
 	}
 
 	async update(name: string, obj: T, options: StoreUpdateOptions = {}): Promise<T> {
@@ -193,32 +225,55 @@ export class Store<T extends Storable> {
 			);
 		}
 
-		await this.prepareUpdate(obj, existing.obj);
-		if (!options.skipValidateUpdate) {
-			await this.validateUpdate(obj, existing.obj);
-		}
-
 		const k = this.key(name, obj.metadata.namespace);
-		const response = await this.etcd
-			.if(k, "Mod", "==", Number(existing.resourceVersion))
-			.then(this.etcd.put(k).value(JSON.stringify(obj)))
-			.commit();
-		if (!response.succeeded) {
-			throw new Conflict(
-				`${this.opts.singularQualifiedResource} "${name}" was modified; please apply your changes to the latest version and try again`,
-			);
+		let finishUpdate = finishNothing;
+		try {
+			finishUpdate = await this.beginUpdate(obj, existing.obj);
+			if (!options.skipValidateUpdate) {
+				await this.validateUpdate(obj, existing.obj);
+			}
+
+			const response = await this.etcd
+				.if(k, "Mod", "==", Number(existing.resourceVersion))
+				.then(this.etcd.put(k).value(JSON.stringify(obj)))
+				.commit();
+			if (!response.succeeded) {
+				throw new Conflict(
+					`${this.opts.singularQualifiedResource} "${name}" was modified; please apply your changes to the latest version and try again`,
+				);
+			}
+
+			const finish = finishUpdate;
+			finishUpdate = finishNothing;
+			await finish(true);
+
+			return this.withResourceVersion(obj, response.header.revision);
+		} finally {
+			await finishUpdate(false);
 		}
-		return this.withResourceVersion(obj, response.header.revision);
 	}
 
 	async delete(name: string, namespace?: string): Promise<boolean> {
 		const k = this.key(name, namespace);
-		const existing = await this.readStored(name, namespace);
-		if (existing) {
+		while (true) {
+			const existing = await this.readStored(name, namespace);
+			if (!existing) {
+				return false;
+			}
+
 			await this.prepareDelete(existing.obj);
+
+			const response = await this.etcd
+				.if(k, "Mod", "==", Number(existing.resourceVersion))
+				.then(this.etcd.delete().key(k))
+				.commit();
+			if (!response.succeeded) {
+				continue;
+			}
+
+			await this.afterDelete(existing.obj);
+			return true;
 		}
-		const response = await this.etcd.delete().key(k).getPrevious();
-		return response.length > 0;
 	}
 
 	async list(namespace?: string): Promise<T[]> {
