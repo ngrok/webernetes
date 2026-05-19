@@ -11,6 +11,7 @@ import { HelloWorldImage } from "./images/hello-world";
 import { HttpEchoImage } from "./images/http-echo";
 import { AgnhostImage } from "./images/agnhost";
 import { EndpointSliceController } from "./images/endpointslice-controller";
+import { NamespaceController } from "./images/namespace-controller";
 import { PauseImage } from "./images/pause";
 import { KubeProxy } from "./images/proxy";
 import { Scheduler } from "./images/scheduler";
@@ -94,6 +95,12 @@ export class Cluster {
 			}),
 		);
 		this.imageRegistry.register(
+			"webernetes/namespace-controller:latest",
+			new NamespaceController({
+				kubeConfig: this.kubeConfig,
+			}),
+		);
+		this.imageRegistry.register(
 			"webernetes/coredns:latest",
 			new CoreDNS({
 				kubeConfig: this.kubeConfig,
@@ -137,6 +144,10 @@ export class Cluster {
 		}
 
 		await this.createControlPlanePod("kube-scheduler", "webernetes/kube-scheduler:latest");
+		await this.createControlPlanePod(
+			"namespace-controller",
+			"webernetes/namespace-controller:latest",
+		);
 		await this.createControlPlanePod(
 			"endpointslice-controller",
 			"webernetes/endpointslice-controller:latest",
