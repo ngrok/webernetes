@@ -118,7 +118,7 @@ export function updatePodCondition(
 // Models kubernetes/pkg/api/v1/pod/util.go ContainerShouldRestart.
 export function containerShouldRestart(
 	container: V1Container,
-	podSpec: V1PodSpec,
+	podSpec: V1PodSpec | undefined,
 	exitCode: number,
 ): boolean {
 	if (container.restartPolicy !== undefined) {
@@ -182,7 +182,7 @@ export function findMatchingContainerRestartRule(
 }
 
 // Models kubernetes/pkg/api/v1/pod/util.go AllContainersCouldRestart.
-export function allContainersCouldRestart(pod: V1PodSpec): boolean {
+export function allContainersCouldRestart(pod: V1PodSpec | undefined): boolean {
 	if (!pod) {
 		return false;
 	}
