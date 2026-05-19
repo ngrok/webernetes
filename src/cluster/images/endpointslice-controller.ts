@@ -1,5 +1,7 @@
 import * as k8s from "../../client";
 import { isNotFoundError } from "../../client/errors";
+import type { Clock } from "../../clock";
+import { retryConflicts } from "../../retry";
 import type { ProcessContext } from "../cri";
 import { BaseImage } from "./base";
 
@@ -18,6 +20,7 @@ export class EndpointSliceController extends BaseImage {
 	private readonly podsByNamespace = new Map<string, Set<string>>();
 	private readonly pending = new Set<string>();
 	private readonly requeued = new Set<string>();
+	private clock: Clock | undefined;
 
 	constructor(private readonly options: EndpointSliceControllerOptions) {
 		super();
@@ -26,6 +29,7 @@ export class EndpointSliceController extends BaseImage {
 	}
 
 	async start(context: ProcessContext, _argv: readonly string[]): Promise<number> {
+		this.clock = context.clock;
 		await this.startInformers();
 		try {
 			return await context.waitUntilKilled();
@@ -118,15 +122,17 @@ export class EndpointSliceController extends BaseImage {
 			return;
 		}
 		this.pending.add(key);
-		void this.reconcileService(service).finally(() => {
-			this.pending.delete(key);
-			if (this.requeued.delete(key)) {
-				const latest = this.services.get(key);
-				if (latest) {
-					this.queueServiceReconcile(latest);
+		void this.reconcileService(service)
+			.catch(() => undefined)
+			.finally(() => {
+				this.pending.delete(key);
+				if (this.requeued.delete(key)) {
+					const latest = this.services.get(key);
+					if (latest) {
+						this.queueServiceReconcile(latest);
+					}
 				}
-			}
-		});
+			});
 	}
 
 	private async reconcileService(service: k8s.V1Service): Promise<void> {
@@ -206,26 +212,44 @@ export class EndpointSliceController extends BaseImage {
 	}
 
 	private async applyEndpointSlice(slice: k8s.V1EndpointSlice): Promise<void> {
+		const clock = this.clock;
+		if (!clock) {
+			throw new Error("EndpointSliceController has not started");
+		}
 		const name = slice.metadata?.name ?? "";
 		const namespace = slice.metadata?.namespace ?? "default";
 		try {
-			const current = await this.discoveryApi.readNamespacedEndpointSlice({ name, namespace });
-			await this.discoveryApi.replaceNamespacedEndpointSlice({
-				name,
-				namespace,
-				body: {
-					...slice,
-					metadata: {
-						...slice.metadata,
-						resourceVersion: current.metadata?.resourceVersion,
-					},
+			await retryConflicts(
+				async () => {
+					try {
+						const current = await this.discoveryApi.readNamespacedEndpointSlice({
+							name,
+							namespace,
+						});
+						await this.discoveryApi.replaceNamespacedEndpointSlice({
+							name,
+							namespace,
+							body: {
+								...slice,
+								metadata: {
+									...slice.metadata,
+									resourceVersion: current.metadata?.resourceVersion,
+								},
+							},
+						});
+					} catch (error) {
+						if (!isNotFoundError(error)) {
+							throw error;
+						}
+						await this.discoveryApi.createNamespacedEndpointSlice({ namespace, body: slice });
+					}
 				},
-			});
+				{ clock },
+			);
 		} catch (error) {
 			if (!isNotFoundError(error)) {
 				throw error;
 			}
-			await this.discoveryApi.createNamespacedEndpointSlice({ namespace, body: slice });
 		}
 	}
 
