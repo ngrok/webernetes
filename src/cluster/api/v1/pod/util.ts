@@ -20,8 +20,9 @@ export function getContainerStatus(
 export function getPodConditionFromList(
 	conditions: V1PodCondition[] | undefined,
 	conditionType: V1PodCondition["type"],
-): V1PodCondition | undefined {
-	return conditions?.find((condition) => condition.type === conditionType);
+): [number, V1PodCondition | undefined] {
+	const index = conditions?.findIndex((condition) => condition.type === conditionType) ?? -1;
+	return [index, index >= 0 ? conditions?.[index] : undefined];
 }
 
 // Models kubernetes/pkg/api/v1/pod/util.go GetPodCondition.
@@ -32,7 +33,8 @@ export function getPodCondition(
 	if (!status) {
 		return undefined;
 	}
-	return getPodConditionFromList(status.conditions, conditionType);
+	const [, condition] = getPodConditionFromList(status.conditions, conditionType);
+	return condition;
 }
 
 // Models kubernetes/pkg/api/v1/pod/util.go CalculatePodConditionObservedGeneration.
