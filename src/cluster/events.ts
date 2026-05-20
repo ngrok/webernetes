@@ -1,7 +1,10 @@
 import * as k8s from "../client";
 import { isNotFoundError } from "../client/errors";
+import type { V1ObjectReference } from "../client";
 import type { KubernetesObject } from "../client/types";
 import type { Clock } from "../clock";
+
+type EventObject = KubernetesObject | V1ObjectReference;
 
 export interface EventRecorderOptions {
 	api: k8s.CoreV1Api;
@@ -13,14 +16,29 @@ export interface EventRecorderOptions {
 export class EventRecorder {
 	constructor(private readonly options: EventRecorderOptions) {}
 
-	async event(
-		involvedObject: KubernetesObject,
+	async event(object: EventObject, type: string, reason: string, message: string): Promise<void> {
+		await this.record(object, type, reason, message);
+	}
+
+	async eventf(
+		object: EventObject,
+		type: string,
+		reason: string,
+		messageFmt: string,
+		...args: unknown[]
+	): Promise<void> {
+		await this.record(object, type, reason, sprintf(messageFmt, args));
+	}
+
+	private async record(
+		object: EventObject,
 		type: string,
 		reason: string,
 		message: string,
 	): Promise<void> {
-		const namespace = involvedObject.metadata?.namespace ?? "default";
-		const name = involvedObject.metadata?.name;
+		const ref = objectReference(object);
+		const namespace = ref.namespace ?? "default";
+		const name = ref.name;
 		if (!name) {
 			return;
 		}
@@ -34,14 +52,7 @@ export class EventRecorder {
 						generateName: `${name}.`,
 						namespace,
 					},
-					involvedObject: {
-						apiVersion: involvedObject.apiVersion,
-						kind: involvedObject.kind,
-						name,
-						namespace,
-						resourceVersion: involvedObject.metadata?.resourceVersion,
-						uid: involvedObject.metadata?.uid,
-					},
+					involvedObject: ref,
 					count: 1,
 					firstTimestamp: now,
 					lastTimestamp: now,
@@ -62,4 +73,23 @@ export class EventRecorder {
 			}
 		}
 	}
+}
+
+function objectReference(object: EventObject): V1ObjectReference {
+	if ("metadata" in object) {
+		return {
+			apiVersion: object.apiVersion,
+			kind: object.kind,
+			name: object.metadata?.name,
+			namespace: object.metadata?.namespace ?? "default",
+			resourceVersion: object.metadata?.resourceVersion,
+			uid: object.metadata?.uid,
+		};
+	}
+	return object;
+}
+
+function sprintf(messageFmt: string, args: unknown[]): string {
+	let index = 0;
+	return messageFmt.replace(/%[sdv]/g, () => String(args[index++] ?? ""));
 }
