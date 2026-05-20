@@ -1,25 +1,13 @@
 import type { V1Container, V1Pod, V1Probe } from "../../../client";
 import { Channel, select } from "../../../go/channel";
 import type { Context } from "../../../go/context";
-import type { Clock } from "../../../clock";
 import * as time from "../../../go/time";
 import * as podutil from "../../api/v1/pod/util";
 import { type ContainerID, parseContainerID } from "../container";
 import type { ProbeManager } from "./prober-manager";
 import type { ProberResult, ProbeType, ResultsManager } from "./results";
 
-export interface WorkerOptions {
-	clock: Clock;
-	probeManager: ProbeManager;
-	results: ResultsManager;
-	pod: V1Pod;
-	container: V1Container;
-	probe: V1Probe;
-	probeType: ProbeType;
-}
-
 export class ProbeWorker {
-	private readonly clock: Clock;
 	private readonly pod: V1Pod;
 	private readonly container: V1Container;
 	private readonly spec: V1Probe;
@@ -35,16 +23,22 @@ export class ProbeWorker {
 	private resultRun = 0;
 	private onHold = false;
 
-	constructor(options: WorkerOptions) {
-		this.clock = options.clock;
-		this.pod = options.pod;
-		this.container = options.container;
-		this.spec = options.probe;
-		this.probeType = options.probeType;
-		this.initialValue = initialResult(options.probeType);
-		this.resultsManager = options.results;
-		this.probeManager = options.probeManager;
-
+	// Models kubernetes/pkg/kubelet/prober/worker.go newWorker.
+	constructor(
+		probeManager: ProbeManager,
+		probeType: ProbeType,
+		pod: V1Pod,
+		container: V1Container,
+	) {
+		this.pod = pod;
+		this.container = container;
+		this.probeType = probeType;
+		this.probeManager = probeManager;
+		[this.spec, this.resultsManager, this.initialValue] = probeWorkerConfig(
+			probeManager,
+			probeType,
+			container,
+		);
 		this.intervalMs = (this.spec.periodSeconds ?? 10) * 1000;
 	}
 
@@ -59,9 +53,9 @@ export class ProbeWorker {
 	// Models kubernetes/pkg/kubelet/prober/worker.go run.
 	async run(ctx: Context): Promise<void> {
 		const probeTickerPeriod = this.intervalMs;
-		const sinceStart = this.clock.nowMs() - this.probeManager.startedAt.getTime();
+		const sinceStart = this.probeManager.clock.nowMs() - this.probeManager.startedAt.getTime();
 		if (probeTickerPeriod > sinceStart) {
-			const delay = time.after(this.clock, Math.random() * probeTickerPeriod);
+			const delay = time.after(this.probeManager.clock, Math.random() * probeTickerPeriod);
 			const selected = await select()
 				.case(this.stopCh, () => "stop")
 				.case(delay, () => "continue");
@@ -75,7 +69,7 @@ export class ProbeWorker {
 			}
 		}
 
-		const probeTicker = new time.Ticker(this.clock, probeTickerPeriod);
+		const probeTicker = new time.Ticker(this.probeManager.clock, probeTickerPeriod);
 		try {
 			for (; await this.doProbe(ctx); ) {
 				const selected = await select()
@@ -146,7 +140,7 @@ export class ProbeWorker {
 
 		const initialDelayMs = (this.spec.initialDelaySeconds ?? 0) * 1000;
 		const startedAt = c.state.running.startedAt?.getTime();
-		if (startedAt !== undefined && this.clock.nowMs() < startedAt + initialDelayMs) {
+		if (startedAt !== undefined && this.probeManager.clock.nowMs() < startedAt + initialDelayMs) {
 			return true;
 		}
 
@@ -197,13 +191,36 @@ export class ProbeWorker {
 	}
 }
 
-function initialResult(probeType: ProbeType): ProberResult {
+function probeWorkerConfig(
+	probeManager: ProbeManager,
+	probeType: ProbeType,
+	container: V1Container,
+): [spec: V1Probe, resultsManager: ResultsManager, initialValue: ProberResult] {
 	switch (probeType) {
 		case "readiness":
-			return "failure";
+			return [
+				requiredProbe(container.readinessProbe, probeType),
+				probeManager.readinessManager,
+				"failure",
+			];
 		case "liveness":
-			return "success";
+			return [
+				requiredProbe(container.livenessProbe, probeType),
+				probeManager.livenessManager,
+				"success",
+			];
 		case "startup":
-			return "unknown";
+			return [
+				requiredProbe(container.startupProbe, probeType),
+				probeManager.startupManager,
+				"unknown",
+			];
 	}
+}
+
+function requiredProbe(probe: V1Probe | undefined, probeType: ProbeType): V1Probe {
+	if (probe === undefined) {
+		throw new Error(`${probeType} probe is required`);
+	}
+	return probe;
 }
