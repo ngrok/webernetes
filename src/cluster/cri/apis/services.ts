@@ -13,9 +13,14 @@ import type {
 import type * as context from "../../../go/context";
 import type { ContainerConfig, ImageSpec, PodSandboxConfig } from "../runtime";
 
+export type ServiceError = Error | undefined;
+
 // Models staging/src/k8s.io/cri-api/pkg/apis/services.go RuntimeVersioner.
 export interface RuntimeVersioner {
-	version(ctx: context.Context, apiVersion: string): Promise<VersionResponse>;
+	version(
+		ctx: context.Context,
+		apiVersion: string,
+	): Promise<[response: VersionResponse | undefined, err: ServiceError]>;
 }
 
 // Models staging/src/k8s.io/cri-api/pkg/apis/services.go ContainerManager.
@@ -25,25 +30,25 @@ export interface ContainerManager {
 		podSandboxId: string,
 		config: ContainerConfig,
 		sandboxConfig: PodSandboxConfig,
-	): Promise<string>;
-	startContainer(ctx: context.Context, containerId: string): Promise<void>;
-	stopContainer(ctx: context.Context, containerId: string, timeout?: number): Promise<void>;
-	removeContainer(ctx: context.Context, containerId: string): Promise<void>;
+	): Promise<[containerId: string, err: ServiceError]>;
+	startContainer(ctx: context.Context, containerId: string): Promise<ServiceError>;
+	stopContainer(ctx: context.Context, containerId: string, timeout?: number): Promise<ServiceError>;
+	removeContainer(ctx: context.Context, containerId: string): Promise<ServiceError>;
 	listContainers(
 		ctx: context.Context,
 		filter?: ContainerFilter,
-	): Promise<ListContainersResponse["containers"]>;
+	): Promise<[containers: ListContainersResponse["containers"], err: ServiceError]>;
 	containerStatus(
 		ctx: context.Context,
 		containerId: string,
 		verbose?: boolean,
-	): Promise<ContainerStatusResponse>;
+	): Promise<[response: ContainerStatusResponse | undefined, err: ServiceError]>;
 	execSync(
 		ctx: context.Context,
 		containerId: string,
 		cmd: string[],
 		timeout?: number,
-	): Promise<ExecSyncResponse>;
+	): Promise<[response: ExecSyncResponse | undefined, err: ServiceError]>;
 }
 
 // Models staging/src/k8s.io/cri-api/pkg/apis/services.go PodSandboxManager.
@@ -52,23 +57,26 @@ export interface PodSandboxManager {
 		ctx: context.Context,
 		config: PodSandboxConfig,
 		runtimeHandler?: string,
-	): Promise<string>;
-	stopPodSandbox(ctx: context.Context, podSandboxId: string): Promise<void>;
-	removePodSandbox(ctx: context.Context, podSandboxId: string): Promise<void>;
+	): Promise<[podSandboxId: string, err: ServiceError]>;
+	stopPodSandbox(ctx: context.Context, podSandboxId: string): Promise<ServiceError>;
+	removePodSandbox(ctx: context.Context, podSandboxId: string): Promise<ServiceError>;
 	podSandboxStatus(
 		ctx: context.Context,
 		podSandboxId: string,
 		verbose?: boolean,
-	): Promise<PodSandboxStatusResponse>;
+	): Promise<[response: PodSandboxStatusResponse | undefined, err: ServiceError]>;
 	listPodSandbox(
 		ctx: context.Context,
 		filter?: PodSandboxFilter,
-	): Promise<ListPodSandboxResponse["items"]>;
+	): Promise<[items: ListPodSandboxResponse["items"], err: ServiceError]>;
 }
 
 // Models staging/src/k8s.io/cri-api/pkg/apis/services.go RuntimeService.
 export interface RuntimeService extends RuntimeVersioner, ContainerManager, PodSandboxManager {
-	status(ctx: context.Context, verbose?: boolean): Promise<StatusResponse>;
+	status(
+		ctx: context.Context,
+		verbose?: boolean,
+	): Promise<[response: StatusResponse | undefined, err: ServiceError]>;
 }
 
 // Models staging/src/k8s.io/cri-api/pkg/apis/services.go ImageManagerService.
@@ -76,20 +84,20 @@ export interface ImageManagerService {
 	getImageRef(
 		ctx: context.Context,
 		image: ImageSpec,
-	): Promise<[imageRef: string, err: Error | undefined]>;
+	): Promise<[imageRef: string, err: ServiceError]>;
 	getImageSize(
 		ctx: context.Context,
 		image: ImageSpec,
-	): Promise<[imageSize: number, err: Error | undefined]>;
+	): Promise<[imageSize: number, err: ServiceError]>;
 	imageStatus(
 		ctx: context.Context,
 		image: ImageSpec,
 		verbose?: boolean,
-	): Promise<ImageStatusResponse>;
+	): Promise<[response: ImageStatusResponse | undefined, err: ServiceError]>;
 	pullImage(
 		ctx: context.Context,
 		image: ImageSpec,
 		credentials: unknown[],
 		podSandboxConfig?: PodSandboxConfig,
-	): Promise<[imageRef: string, credentialsUsed: unknown | undefined, err: Error | undefined]>;
+	): Promise<[imageRef: string, credentialsUsed: unknown | undefined, err: ServiceError]>;
 }

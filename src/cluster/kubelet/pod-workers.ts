@@ -55,6 +55,7 @@ interface PodWork {
 interface SyncPodResult {
 	isTerminal: boolean;
 	postSync?: () => void;
+	syncError?: Error;
 }
 
 // Internal zero-value shape used by podSyncStatus.activeUpdate. Go can allocate
@@ -541,7 +542,11 @@ export class PodWorkers {
 								podStatus,
 							);
 							isTerminal = result.isTerminal;
-							postSync = result.postSync;
+							if (result.syncError) {
+								err = result.syncError;
+							} else {
+								postSync = result.postSync;
+							}
 						}
 						break;
 				}
