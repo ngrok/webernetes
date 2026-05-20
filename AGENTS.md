@@ -33,6 +33,28 @@ General rules for this repository:
   simulator can be paused and controlled deterministically.
 - When a function or constructor accepts a `context.Context`, make that argument
   the first parameter and name it `ctx`, matching Kubernetes Go conventions.
+- When transliterating Go functions into TypeScript, use TypeScript naming
+  conventions for function names. In particular, do not preserve Go's exported
+  initial capital; `GetPartialReference` should become `getPartialReference`.
+- When mirroring Go code that returns `(value, error)`, prefer explicit tuple
+  returns such as `[value, err]` over throwing exceptions. If you find
+  try/catch or thrown errors in mirrored code where upstream returns an error,
+  treat that as parity debt and convert it unless there is a clear local
+  boundary that requires exceptions.
+- Do not copy upstream comments when transliterating code. Keep local comments
+  only when they explain simulator-specific behavior or non-obvious local
+  constraints; readers can refer to the upstream source for upstream commentary.
+- Files that mirror upstream Kubernetes code should keep local source-mapping
+  comments in the form `// Models <upstream path> <name>` before mirrored
+  declarations. These comments are not copied upstream commentary; they are
+  required breadcrumbs for reviewing parity.
+- For Kubernetes `pkg/` paths, this repository's `src/` directory acts as the
+  package root. For example, upstream `pkg/util/parsers` should be mirrored
+  under `src/util/parsers`, not `src/pkg/util/parsers`.
+- When changing code that mimics real Kubernetes behavior, protect parity even
+  in conversation. If a requested change would move the implementation away
+  from the upstream structure or behavior being modeled, challenge the request,
+  explain the parity issue, and lay out the viable options before editing.
 - When mirroring Go `iota` enums in TypeScript, use string unions for the named
   enum values. If code needs to model the Go zero value, use the first `iota`
   enum value; do not add an empty string to the union to emulate a zero value.

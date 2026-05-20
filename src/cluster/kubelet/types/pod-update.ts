@@ -13,7 +13,7 @@ export const configHashAnnotationKey = "kubernetes.io/config.hash";
 export const apiserverSource = "api";
 
 // Models kubernetes/pkg/kubelet/types/pod_update.go PodOperation.
-export type PodOperation = "ADD" | "DELETE" | "REMOVE" | "UPDATE";
+export type PodOperation = "ADD" | "DELETE" | "REMOVE" | "UPDATE" | "RECONCILE";
 
 // Models kubernetes/pkg/kubelet/types/pod_update.go PodUpdate.
 export interface PodUpdate {
