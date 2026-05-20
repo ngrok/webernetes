@@ -9,7 +9,9 @@ export class ImagePullError extends Error {
 			| "ImagePullBackOff"
 			| "ErrImageNeverPull"
 			| "InvalidImageName"
-			| "ErrImageInspect",
+			| "ErrImageInspect"
+			| "RegistryUnavailable"
+			| "SignatureValidationFailed",
 		readonly messageForStatus: string,
 	) {
 		super(reason);
