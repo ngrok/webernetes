@@ -183,6 +183,141 @@ kubernetes.describe("Pods", (context) => {
 		expect(eventComponentFor(events.find((event) => event.reason === "Started"))).toBe("kubelet");
 	});
 
+	it("should report image pull failures and back off retries", async () => {
+		const podName = "image-pull-backoff-test";
+		const image = "registry.k8s.io/webernetes/does-not-exist:404";
+		await createPod({
+			metadata: { name: podName },
+			spec: {
+				containers: [{ name: "missing", image, imagePullPolicy: "Always" }],
+			},
+		});
+		const namespace = await getTestNamespace();
+		const podResource = {
+			apiVersion: "v1",
+			kind: "Pod",
+			metadata: {
+				name: podName,
+				namespace,
+			},
+		};
+		const pullErrorMessage = `rpc error: code = NotFound desc = failed to pull and unpack image "${image}": failed to resolve reference "${image}": ${image}: not found`;
+		const backOffMessage = `Back-off pulling image "${image}": ErrImagePull: ${pullErrorMessage}`;
+
+		await waitFor(async () => {
+			const pod = await readPod(podName, namespace);
+			const status = containerStatus(pod, "missing");
+			expect(pod.status?.phase).toBe("Pending");
+			expect(status.state?.waiting?.reason).toBe("ErrImagePull");
+			expect(status.state?.waiting?.message).toBe(pullErrorMessage);
+		});
+
+		await waitFor(async () => {
+			const events = await eventsFor(podResource);
+			expect(events).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						reason: "Pulling",
+						message: `Pulling image "${image}"`,
+					}),
+					expect.objectContaining({
+						reason: "Failed",
+						message: `Failed to pull image "${image}": ${pullErrorMessage}`,
+					}),
+					expect.objectContaining({
+						reason: "Failed",
+						message: "Error: ErrImagePull",
+					}),
+				]),
+			);
+		});
+
+		await core.patchNamespacedPod(
+			{
+				name: podName,
+				namespace,
+				body: {
+					metadata: {
+						labels: {
+							retry: "now",
+						},
+					},
+				},
+			},
+			mergePatchOptions,
+		);
+
+		await waitFor(async () => {
+			const pod = await readPod(podName, namespace);
+			const status = containerStatus(pod, "missing");
+			expect(pod.status?.phase).toBe("Pending");
+			expect(status.state?.waiting?.reason).toBe("ImagePullBackOff");
+			expect(status.state?.waiting?.message).toBe(backOffMessage);
+		});
+
+		await waitFor(async () => {
+			const events = await eventsFor(podResource);
+			expect(events).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						reason: "BackOff",
+						message: `Back-off pulling image "${image}"`,
+					}),
+					expect.objectContaining({
+						reason: "Failed",
+						message: "Error: ImagePullBackOff",
+					}),
+				]),
+			);
+		});
+	});
+
+	it("should report invalid image names without pulling", async () => {
+		const podName = "invalid-image-name-test";
+		const image = "FAILED_IMAGE";
+		await createPod({
+			metadata: { name: podName },
+			spec: {
+				containers: [{ name: "invalid", image, imagePullPolicy: "Always" }],
+			},
+		});
+		const namespace = await getTestNamespace();
+		const podResource = {
+			apiVersion: "v1",
+			kind: "Pod",
+			metadata: {
+				name: podName,
+				namespace,
+			},
+		};
+		const parseError = `couldn't parse image name "${image}": invalid reference format: repository name (library/${image}) must be lowercase`;
+		const statusMessage = `Failed to apply default image tag "${image}": ${parseError}`;
+
+		await waitFor(async () => {
+			const pod = await readPod(podName, namespace);
+			const status = containerStatus(pod, "invalid");
+			expect(pod.status?.phase).toBe("Pending");
+			expect(status.state?.waiting?.reason).toBe("InvalidImageName");
+			expect(status.state?.waiting?.message).toBe(statusMessage);
+		});
+
+		await waitFor(async () => {
+			const events = await eventsFor(podResource);
+			expect(events).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						reason: "InspectFailed",
+						message: statusMessage,
+					}),
+					expect.objectContaining({
+						reason: "Failed",
+						message: "Error: InvalidImageName",
+					}),
+				]),
+			);
+		});
+	});
+
 	it("should be able to replace a pod", async () => {
 		const original = await createPod({
 			metadata: {
