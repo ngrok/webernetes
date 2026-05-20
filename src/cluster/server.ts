@@ -1,6 +1,13 @@
 import { Cluster } from "./cluster";
-import { Runtime } from "./cri";
+import type { ClusterNetwork } from "./cni";
+import {
+	InProcessRuntimeService,
+	type ImageManagerService,
+	type RuntimeDiagnostics,
+	type RuntimeService,
+} from "./cri";
 import { Kubelet } from "./kubelet";
+import type { Runtime as KubeletRuntime } from "./kubelet/container";
 import * as context from "../go/context";
 
 export interface ServerOptions {
@@ -13,7 +20,12 @@ export class Server {
 	podCIDR: string;
 	cluster: Cluster;
 	kubelet: Kubelet;
-	runtime: Runtime;
+	runtime: InProcessRuntimeService;
+	runtimeService: RuntimeService;
+	imageService: ImageManagerService;
+	containerRuntime: KubeletRuntime;
+	runtimeDiagnostics: RuntimeDiagnostics;
+	network: ClusterNetwork;
 	private ctx: context.Context | undefined;
 	private cancelContext: context.CancelFunc | undefined;
 	private closePromise: Promise<void> | undefined;
@@ -22,7 +34,7 @@ export class Server {
 		this.name = options.name;
 		this.podCIDR = options.podCIDR;
 		this.cluster = cluster;
-		this.runtime = new Runtime({
+		this.runtime = new InProcessRuntimeService({
 			ctx: cluster.ctx,
 			clock: cluster.clock,
 			kubeConfig: cluster.kubeConfig,
@@ -31,6 +43,11 @@ export class Server {
 			imageRegistry: cluster.imageRegistry,
 			idPrefix: `${this.name}-`,
 		});
+		this.runtimeService = this.runtime;
+		this.imageService = this.runtime;
+		this.containerRuntime = this.runtime;
+		this.runtimeDiagnostics = this.runtime;
+		this.network = cluster.network;
 		this.kubelet = new Kubelet(this);
 	}
 
