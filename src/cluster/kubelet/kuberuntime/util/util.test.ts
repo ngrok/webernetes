@@ -2,6 +2,7 @@ import { expect, it } from "vitest";
 import { browser } from "../../../../test/describe";
 import { getNodenameForKernel } from "./util";
 
+// Test cases mirror kubernetes/pkg/kubelet/util/util_test.go TestGetNodenameForKernel.
 browser.describe("getNodenameForKernel", () => {
 	it.each([
 		{
