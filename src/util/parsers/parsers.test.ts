@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { expect, it } from "vitest";
+import { browser } from "../../test/describe";
 import { parse, parseImageName, parseNormalizedNamed } from "./parsers";
 
 function tagOf(ref: unknown): string {
@@ -45,7 +46,7 @@ interface ParseSuccessCase {
 	digest?: string;
 }
 
-describe("parseImageName", () => {
+browser.describe("parseImageName", () => {
 	it.each([
 		["root", "docker.io/library/root", "latest", ""],
 		["root:tag", "docker.io/library/root", "tag", ""],
@@ -103,7 +104,7 @@ describe("parseImageName", () => {
 	});
 });
 
-describe("parse", () => {
+browser.describe("parse", () => {
 	const parseSuccessCases: ParseSuccessCase[] = [
 		{ input: "test_com", name: "test_com" },
 		{ input: "test.com:tag", name: "test.com", tag: "tag" },
@@ -268,7 +269,7 @@ describe("parse", () => {
 	});
 });
 
-describe("parseNormalizedNamed", () => {
+browser.describe("parseNormalizedNamed", () => {
 	it.each([
 		["docker/docker", "docker.io/docker/docker"],
 		["library/debian", "docker.io/library/debian"],

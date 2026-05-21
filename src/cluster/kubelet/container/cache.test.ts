@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { expect, it } from "vitest";
+import { browser } from "../../../test/describe";
 import { PodStatusCache } from "./cache";
 import type { PodRuntimeStatus } from "../../cri";
 
-describe("PodStatusCache", () => {
+browser.describe("PodStatusCache", () => {
 	it("returns empty status for missing pods once the cache is globally fresh", async () => {
 		const cache = new PodStatusCache();
 		const pending = cache.getNewerThan("pod-1", new Date(1000));

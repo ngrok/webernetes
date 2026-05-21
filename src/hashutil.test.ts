@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { expect, it } from "vitest";
 import * as fnv from "./fnv";
 import * as hashutil from "./hashutil";
+import { browser } from "./test/describe";
 
-describe("fnv", () => {
+browser.describe("fnv", () => {
 	it("computes FNV-1a 32-bit hashes", () => {
 		/*
 		package main
@@ -25,7 +26,7 @@ describe("fnv", () => {
 	});
 });
 
-describe("hashutil", () => {
+browser.describe("hashutil", () => {
 	it("deep-hashes JSON bytes using Kubernetes dump formatting", () => {
 		/*
 		package main

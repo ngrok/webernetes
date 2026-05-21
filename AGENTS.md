@@ -74,6 +74,11 @@ General rules for this repository:
 - Unless it is literally impossible to do so, test Kubernetes behavior through
   the parity tests in `src/client/tests/` so the simulated cluster is checked
   against real Kubernetes behavior.
+- Top-level test suites must use the repository harness describes:
+  `browser.describe` for browser-safe unit tests, `kubernetes.describe` for
+  Kubernetes parity tests, and `etcd.describe` or `fakeEtcd.describe` for etcd
+  coverage. Nested raw `describe` blocks inside a harness suite are acceptable
+  for grouping.
 - When adding functionality or fixing a behavior mismatch, write the test first
   and run it before the fix. For Kubernetes-facing behavior, observe the test
   fail against the simulator and pass against k3s before changing the

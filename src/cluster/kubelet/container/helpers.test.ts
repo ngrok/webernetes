@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { expect, it } from "vitest";
+import { browser } from "../../../test/describe";
 import { hashContainer } from "./helpers";
 
-describe("hashContainer", () => {
+browser.describe("hashContainer", () => {
 	it("matches the upstream Kubernetes container hash fixture", () => {
 		/*
 		package main
