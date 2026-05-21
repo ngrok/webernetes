@@ -1,7 +1,7 @@
 import type { V1Container, V1HTTPGetAction } from "../../../client";
 import { NetworkError, type ClusterNetwork } from "../../cni";
 import type { ProbeResult } from "../probe";
-import { resolvePort } from "../util";
+import { resolveContainerPort } from "../util";
 import { newRequestForHTTPGetAction } from "./request";
 
 export class HTTPProber {
@@ -16,8 +16,8 @@ export class HTTPProber {
 		if (action.scheme && action.scheme !== "HTTP") {
 			return "failure";
 		}
-		const port = resolvePort(action.port, containerSpec);
-		if (port === undefined) {
+		const [port, portErr] = resolveContainerPort(action.port, containerSpec);
+		if (portErr) {
 			return "failure";
 		}
 

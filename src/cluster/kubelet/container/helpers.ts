@@ -1,9 +1,22 @@
-import type { V1Container, V1Pod } from "../../../client";
+import type { V1Container, V1LifecycleHandler, V1Pod } from "../../../client";
+import type * as context from "../../../go/context";
 import * as fnv from "../../../fnv";
 import * as hashutil from "../../../hashutil";
 import type { ContainerPort, PodRuntimeStatus, PodSandboxState, PortMapping } from "../../cri";
 import { containerShouldRestart } from "../../api/v1/pod/util";
 import { buildContainerID, findContainerStatusByName, type Pod, type State } from "./runtime";
+import type { ContainerID } from "./runtime";
+
+// Models kubernetes/pkg/kubelet/container/helpers.go HandlerRunner.
+export interface HandlerRunner {
+	run(
+		ctx: context.Context,
+		containerID: ContainerID,
+		pod: V1Pod,
+		container: V1Container,
+		handler: V1LifecycleHandler,
+	): Promise<[message: string, err: Error | undefined]>;
+}
 
 export function runtimeProtocol(
 	protocol: string | undefined,

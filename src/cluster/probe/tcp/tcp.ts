@@ -1,7 +1,7 @@
 import type { V1Container, V1TCPSocketAction } from "../../../client";
 import type { ClusterNetwork } from "../../cni";
 import type { ProbeResult } from "../probe";
-import { resolvePort } from "../util";
+import { resolveContainerPort } from "../util";
 
 export class TCPProber {
 	constructor(private readonly network: ClusterNetwork) {}
@@ -12,8 +12,8 @@ export class TCPProber {
 		containerSpec: V1Container,
 		action: V1TCPSocketAction,
 	): ProbeResult {
-		const port = resolvePort(action.port, containerSpec);
-		if (port === undefined) {
+		const [port, portErr] = resolveContainerPort(action.port, containerSpec);
+		if (portErr) {
 			return "failure";
 		}
 		const host = action.host || podIP || "";

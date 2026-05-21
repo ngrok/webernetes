@@ -12,12 +12,12 @@ export class ExecProber {
 		action: V1ExecAction,
 		timeoutMs: number,
 	): Promise<ProbeResult> {
-		const result = await this.runner.runInContainer(
+		const [, err] = await this.runner.runInContainer(
 			containerId,
 			expandCommand(action.command ?? [], container.env ?? []),
 			timeoutMs / 1000,
 		);
-		return result.exitCode === 0 ? "success" : "failure";
+		return err ? "failure" : "success";
 	}
 }
 
