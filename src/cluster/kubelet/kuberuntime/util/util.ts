@@ -2,12 +2,6 @@ import type { V1Pod } from "../../../../client";
 import type { PodRuntimeStatus } from "../../../cri";
 import { isHostNetworkPod } from "../../container";
 
-interface PodSandboxChangedResult {
-	changed: boolean;
-	attempt: number;
-	sandboxId: string;
-}
-
 // Models kubernetes/pkg/kubelet/util/util.go GetNodenameForKernel.
 export function getNodenameForKernel(
 	hostname: string,
@@ -35,9 +29,9 @@ export function getNodenameForKernel(
 export function podSandboxChanged(
 	pod: V1Pod,
 	podStatus: PodRuntimeStatus,
-): PodSandboxChangedResult {
+): [changed: boolean, attempt: number, sandboxId: string] {
 	if (podStatus.sandboxStatuses.length === 0) {
-		return { changed: true, attempt: 0, sandboxId: "" };
+		return [true, 0, ""];
 	}
 
 	let readySandboxCount = 0;
@@ -49,21 +43,13 @@ export function podSandboxChanged(
 
 	const sandboxStatus = podStatus.sandboxStatuses[0];
 	if (!sandboxStatus) {
-		return { changed: true, attempt: 0, sandboxId: "" };
+		return [true, 0, ""];
 	}
 	if (readySandboxCount > 1) {
-		return {
-			changed: true,
-			attempt: sandboxStatus.metadata.attempt + 1,
-			sandboxId: sandboxStatus.id,
-		};
+		return [true, sandboxStatus.metadata.attempt + 1, sandboxStatus.id];
 	}
 	if (sandboxStatus.state !== "Ready") {
-		return {
-			changed: true,
-			attempt: sandboxStatus.metadata.attempt + 1,
-			sandboxId: sandboxStatus.id,
-		};
+		return [true, sandboxStatus.metadata.attempt + 1, sandboxStatus.id];
 	}
 
 	if (
@@ -71,16 +57,8 @@ export function podSandboxChanged(
 		sandboxStatus.network !== undefined &&
 		sandboxStatus.network.ip === ""
 	) {
-		return {
-			changed: true,
-			attempt: sandboxStatus.metadata.attempt + 1,
-			sandboxId: sandboxStatus.id,
-		};
+		return [true, sandboxStatus.metadata.attempt + 1, sandboxStatus.id];
 	}
 
-	return {
-		changed: false,
-		attempt: sandboxStatus.metadata.attempt,
-		sandboxId: sandboxStatus.id,
-	};
+	return [false, sandboxStatus.metadata.attempt, sandboxStatus.id];
 }
