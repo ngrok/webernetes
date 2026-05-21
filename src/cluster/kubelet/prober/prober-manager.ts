@@ -1,5 +1,6 @@
 import type { V1Container, V1ContainerStatus, V1Pod, V1PodStatus } from "../../../client";
 import type { Clock } from "../../../clock";
+import { KeyFnMap } from "../../../collections";
 import type { Context } from "../../../go/context";
 import type { ClusterNetwork } from "../../cni";
 import { parseContainerID, type CommandRunner } from "../container";
@@ -28,7 +29,7 @@ export class ProbeManager {
 	readonly prober: Prober;
 	readonly statusManager: StatusManager;
 	readonly clock: Clock;
-	private readonly workers = new WorkerMap();
+	private readonly workers = new KeyFnMap<ProbeKey, ProbeWorker>(probeKeyString);
 	// Go starts probe workers as goroutines and does not retain join handles.
 	// This simulator keeps the returned promises so close() can stop workers
 	// through their stop channel and then wait for their async cleanup to finish
@@ -36,7 +37,7 @@ export class ProbeManager {
 	private readonly workerRuns = new Map<ProbeWorker, Promise<void>>();
 	readonly startedAt: Date;
 
-	constructor(private readonly options: ProbeManagerOptions) {
+	constructor(options: ProbeManagerOptions) {
 		this.clock = options.clock;
 		this.prober = new Prober(options.runner, options.network);
 		this.statusManager = options.statusManager;
@@ -271,50 +272,6 @@ export class ProbeManager {
 		probeType: ProbeType,
 	): ProbeWorker | undefined {
 		return this.workers.get({ podUid, containerName, probeType });
-	}
-}
-
-// This exists because in Golang you can use structs as map keys and they
-// compare by value, but in TypeScript objects compare by identity. In order
-// for the code to look as close as possible to Go I've made this little Map
-// wrapper that uses a string key derived from the ProbeKey struct.
-class WorkerMap implements Iterable<[ProbeKey, ProbeWorker]> {
-	private readonly workers = new Map<string, { key: ProbeKey; worker: ProbeWorker }>();
-
-	get size(): number {
-		return this.workers.size;
-	}
-
-	has(key: ProbeKey): boolean {
-		return this.workers.has(probeKeyString(key));
-	}
-
-	get(key: ProbeKey): ProbeWorker | undefined {
-		return this.workers.get(probeKeyString(key))?.worker;
-	}
-
-	set(key: ProbeKey, worker: ProbeWorker): void {
-		this.workers.set(probeKeyString(key), {
-			// We store key for the iterator later.
-			key: { ...key },
-			worker,
-		});
-	}
-
-	delete(key: ProbeKey): void {
-		this.workers.delete(probeKeyString(key));
-	}
-
-	*values(): IterableIterator<ProbeWorker> {
-		for (const { worker } of this.workers.values()) {
-			yield worker;
-		}
-	}
-
-	*[Symbol.iterator](): IterableIterator<[ProbeKey, ProbeWorker]> {
-		for (const { key, worker } of this.workers.values()) {
-			yield [key, worker];
-		}
 	}
 }
 

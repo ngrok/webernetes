@@ -107,3 +107,82 @@ export class SortedMap<K, V> {
 		return low;
 	}
 }
+
+export class KeyFnMap<K, V> implements Iterable<[K, V]> {
+	private readonly items = new Map<string, { key: K; value: V }>();
+
+	constructor(
+		private readonly keyString: (key: K) => string = stableJSONStringify,
+		entries?: Iterable<readonly [K, V]>,
+		private readonly cloneKey: (key: K) => K = (key) => structuredClone(key),
+	) {
+		for (const [key, value] of entries || []) {
+			this.set(key, value);
+		}
+	}
+
+	get size(): number {
+		return this.items.size;
+	}
+
+	has(key: K): boolean {
+		return this.items.has(this.keyString(key));
+	}
+
+	get(key: K): V | undefined {
+		return this.items.get(this.keyString(key))?.value;
+	}
+
+	set(key: K, value: V): this {
+		this.items.set(this.keyString(key), { key: this.cloneKey(key), value });
+		return this;
+	}
+
+	delete(key: K): boolean {
+		return this.items.delete(this.keyString(key));
+	}
+
+	clear(): void {
+		this.items.clear();
+	}
+
+	*keys(): IterableIterator<K> {
+		for (const { key } of this.items.values()) {
+			yield this.cloneKey(key);
+		}
+	}
+
+	*values(): IterableIterator<V> {
+		for (const { value } of this.items.values()) {
+			yield value;
+		}
+	}
+
+	*entries(): IterableIterator<[K, V]> {
+		for (const { key, value } of this.items.values()) {
+			yield [this.cloneKey(key), value];
+		}
+	}
+
+	[Symbol.iterator](): IterableIterator<[K, V]> {
+		return this.entries();
+	}
+}
+
+function stableJSONStringify(value: unknown): string {
+	return JSON.stringify(sortJSONValue(value));
+}
+
+function sortJSONValue(value: unknown): unknown {
+	if (Array.isArray(value)) {
+		return value.map(sortJSONValue);
+	}
+	if (value !== null && typeof value === "object") {
+		return Object.fromEntries(
+			Object.entries(value)
+				.toSorted(([left], [right]) => left.localeCompare(right))
+				.map(([key, item]) => [key, sortJSONValue(item)]),
+		);
+	}
+	return value;
+}
