@@ -8,6 +8,29 @@ interface PodSandboxChangedResult {
 	sandboxId: string;
 }
 
+// Models kubernetes/pkg/kubelet/util/util.go GetNodenameForKernel.
+export function getNodenameForKernel(
+	hostname: string,
+	hostDomainName: string,
+	setHostnameAsFQDN: boolean | undefined,
+): [nodeName: string, err: Error | undefined] {
+	let kernelHostname = hostname;
+	const fqdnMaxLen = 64;
+	if (hostDomainName.length > 0 && setHostnameAsFQDN === true) {
+		const fqdn = `${hostname}.${hostDomainName}`;
+		if (fqdn.length > fqdnMaxLen) {
+			return [
+				"",
+				new Error(
+					`failed to construct FQDN from pod hostname and cluster domain, FQDN ${fqdn} is too long (${fqdnMaxLen} characters is the max, ${fqdn.length} characters requested)`,
+				),
+			];
+		}
+		kernelHostname = fqdn;
+	}
+	return [kernelHostname, undefined];
+}
+
 // Models kubernetes/pkg/kubelet/kuberuntime/util/util.go PodSandboxChanged.
 export function podSandboxChanged(
 	pod: V1Pod,
