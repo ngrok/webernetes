@@ -20,6 +20,11 @@ General rules for this repository:
 - The simulator is not currently trying to support init containers, ephemeral
   containers, or Kubernetes' volumes / CSI subsystem. Keep new simulator work
   scoped to regular containers unless a task explicitly changes that scope.
+- The simulator is not currently trying to support image pull secrets,
+  credential providers, or private registry authentication. Preserve upstream
+  call shapes around image pull credentials where useful for parity, but keep
+  credential resolution as a no-op unless a task explicitly expands image
+  authentication support.
 - The simulator is not currently modeling pod/container resource requests,
   limits, resize policy, in-place pod vertical scaling, or kubelet
   `allocationManager` behavior. Do not add allocation-manager parity code in
