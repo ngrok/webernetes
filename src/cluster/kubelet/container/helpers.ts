@@ -2,10 +2,16 @@ import type { V1Container, V1LifecycleHandler, V1Pod } from "../../../client";
 import type * as context from "../../../go/context";
 import * as fnv from "../../../fnv";
 import * as hashutil from "../../../hashutil";
-import type { ContainerPort, PodRuntimeStatus, PodSandboxState, PortMapping } from "../../cri";
+import type {
+	ContainerPort,
+	DnsConfig,
+	PodRuntimeStatus,
+	PodSandboxState,
+	PortMapping,
+} from "../../cri";
 import { containerShouldRestart } from "../../api/v1/pod/util";
 import { buildContainerID, findContainerStatusByName, type Pod, type State } from "./runtime";
-import type { ContainerID } from "./runtime";
+import type { ContainerID, RunContainerOptions } from "./runtime";
 
 // Models kubernetes/pkg/kubelet/container/helpers.go HandlerRunner.
 export interface HandlerRunner {
@@ -16,6 +22,46 @@ export interface HandlerRunner {
 		container: V1Container,
 		handler: V1LifecycleHandler,
 	): Promise<[message: string, err: Error | undefined]>;
+}
+
+// Models kubernetes/pkg/kubelet/container/helpers.go RuntimeHelper.
+export interface RuntimeHelper {
+	generateRunContainerOptions(
+		ctx: context.Context,
+		pod: V1Pod,
+		container: V1Container,
+		podIP: string,
+		podIPs: string[],
+		imageVolumes: unknown,
+	): [
+		containerOptions: RunContainerOptions | undefined,
+		cleanupAction: (() => void) | undefined,
+		err: Error | undefined,
+	];
+	getPodDNS(
+		ctx: context.Context,
+		pod: V1Pod,
+	): [dnsConfig: DnsConfig | undefined, err: Error | undefined];
+	getPodCgroupParent(pod: V1Pod): string;
+	getPodDir(podUid: string): string;
+	generatePodHostNameAndDomain(
+		pod: V1Pod,
+	): [hostname: string, hostDomain: string, err: Error | undefined];
+	getExtraSupplementalGroupsForPod(pod: V1Pod): number[];
+	getOrCreateUserNamespaceMappings(
+		pod: V1Pod | undefined,
+		runtimeHandler: string,
+	): [userNamespace: unknown, err: Error | undefined];
+	prepareDynamicResources(ctx: context.Context, pod: V1Pod): Error | undefined;
+	unprepareDynamicResources(ctx: context.Context, pod: V1Pod): Error | undefined;
+	requestPodReinspect(podUid: string): void;
+	requestPodRelist(podUid: string): void;
+	podCPUAndMemoryStats(
+		ctx: context.Context,
+		pod: V1Pod,
+		podStatus: PodRuntimeStatus,
+	): [podStats: unknown, err: Error | undefined];
+	onPodSandboxReady(ctx: context.Context, pod: V1Pod): Error | undefined;
 }
 
 export function runtimeProtocol(
@@ -59,7 +105,7 @@ export function convertPodStatusToRunningPod(
 		containers: podStatus.containerStatuses
 			.filter((containerStatus) => containerStatus.state === "Running")
 			.map((containerStatus) => ({
-				id: containerStatus.id,
+				id: containerStatus.id.id,
 				name: containerStatus.name,
 				image: containerStatus.imageRef,
 				imageID: containerStatus.imageRef,
