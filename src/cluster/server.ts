@@ -53,7 +53,7 @@ export class Server {
 
 	async boot(ctx: context.Context) {
 		[this.ctx, this.cancelContext] = context.withCancel(ctx);
-		await this.kubelet.start(this.ctx);
+		await this.kubelet.start();
 	}
 
 	close(): Promise<void> {
