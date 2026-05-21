@@ -1,3 +1,4 @@
+// oxlint-disable typescript/no-non-null-assertion
 import { expect, it } from "vitest";
 import { CIDR } from "../../net";
 import { kubernetes } from "../../test/harnesses/kubernetes";
@@ -15,6 +16,7 @@ kubernetes.describe("Pods", (context) => {
 		fetchNodePort,
 		readPod,
 		containerStatus,
+		exec,
 		waitFor,
 		waitForPodReady,
 		eventsFor,
@@ -22,6 +24,7 @@ kubernetes.describe("Pods", (context) => {
 		eventReasonCountFor,
 	} = context.helpers;
 	const podImage = "registry.k8s.io/pause:3.10";
+	const busyboxImage = "busybox:1.36";
 	const mergePatchOptions = k8s.setHeaderOptions("Content-Type", k8s.PatchStrategy.MergePatch);
 
 	it("should be able to create a pod", async () => {
@@ -181,6 +184,109 @@ kubernetes.describe("Pods", (context) => {
 			"default-scheduler",
 		);
 		expect(eventComponentFor(events.find((event) => event.reason === "Started"))).toBe("kubelet");
+	});
+
+	it("should run postStart exec lifecycle hooks", async () => {
+		const podName = "post-start-exec-hook-test";
+		let pod = await createPod({
+			metadata: { name: podName },
+			spec: {
+				containers: [
+					{
+						name: "test",
+						image: busyboxImage,
+						command: ["sleep", "3600"],
+						lifecycle: {
+							postStart: {
+								exec: {
+									command: ["touch", "/tmp/post-start"],
+								},
+							},
+						},
+					},
+				],
+			},
+		});
+
+		pod = await waitForPodReady(pod);
+
+		await waitFor(async () => {
+			const result = await exec(pod, "test", ["test", "-f", "/tmp/post-start"]);
+			expect(result.exitCode).toBe(0);
+		});
+	});
+
+	it("should record failed postStart lifecycle hooks", async () => {
+		const podName = "post-start-fail-hook-test";
+		await createPod({
+			metadata: { name: podName },
+			spec: {
+				containers: [
+					{
+						name: "test",
+						image: busyboxImage,
+						command: ["sleep", "3600"],
+						lifecycle: {
+							postStart: {
+								exec: {
+									command: ["false"],
+								},
+							},
+						},
+					},
+				],
+			},
+		});
+		const namespace = await getTestNamespace();
+		const podResource = {
+			apiVersion: "v1",
+			kind: "Pod",
+			metadata: {
+				name: podName,
+				namespace,
+			},
+		};
+
+		await waitFor(async () => {
+			expect(await eventReasonsFor(podResource)).toContain("FailedPostStartHook");
+		});
+	});
+
+	it("should record failed preStop lifecycle hooks before terminating containers", async () => {
+		const podName = "pre-stop-fail-hook-test";
+		let pod = await createPod({
+			metadata: { name: podName },
+			spec: {
+				containers: [
+					{
+						name: "test",
+						image: busyboxImage,
+						command: ["sleep", "3600"],
+						lifecycle: {
+							preStop: {
+								exec: {
+									command: ["false"],
+								},
+							},
+						},
+					},
+				],
+			},
+		});
+
+		pod = await waitForPodReady(pod);
+		await core.deleteNamespacedPod({
+			name: pod.metadata!.name!,
+			namespace: pod.metadata!.namespace!,
+			gracePeriodSeconds: 5,
+			body: {
+				gracePeriodSeconds: 5,
+			},
+		});
+
+		await waitFor(async () => {
+			expect(await eventReasonsFor(pod)).toContain("FailedPreStopHook");
+		});
 	});
 
 	it("should report image pull failures and back off retries", async () => {
