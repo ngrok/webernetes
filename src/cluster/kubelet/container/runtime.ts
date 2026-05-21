@@ -1,6 +1,6 @@
 import type { V1Pod } from "../../../client";
 import type * as context from "../../../go/context";
-import type { ContainerStatus, PodRuntimeStatus } from "../../cri";
+import type { ContainerStatus, ImageSpec, PodRuntimeStatus } from "../../cri";
 
 // Models kubernetes/pkg/kubelet/container/runtime.go ContainerID.
 export class ContainerID {
@@ -40,6 +40,55 @@ export interface Container {
 	state: State;
 	podSandboxID: string;
 	createdAt: number;
+}
+
+export interface EnvVar {
+	name: string;
+	value: string;
+}
+
+export interface Annotation {
+	name: string;
+	value: string;
+}
+
+// Models kubernetes/pkg/kubelet/container/runtime.go Mount.
+export interface Mount {
+	name: string;
+	containerPath: string;
+	hostPath: string;
+	readOnly: boolean;
+	recursiveReadOnly: boolean;
+	selinuxRelabel: boolean;
+	propagation?: string;
+	image?: ImageSpec;
+	imageSubPath?: string;
+}
+
+// Models kubernetes/pkg/kubelet/container/runtime.go ImageVolumes.
+export type ImageVolumes = Map<string, ImageSpec>;
+
+// Models kubernetes/pkg/kubelet/container/runtime.go DeviceInfo.
+export interface DeviceInfo {
+	pathOnHost: string;
+	pathInContainer: string;
+	permissions: string;
+}
+
+// Models kubernetes/pkg/kubelet/container/runtime.go CDIDevice.
+export interface CDIDevice {
+	name: string;
+}
+
+// Models kubernetes/pkg/kubelet/container/runtime.go RunContainerOptions.
+export interface RunContainerOptions {
+	envs?: EnvVar[];
+	mounts?: Mount[];
+	devices?: DeviceInfo[];
+	cdiDevices?: CDIDevice[];
+	annotations?: Annotation[];
+	podContainerDir?: string;
+	readOnly?: boolean;
 }
 
 // Models kubernetes/pkg/kubelet/container/runtime.go Runtime.
