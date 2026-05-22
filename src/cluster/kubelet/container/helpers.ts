@@ -11,7 +11,7 @@ import type {
 } from "../../cri";
 import { containerShouldRestart } from "../../api/v1/pod/util";
 import { buildContainerID, findContainerStatusByName, type Pod, type State } from "./runtime";
-import type { ContainerID, RunContainerOptions } from "./runtime";
+import type { ContainerID, EnvVar, RunContainerOptions } from "./runtime";
 
 // Models kubernetes/pkg/kubelet/container/helpers.go HandlerRunner.
 export interface HandlerRunner {
@@ -105,7 +105,7 @@ export function convertPodStatusToRunningPod(
 		containers: podStatus.containerStatuses
 			.filter((containerStatus) => containerStatus.state === "Running")
 			.map((containerStatus) => ({
-				id: containerStatus.id.id,
+				id: containerStatus.id,
 				name: containerStatus.name,
 				image: containerStatus.imageRef,
 				imageID: containerStatus.imageRef,
@@ -118,7 +118,7 @@ export function convertPodStatusToRunningPod(
 				createdAt: 0,
 			})),
 		sandboxes: podStatus.sandboxStatuses.map((sandbox) => ({
-			id: buildContainerID(runtimeName, sandbox.id).toString(),
+			id: buildContainerID(runtimeName, sandbox.id),
 			state: sandboxToContainerState(sandbox.state),
 			// Rest are intentionally zero values
 			name: "",
@@ -146,6 +146,53 @@ export function sandboxToContainerState(state: PodSandboxState): State {
 		default:
 			return "Unknown";
 	}
+}
+
+// Models kubernetes/pkg/kubelet/container/helpers.go ExpandContainerCommandAndArgs.
+export function expandContainerCommandAndArgs(
+	container: V1Container,
+	envs: EnvVar[],
+): [command: string[] | undefined, args: string[] | undefined] {
+	const envMap = new Map(envs.map((env) => [env.name, env.value]));
+	const command = container.command?.map((cmd) => expandEnvironment(cmd, envMap));
+	const args = container.args?.map((arg) => expandEnvironment(arg, envMap));
+	return [command, args];
+}
+
+function expandEnvironment(input: string, envMap: Map<string, string>): string {
+	let output = "";
+	let checkpoint = 0;
+	for (let cursor = 0; cursor < input.length; cursor++) {
+		if (input[cursor] !== "$" || cursor + 1 >= input.length) {
+			continue;
+		}
+		output += input.slice(checkpoint, cursor);
+		const [read, isVar, advance] = tryReadVariableName(input.slice(cursor + 1));
+		output += isVar ? (envMap.get(read) ?? `$(${read})`) : read;
+		cursor += advance;
+		checkpoint = cursor + 1;
+	}
+	return output + input.slice(checkpoint);
+}
+
+function tryReadVariableName(input: string): [read: string, isVar: boolean, advance: number] {
+	const first = input[0];
+	if (first === "$") {
+		return ["$", false, 1];
+	}
+	if (first !== "(") {
+		return [`$${first ?? ""}`, false, first === undefined ? 0 : 1];
+	}
+	const closer = input.indexOf(")", 1);
+	if (closer === -1) {
+		return ["$(", false, 1];
+	}
+	return [input.slice(1, closer), true, closer + 1];
+}
+
+// Models kubernetes/pkg/kubelet/container/helpers.go GetContainerSpec.
+export function getContainerSpec(pod: V1Pod, containerName: string): V1Container | undefined {
+	return pod.spec?.containers?.find((container) => container.name === containerName);
 }
 
 // Models kubernetes/pkg/kubelet/container/helpers.go IsHostNetworkPod.
