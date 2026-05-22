@@ -3,15 +3,16 @@ import type { Clock } from "../../../clock";
 import type { Backoff } from "../../../client-go/util/flowcontrol/backoff";
 import { Channel, select } from "../../../go/channel";
 import * as context from "../../../go/context";
-import type { ImageManagerService, ImageSpec, PodSandboxConfig } from "../../cri";
+import type { PodSandboxConfig } from "../../cri";
 import type { EventRecorder } from "../../events";
 import { parseImageName } from "../../../util/parsers/parsers";
+import type { ImageService, ImageSpec } from "../container";
 import { newParallelImagePuller, type ImagePuller, type PullResult } from "./puller";
 import { ImagePullError, type ImageManager } from "./types";
 
 export interface NewImageManagerOptions {
 	recorder: EventRecorder;
-	imageService: ImageManagerService;
+	imageService: ImageService;
 	clock: Clock;
 	imageBackOff: Backoff;
 	imagePullManager?: ImagePullManager;
@@ -76,7 +77,7 @@ class NoopImagePodPullingTimeRecorder implements ImagePodPullingTimeRecorder {
 // Models kubernetes/pkg/kubelet/images/image_manager.go imageManager.
 export class KubeletImageManager implements ImageManager {
 	private readonly recorder: EventRecorder;
-	private readonly imageService: ImageManagerService;
+	private readonly imageService: ImageService;
 	private readonly imagePullManager: ImagePullManager;
 	private readonly clock: Clock;
 	private readonly backOff: Backoff;
@@ -119,7 +120,10 @@ export class KubeletImageManager implements ImageManager {
 		const spec: ImageSpec = {
 			image,
 			runtimeHandler: podRuntimeHandler,
-			annotations: pod.metadata?.annotations,
+			annotations: Object.entries(pod.metadata?.annotations ?? {}).map(([name, value]) => ({
+				name,
+				value,
+			})),
 		};
 
 		const [imageRef, _imagePresentLocally, message, pullErr] = await this.imagePullPrecheck(
