@@ -21,6 +21,56 @@ export function tick(clock: Clock, intervalMs: number): ReadOnlyChannel<Date> {
 	return new Ticker(clock, intervalMs).C;
 }
 
+// Timer models Go's time.Timer:
+//   https://pkg.go.dev/time#Timer
+export class Timer {
+	private readonly ticks = new Channel<Date>(1, (result) => {
+		if (result.ok) {
+			this.pendingTick = false;
+		}
+	});
+	private timeoutHandle: number | undefined;
+	private active = false;
+	private pendingTick = false;
+
+	readonly C: ReadOnlyChannel<Date> = this.ticks.readOnly();
+
+	constructor(
+		private readonly clock: Clock,
+		delayMs: number,
+	) {
+		this.reset(delayMs);
+	}
+
+	stop(): boolean {
+		const pending = this.active || this.pendingTick;
+		if (this.timeoutHandle !== undefined) {
+			this.clock.clearTimeout(this.timeoutHandle);
+			this.timeoutHandle = undefined;
+		}
+		this.active = false;
+		this.pendingTick = false;
+		this.ticks.drainBuffered();
+		return pending;
+	}
+
+	get stopped(): boolean {
+		return !this.active && !this.pendingTick;
+	}
+
+	reset(delayMs: number): boolean {
+		const pending = this.stop();
+		this.active = true;
+		this.timeoutHandle = this.clock.setTimeout(() => {
+			this.timeoutHandle = undefined;
+			this.active = false;
+			this.pendingTick = true;
+			this.ticks.trySend(this.clock.now());
+		}, delayMs);
+		return pending;
+	}
+}
+
 // This Ticker class exists to match the semantics of Go's ticker:
 //   https://pkg.go.dev/time#Ticker
 //

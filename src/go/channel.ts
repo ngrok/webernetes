@@ -132,7 +132,10 @@ export class Channel<T> implements AsyncIterable<T> {
 		return this;
 	}
 
-	constructor(private readonly capacity = 0) {
+	constructor(
+		private readonly capacity = 0,
+		private readonly onReceive?: (result: ChannelReceive<T>) => void,
+	) {
 		if (!Number.isInteger(capacity) || capacity < 0) {
 			throw new Error("Channel capacity must be a non-negative integer");
 		}
@@ -145,7 +148,9 @@ export class Channel<T> implements AsyncIterable<T> {
 
 		const receiver = this.receivers.shift();
 		if (receiver) {
-			receiver({ ok: true, value });
+			const result: ChannelReceive<T> = { ok: true, value };
+			this.notifyReceive(result);
+			receiver(result);
 			return true;
 		}
 
@@ -171,17 +176,23 @@ export class Channel<T> implements AsyncIterable<T> {
 		if (this.values.length > 0) {
 			const value = this.values.shift() as T;
 			this.drainSender();
-			return { ok: true, value };
+			const result: ChannelReceive<T> = { ok: true, value };
+			this.notifyReceive(result);
+			return result;
 		}
 
 		const sender = this.senders.shift();
 		if (sender) {
 			sender.resolve();
-			return { ok: true, value: sender.value };
+			const result: ChannelReceive<T> = { ok: true, value: sender.value };
+			this.notifyReceive(result);
+			return result;
 		}
 
 		if (this.closed) {
-			return { ok: false, value: undefined };
+			const result: ChannelReceive<T> = { ok: false, value: undefined };
+			this.notifyReceive(result);
+			return result;
 		}
 
 		return undefined;
@@ -217,10 +228,14 @@ export class Channel<T> implements AsyncIterable<T> {
 		}
 		for (const receiver of this.receivers.splice(0)) {
 			if (this.values.length === 0) {
-				receiver({ ok: false, value: undefined });
+				const result: ChannelReceive<T> = { ok: false, value: undefined };
+				this.notifyReceive(result);
+				receiver(result);
 			} else {
 				const value = this.values.shift() as T;
-				receiver({ ok: true, value });
+				const result: ChannelReceive<T> = { ok: true, value };
+				this.notifyReceive(result);
+				receiver(result);
 			}
 		}
 	}
@@ -258,7 +273,9 @@ export class Channel<T> implements AsyncIterable<T> {
 		const receiver = this.receivers.shift();
 		if (receiver) {
 			sender.resolve();
-			receiver({ ok: true, value: sender.value });
+			const result: ChannelReceive<T> = { ok: true, value: sender.value };
+			this.notifyReceive(result);
+			receiver(result);
 			return;
 		}
 
@@ -269,6 +286,10 @@ export class Channel<T> implements AsyncIterable<T> {
 		}
 
 		this.senders.unshift(sender);
+	}
+
+	private notifyReceive(result: ChannelReceive<T>): void {
+		this.onReceive?.(result);
 	}
 }
 
