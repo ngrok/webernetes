@@ -208,6 +208,7 @@ function makeDefaultStatus(id: string): PodRuntimeStatus {
 		name: "",
 		namespace: "default",
 		ips: [],
+		timestamp: new Date(0),
 		containerStatuses: [],
 		sandboxStatuses: [],
 	};

@@ -61,8 +61,8 @@ function podStatus(id: string): PodRuntimeStatus {
 		id,
 		name: "",
 		namespace: "default",
-		ip: "10.0.0.1",
 		ips: ["10.0.0.1"],
+		timestamp: new Date(0),
 		containerStatuses: [],
 		sandboxStatuses: [],
 	};
