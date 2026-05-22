@@ -1,10 +1,14 @@
 import type { Clock } from "../../../clock";
 import { Channel, select, type ReadOnlyChannel } from "../../../go/channel";
 import type * as context from "../../../go/context";
+import * as time from "../../../go/time";
+import { Mutex } from "../../../mutex";
 import type { PodRuntimeStatus } from "../../cri";
+import { findContainerByID, findSandboxByID } from "../container";
 import type {
 	Cache,
 	Container as RuntimeContainer,
+	ContainerID,
 	Pod as RuntimePod,
 	Runtime,
 	State as ContainerState,
@@ -20,13 +24,16 @@ import {
 	type RelistDuration,
 } from "./pleg";
 
+// Models kubernetes/pkg/kubelet/pleg/generic.go plegContainerState.
 type PlegContainerState = "running" | "exited" | "unknown" | "non-existent";
 
+// Models kubernetes/pkg/kubelet/pleg/generic.go relistRequest.
 interface RelistRequest {
 	podUID: string;
 	timestamp: Date;
 }
 
+// Models kubernetes/pkg/kubelet/pleg/generic.go podRecord.
 interface PodRecord {
 	old?: RuntimePod;
 	current?: RuntimePod;
@@ -37,8 +44,9 @@ export class GenericPLEG implements PodLifecycleEventGeneratorHandler {
 	private readonly podRecords = new PodRecords();
 	private readonly podsToReinspect = new Set<string>();
 	private readonly relistRequests = new Channel<RelistRequest>(200);
+	private readonly relistLock = new Mutex();
 	private stopCh: Channel<void> | undefined;
-	private globalRelistTimer: OneShotTimer | undefined;
+	private globalRelistTimer: time.Timer | undefined;
 	private relistTime: Date | undefined;
 	private isRunning = false;
 	private runPromise: Promise<void> | undefined;
@@ -64,7 +72,7 @@ export class GenericPLEG implements PodLifecycleEventGeneratorHandler {
 		}
 		this.isRunning = true;
 		this.stopCh = new Channel<void>();
-		this.globalRelistTimer = new OneShotTimer(this.clock, 0);
+		this.globalRelistTimer = new time.Timer(this.clock, 0);
 		this.runPromise = (async () => {
 			while (await this.workerLoopIteration()) {
 				// Loop body is in workerLoopIteration, matching upstream.
@@ -99,35 +107,32 @@ export class GenericPLEG implements PodLifecycleEventGeneratorHandler {
 		}
 
 		const relisted = await select()
-			.case(globalRelistTimer.c, () => true)
+			.case(globalRelistTimer.C, () => true)
 			.default(() => false);
 		if (relisted) {
-			this.relist();
+			await this.relist();
 			globalRelistTimer.reset(this.relistDuration.relistPeriodMs);
 			return true;
 		}
 
-		const selected = await select()
-			.case(stopCh, () => "stop" as const)
-			.case(globalRelistTimer.c, () => "relist" as const)
-			.case(this.relistRequests, ({ ok, value }) => {
+		const shouldContinue = await select()
+			.case(stopCh, () => false)
+			.case(globalRelistTimer.C, async () => {
+				await this.relist();
+				globalRelistTimer.reset(this.relistDuration.relistPeriodMs);
+				return true;
+			})
+			.case(this.relistRequests, async ({ ok, value }) => {
 				if (!ok) {
-					return "request-closed" as const;
+					return true;
 				}
-				if (after(value.timestamp, this.getRelistTime())) {
-					this.relistPod(value.podUID);
+				if (value.timestamp > this.getRelistTime()) {
+					await this.relistPod(value.podUID);
 				}
-				return "request" as const;
+				return true;
 			});
 
-		if (selected === "stop") {
-			return false;
-		}
-		if (selected === "relist") {
-			this.relist();
-			globalRelistTimer.reset(this.relistDuration.relistPeriodMs);
-		}
-		return true;
+		return shouldContinue;
 	}
 
 	// Models kubernetes/pkg/kubelet/pleg/generic.go Update.
@@ -162,21 +167,26 @@ export class GenericPLEG implements PodLifecycleEventGeneratorHandler {
 	}
 
 	// Models kubernetes/pkg/kubelet/pleg/generic.go Relist.
-	relist(): void {
-		const timestamp = this.clock.now();
-		const podList = this.runtime.getPods(true);
-		this.updateRelistTime(timestamp);
+	async relist(): Promise<void> {
+		await this.relistLock.withLock(async () => {
+			const timestamp = this.clock.now();
+			const [podList, err] = await this.runtime.getPods(this.ctx, true);
+			if (err) {
+				return;
+			}
+			this.updateRelistTime(timestamp);
 
-		this.podRecords.setCurrent(podList);
-		for (const pid of this.podRecords.keys()) {
-			this.reconcilePodRecord(pid);
-		}
+			this.podRecords.setCurrent(podList);
+			for (const pid of this.podRecords.keys()) {
+				await this.reconcilePodRecord(pid);
+			}
 
-		this.cache.updateTime(timestamp);
+			this.cache.updateTime(timestamp);
+		});
 	}
 
 	// Models kubernetes/pkg/kubelet/pleg/generic.go reconcilePodRecord.
-	private reconcilePodRecord(pid: string): void {
+	private async reconcilePodRecord(pid: string): Promise<void> {
 		const oldPod = this.podRecords.getOld(pid);
 		const pod = this.podRecords.getCurrent(pid);
 		const allContainers = getContainersFromPods(oldPod, pod);
@@ -190,7 +200,7 @@ export class GenericPLEG implements PodLifecycleEventGeneratorHandler {
 			return;
 		}
 
-		const { status, error } = this.updateCache(pod, pid);
+		const [, , error] = await this.updateCache(pod, pid);
 		if (error) {
 			this.podsToReinspect.add(pid);
 			return;
@@ -206,44 +216,45 @@ export class GenericPLEG implements PodLifecycleEventGeneratorHandler {
 			if (event.type === ContainerChanged) {
 				continue;
 			}
-			if (!this.eventChannel.trySend(event)) {
-				return;
-			}
-			void status;
+			this.eventChannel.trySend(event);
 		}
 	}
 
 	// Models kubernetes/pkg/kubelet/pleg/generic.go relistPod.
-	relistPod(podUID: string): void {
-		const [pod, err] = this.runtime.getPod(this.ctx, podUID);
-		if (err) {
-			this.podsToReinspect.add(podUID);
-			return;
-		}
-		this.podRecords.setPodCurrent(podUID, pod);
-		this.reconcilePodRecord(podUID);
-		this.cache.setObservedTime(podUID, pod?.timestamp ?? this.clock.now());
+	async relistPod(podUID: string): Promise<void> {
+		await this.relistLock.withLock(async () => {
+			const [pod, err] = await this.runtime.getPod(this.ctx, podUID);
+			if (err) {
+				return;
+			}
+			const record = this.podRecords.records.get(podUID);
+			if (record) {
+				record.current = pod;
+			} else {
+				this.podRecords.records.set(podUID, { current: pod });
+			}
+			await this.reconcilePodRecord(podUID);
+			this.cache.setObservedTime(podUID, pod?.timestamp ?? this.clock.now());
+		});
 	}
 
 	// Models kubernetes/pkg/kubelet/pleg/generic.go updateCache.
-	private updateCache(
+	private async updateCache(
 		pod: RuntimePod | undefined,
 		pid: string,
-	): { status: PodRuntimeStatus | undefined; updated: boolean; error: Error | undefined } {
+	): Promise<[status: PodRuntimeStatus | undefined, updated: boolean, error: Error | undefined]> {
 		if (!pod) {
 			this.cache.delete(pid);
-			return { status: undefined, updated: true, error: undefined };
+			return [undefined, true, undefined];
 		}
 
-		const [status, err] = this.runtime.getPodStatus(this.ctx, pod);
-		if (err || !status) {
-			return { status: undefined, updated: false, error: err };
+		const [status, err] = await this.runtime.getPodStatus(this.ctx, pod);
+		if (!err && status) {
+			status.ips = this.getPodIPs(pid, status);
 		}
-		status.ips = this.getPodIPs(pid, status);
-		status.ip = status.ips[0];
 
-		const updated = this.cache.set(pod.id, status, undefined, pod.timestamp);
-		return { status, updated, error: undefined };
+		const updated = this.cache.set(pod.id, status, err, pod.timestamp);
+		return [status, updated, err];
 	}
 
 	// Models kubernetes/pkg/kubelet/pleg/generic.go getPodIPs.
@@ -279,6 +290,7 @@ export class GenericPLEG implements PodLifecycleEventGeneratorHandler {
 	}
 }
 
+// Models kubernetes/pkg/kubelet/pleg/generic.go convertState.
 export function convertState(state: ContainerState): PlegContainerState {
 	switch (state) {
 		case "Created":
@@ -291,8 +303,10 @@ export function convertState(state: ContainerState): PlegContainerState {
 		case "Unknown":
 			return "unknown";
 	}
+	throw new Error(`unrecognized container state: ${state}`);
 }
 
+// Models kubernetes/pkg/kubelet/pleg/generic.go generateEvents.
 export function generateEvents(
 	podID: string,
 	cid: string,
@@ -321,92 +335,101 @@ export function generateEvents(
 					];
 			}
 	}
+	throw new Error(`unrecognized container state: ${newState}`);
 }
 
+// Models kubernetes/pkg/kubelet/pleg/generic.go getContainersFromPods.
 export function getContainersFromPods(...pods: Array<RuntimePod | undefined>): RuntimeContainer[] {
 	const cidSet = new Set<string>();
 	const containers: RuntimeContainer[] = [];
-	const fillCidSet = (candidates: RuntimeContainer[]) => {
-		for (const container of candidates) {
-			if (cidSet.has(container.id)) {
+	const fillCidSet = (cs: RuntimeContainer[]) => {
+		for (const c of cs) {
+			const cid = c.id.id;
+			if (cidSet.has(cid)) {
 				continue;
 			}
-			cidSet.add(container.id);
-			containers.push(container);
+			cidSet.add(cid);
+			containers.push(c);
 		}
 	};
 
-	for (const pod of pods) {
-		if (!pod) {
+	for (const p of pods) {
+		if (!p) {
 			continue;
 		}
-		fillCidSet(pod.containers);
+		fillCidSet(p.containers);
 		// Update sandboxes as containers.
 		// TODO(upstream): keep track of sandboxes explicitly.
-		fillCidSet(pod.sandboxes);
+		fillCidSet(p.sandboxes);
 	}
 	return containers;
 }
 
+// Models kubernetes/pkg/kubelet/pleg/generic.go computeEvents.
 export function computeEvents(
 	oldPod: RuntimePod | undefined,
 	newPod: RuntimePod | undefined,
-	cid: string,
+	cid: ContainerID,
 ): PodLifecycleEvent[] {
 	const pid = oldPod?.id ?? newPod?.id ?? "";
 	const oldState = getContainerState(oldPod, cid);
 	const newState = getContainerState(newPod, cid);
-	return generateEvents(pid, cid, oldState, newState);
+	return generateEvents(pid, cid.id, oldState, newState);
 }
 
-export function getContainerState(pod: RuntimePod | undefined, cid: string): PlegContainerState {
+// Models kubernetes/pkg/kubelet/pleg/generic.go getContainerState.
+export function getContainerState(
+	pod: RuntimePod | undefined,
+	cid: ContainerID,
+): PlegContainerState {
 	if (!pod) {
 		return "non-existent";
 	}
-	const container = pod.containers.find((candidate) => candidate.id === cid);
+	const container = findContainerByID(pod, cid);
 	if (container) {
 		return convertState(container.state);
 	}
-	const sandbox = pod.sandboxes.find((candidate) => candidate.id === cid);
+	const sandbox = findSandboxByID(pod, cid);
 	if (sandbox) {
 		return convertState(sandbox.state);
 	}
 	return "non-existent";
 }
 
+// Models kubernetes/pkg/kubelet/pleg/generic.go podRecords.
 class PodRecords {
-	private readonly records = new Map<string, PodRecord>();
+	readonly records = new Map<string, PodRecord>();
 
 	keys(): IterableIterator<string> {
 		return this.records.keys();
 	}
 
+	// Models kubernetes/pkg/kubelet/pleg/generic.go podRecords.getOld.
 	getOld(id: string): RuntimePod | undefined {
 		return this.records.get(id)?.old;
 	}
 
+	// Models kubernetes/pkg/kubelet/pleg/generic.go podRecords.getCurrent.
 	getCurrent(id: string): RuntimePod | undefined {
 		return this.records.get(id)?.current;
 	}
 
+	// Models kubernetes/pkg/kubelet/pleg/generic.go podRecords.setCurrent.
 	setCurrent(pods: RuntimePod[]): void {
 		for (const record of this.records.values()) {
 			record.current = undefined;
 		}
 		for (const pod of pods) {
-			this.setPodCurrent(pod.id, pod);
+			const record = this.records.get(pod.id);
+			if (record) {
+				record.current = pod;
+			} else {
+				this.records.set(pod.id, { current: pod });
+			}
 		}
 	}
 
-	setPodCurrent(id: string, pod: RuntimePod | undefined): void {
-		const record = this.records.get(id);
-		if (record) {
-			record.current = pod;
-		} else {
-			this.records.set(id, { current: pod });
-		}
-	}
-
+	// Models kubernetes/pkg/kubelet/pleg/generic.go podRecords.update.
 	update(id: string): void {
 		const record = this.records.get(id);
 		if (!record) {
@@ -415,6 +438,7 @@ class PodRecords {
 		this.updateInternal(id, record);
 	}
 
+	// Models kubernetes/pkg/kubelet/pleg/generic.go podRecords.updateInternal.
 	private updateInternal(id: string, record: PodRecord): void {
 		if (!record.current) {
 			this.records.delete(id);
@@ -423,37 +447,4 @@ class PodRecords {
 		record.old = record.current;
 		record.current = undefined;
 	}
-}
-
-class OneShotTimer {
-	private readonly ticks = new Channel<Date>(1);
-	private handle: number | undefined;
-	readonly c: ReadOnlyChannel<Date> = this.ticks.readOnly();
-
-	constructor(
-		private readonly clock: Clock,
-		delayMs: number,
-	) {
-		this.reset(delayMs);
-	}
-
-	stop(): void {
-		if (this.handle !== undefined) {
-			this.clock.clearTimeout(this.handle);
-			this.handle = undefined;
-		}
-		this.ticks.drainBuffered();
-	}
-
-	reset(delayMs: number): void {
-		this.stop();
-		this.handle = this.clock.setTimeout(() => {
-			this.handle = undefined;
-			this.ticks.trySend(this.clock.now());
-		}, delayMs);
-	}
-}
-
-function after(left: Date, right: Date): boolean {
-	return left.getTime() > right.getTime();
 }
