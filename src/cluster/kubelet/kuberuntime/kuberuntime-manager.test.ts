@@ -5,7 +5,6 @@ import type { V1Container, V1Pod } from "../../../client";
 import { newBackOff, type Backoff } from "../../../client-go/util/flowcontrol/backoff";
 import { Clock } from "../../../clock";
 import { KeyFnMap } from "../../../collections";
-import * as fnv from "../../../fnv";
 import * as context from "../../../go/context";
 import { browser } from "../../../test/describe";
 import type {
@@ -17,10 +16,14 @@ import type {
 	RuntimeService,
 } from "../../cri";
 import type {
+	CheckpointContainerRequest,
 	Container as CRIContainer,
 	ContainerStatusResponse,
+	MetricDescriptor,
 	PodSandbox,
+	PodSandboxMetrics,
 	PodSandboxStatusResponse,
+	UpdateRuntimeConfigRequest,
 	VersionResponse,
 } from "../../cri/runtime/v1/api";
 import {
@@ -40,6 +43,7 @@ import {
 	type KubeGenericRuntimeManagerOptions,
 	type PodActions,
 } from "./kuberuntime-manager";
+import { getBackoffKey } from "./helpers";
 
 browser.describe("KubeGenericRuntimeManager", () => {
 	// Models kubernetes/pkg/kubelet/kuberuntime/kuberuntime_manager_test.go TestNewKubeRuntimeManager.
@@ -180,7 +184,7 @@ browser.describe("KubeGenericRuntimeManager runtime state", () => {
 		const [fakeSandbox, fakeContainers] = makeAndSetFakePod(tCtx, m, fakeRuntime, pod);
 
 		const containers = fakeContainers.map((fakeContainer) => ({
-			id: fakeContainer.id,
+			id: buildContainerID(m.type(), fakeContainer.id),
 			name: fakeContainer.metadata.name,
 			image: fakeContainer.image.image,
 			imageID: fakeContainer.imageId,
@@ -192,7 +196,7 @@ browser.describe("KubeGenericRuntimeManager runtime state", () => {
 			createdAt: fakeCreatedAt,
 		}));
 		const sandbox = {
-			id: fakeSandbox.id,
+			id: buildContainerID(m.type(), fakeSandbox.id),
 			name: "",
 			image: "",
 			imageID: "",
@@ -276,7 +280,7 @@ browser.describe("KubeGenericRuntimeManager runtime state", () => {
 		for (const i of containers.keys()) {
 			const fakeContainer = fakeContainers[i] as TestContainerRecord;
 			const c: RuntimePod["containers"][number] = {
-				id: fakeContainer.id,
+				id: buildContainerID(m.type(), fakeContainer.id),
 				name: fakeContainer.metadata.name,
 				image: fakeContainer.image.image,
 				imageID: fakeContainer.imageId,
@@ -298,7 +302,7 @@ browser.describe("KubeGenericRuntimeManager runtime state", () => {
 			containers,
 			sandboxes: [
 				{
-					id: fakeSandbox.id,
+					id: buildContainerID(m.type(), fakeSandbox.id),
 					name: "",
 					image: "",
 					imageID: "",
@@ -1624,6 +1628,7 @@ class TestRuntimeService implements RuntimeService {
 	async runPodSandbox(
 		_ctx: context.Context,
 		config: PodSandboxConfig,
+		_runtimeHandler?: string,
 	): Promise<[string, undefined]> {
 		this.sandboxCount++;
 		const id = `sandbox-${this.sandboxCount}`;
@@ -1756,6 +1761,8 @@ class TestRuntimeService implements RuntimeService {
 					state: container.state,
 					restartCount: container.metadata.attempt,
 					createdAt: container.createdAt,
+					labels: { ...container.labels },
+					annotations: { ...container.annotations },
 					ready: container.state === "Running",
 				},
 			},
@@ -1765,6 +1772,13 @@ class TestRuntimeService implements RuntimeService {
 
 	async execSync(): Promise<[undefined, undefined]> {
 		return [undefined, undefined];
+	}
+
+	async checkpointContainer(
+		_ctx: context.Context,
+		_options: CheckpointContainerRequest,
+	): Promise<undefined> {
+		return undefined;
 	}
 
 	async stopPodSandbox(_ctx: context.Context, podSandboxId: string): Promise<undefined> {
@@ -1791,6 +1805,21 @@ class TestRuntimeService implements RuntimeService {
 			})),
 			undefined,
 		];
+	}
+
+	async updateRuntimeConfig(
+		_ctx: context.Context,
+		_config: UpdateRuntimeConfigRequest,
+	): Promise<undefined> {
+		return undefined;
+	}
+
+	async listMetricDescriptors(): Promise<[MetricDescriptor[], undefined]> {
+		return [[], undefined];
+	}
+
+	async listPodSandboxMetrics(): Promise<[PodSandboxMetrics[], undefined]> {
+		return [[], undefined];
 	}
 }
 
@@ -1881,8 +1910,10 @@ function withoutTimestamp(pod: RuntimePod | undefined): Omit<RuntimePod, "timest
 	const { timestamp: _timestamp, ...rest } = pod;
 	return {
 		...rest,
-		containers: [...rest.containers].toSorted((left, right) => left.id.localeCompare(right.id)),
-		sandboxes: [...rest.sandboxes].toSorted((left, right) => left.id.localeCompare(right.id)),
+		containers: [...rest.containers].toSorted((left, right) =>
+			left.id.id.localeCompare(right.id.id),
+		),
+		sandboxes: [...rest.sandboxes].toSorted((left, right) => left.id.id.localeCompare(right.id.id)),
 	};
 }
 
@@ -2045,8 +2076,8 @@ function makeBasePodAndStatus(): [V1Pod, PodRuntimeStatus] {
 		id: "12345678",
 		name: "foo",
 		namespace: "new",
-		ip: "10.0.0.1",
 		ips: ["10.0.0.1"],
+		timestamp: new Date(0),
 		sandboxStatuses: [
 			{
 				id: "sandbox-id",
@@ -2082,6 +2113,8 @@ function containerStatus(
 		state,
 		restartCount: 0,
 		createdAt: 0,
+		labels: {},
+		annotations: {},
 		ready: state === "Running",
 	};
 }
@@ -2092,6 +2125,7 @@ function emptyPodStatus(_clock?: Clock): PodRuntimeStatus {
 		name: "foo",
 		namespace: "new",
 		ips: [],
+		timestamp: new Date(0),
 		containerStatuses: [],
 		sandboxStatuses: [],
 	};
@@ -2104,21 +2138,6 @@ function testBackoffPod(): V1Pod {
 			containers: [{ name: "foocontainer", image: "busybox" }],
 		},
 	};
-}
-
-// Models kubernetes/pkg/kubelet/kuberuntime/helpers.go GetBackoffKey.
-function getBackoffKey(pod: V1Pod, container: V1Container): string {
-	const hash = fnv.new32a();
-	hash.write(
-		[
-			pod.metadata?.name ?? "",
-			pod.metadata?.namespace ?? "default",
-			pod.metadata?.uid ?? "",
-			container.name,
-			container.image ?? "",
-		].join("/"),
-	);
-	return hash.sum32().toString(16);
 }
 
 function podSandboxStatusResponse(): PodSandboxStatusResponse {
@@ -2160,7 +2179,12 @@ function getKillMap(
 	return containersToKill;
 }
 
-type ContainerKillReason = "StartupProbe" | "LivenessProbe" | "Unknown";
+type ContainerKillReason =
+	| "StartupProbe"
+	| "LivenessProbe"
+	| "FailedPostStartHook"
+	| "RestartAllContainers"
+	| "Unknown";
 
 interface ContainerToKillInfo {
 	container: V1Container;
