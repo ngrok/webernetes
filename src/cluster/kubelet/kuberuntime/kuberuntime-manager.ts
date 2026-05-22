@@ -66,12 +66,13 @@ import { failedCreatePodSandBox, failedStatusPodSandBox, sandboxChanged } from "
 import * as format from "../util/format";
 import { getNodenameForKernel, podSandboxChanged } from "./util/util";
 import {
-	getContainers,
 	getTerminationMessage,
-	getSandboxes,
 	hasAnyRegularContainerCreated,
 	isNotFoundError,
+	minimumGracePeriodInSeconds,
 	setTerminationGracePeriod,
+	containerFilter,
+	sandboxFilter,
 	type ContainerKillReason,
 	type ListOptions,
 	type StartSpec,
@@ -118,9 +119,6 @@ const errPreStartHook = new Error("PreStartHookError");
 const errPostStartHook = new Error("PostStartHookError");
 // Models kubernetes/pkg/kubelet/container/sync_result.go ErrRunContainer.
 const errRunContainer = new Error("RunContainerError");
-
-// Models kubernetes/pkg/kubelet/kuberuntime/kuberuntime_container.go minimumGracePeriodInSeconds.
-const minimumGracePeriodInSeconds = 1;
 
 export interface KubeGenericRuntimeManagerOptions {
 	ctx: context.Context;
@@ -254,7 +252,7 @@ export class KubeGenericRuntimeManager implements Runtime, CommandRunner {
 	): Promise<[pods: Map<string, RuntimePod>, err: Error | undefined]> {
 		const pods = new Map<string, RuntimePod>();
 		const timestamp = this.clock.now();
-		const [sandboxes, sandboxErr] = await getSandboxes(ctx, this.runtimeService, opts);
+		const [sandboxes, sandboxErr] = await this.getSandboxes(ctx, opts);
 		if (sandboxErr) {
 			return [pods, sandboxErr];
 		}
@@ -284,7 +282,7 @@ export class KubeGenericRuntimeManager implements Runtime, CommandRunner {
 			pod.createdAt = s.createdAt;
 		}
 
-		const [containers, containerErr] = await getContainers(ctx, this.runtimeService, opts);
+		const [containers, containerErr] = await this.getContainers(ctx, opts);
 		if (containerErr) {
 			return [pods, containerErr];
 		}
@@ -314,6 +312,22 @@ export class KubeGenericRuntimeManager implements Runtime, CommandRunner {
 		}
 
 		return [pods, undefined];
+	}
+
+	// Models kubernetes/pkg/kubelet/kuberuntime/kuberuntime_container.go kubeGenericRuntimeManager.getContainers.
+	private async getContainers(
+		ctx: context.Context,
+		opts: ListOptions,
+	): Promise<[containers: CRIContainer[], err: Error | undefined]> {
+		return await this.runtimeService.listContainers(ctx, containerFilter(opts));
+	}
+
+	// Models kubernetes/pkg/kubelet/kuberuntime/kuberuntime_container.go kubeGenericRuntimeManager.getSandboxes.
+	private async getSandboxes(
+		ctx: context.Context,
+		opts: ListOptions,
+	): Promise<[sandboxes: PodSandbox[], err: Error | undefined]> {
+		return await this.runtimeService.listPodSandbox(ctx, sandboxFilter(opts));
 	}
 
 	// Models kubernetes/pkg/kubelet/kuberuntime/helpers.go sandboxToKubeContainer.
@@ -632,7 +646,14 @@ export class KubeGenericRuntimeManager implements Runtime, CommandRunner {
 			containerSpec = restoredContainer;
 		}
 
-		let gracePeriod = setTerminationGracePeriod(pod, containerSpec, reason ?? "Unknown");
+		let gracePeriod = setTerminationGracePeriod(
+			ctx,
+			pod,
+			containerSpec,
+			containerName,
+			containerID,
+			reason ?? "Unknown",
+		);
 		if (message.length === 0) {
 			message = `Stopping container ${containerSpec.name}`;
 		}
