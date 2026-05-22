@@ -352,6 +352,18 @@ export function findContainerStatusByName(
 	);
 }
 
+// Models kubernetes/pkg/kubelet/container/runtime.go Pod.FindContainerByID.
+export function findContainerByID(pod: Pod, id: ContainerID): Container | undefined {
+	return pod.containers.find(
+		(container) => container.id.type === id.type && container.id.id === id.id,
+	);
+}
+
+// Models kubernetes/pkg/kubelet/container/runtime.go Pod.FindSandboxByID.
+export function findSandboxByID(pod: Pod, id: ContainerID): Container | undefined {
+	return pod.sandboxes.find((sandbox) => sandbox.id.type === id.type && sandbox.id.id === id.id);
+}
+
 // Models kubernetes/pkg/kubelet/container/runtime.go BuildContainerID.
 export function buildContainerID(type: string, id: string): ContainerID {
 	return new ContainerID(type, id);
