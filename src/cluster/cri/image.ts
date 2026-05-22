@@ -16,4 +16,12 @@ export class ImageRegistry {
 	resolve(imageRef: string): ImageDefinition | undefined {
 		return this.images.get(imageRef);
 	}
+
+	list(): string[] {
+		return [...this.images.keys()];
+	}
+
+	remove(imageRef: string): void {
+		this.images.delete(imageRef);
+	}
 }
