@@ -1,4 +1,5 @@
 import type { V1Container, V1Pod, V1PodStatus, V1Probe } from "../../../client";
+import type * as context from "../../../go/context";
 import type { ClusterNetwork } from "../../cni";
 import type { CommandRunner, ContainerID } from "../container";
 import { ExecProber, HTTPProber, TCPProber } from "../../probe";
@@ -20,6 +21,7 @@ export class Prober {
 
 	// Models kubernetes/pkg/kubelet/prober/prober.go probe.
 	async probe(
+		ctx: context.Context,
 		probeType: ProbeType,
 		pod: V1Pod,
 		status: V1PodStatus,
@@ -35,6 +37,7 @@ export class Prober {
 		try {
 			result = await this.runProbeWithRetries(
 				probeType,
+				ctx,
 				probeSpec,
 				pod,
 				status,
@@ -62,6 +65,7 @@ export class Prober {
 	// Models kubernetes/pkg/kubelet/prober/prober.go runProbeWithRetries.
 	private async runProbeWithRetries(
 		probeType: ProbeType,
+		ctx: context.Context,
 		probe: V1Probe,
 		pod: V1Pod,
 		status: V1PodStatus,
@@ -72,7 +76,7 @@ export class Prober {
 		let lastError: unknown;
 		for (let attempt = 0; attempt < retries; attempt++) {
 			try {
-				return await this.runProbe(probeType, probe, pod, status, container, containerId);
+				return await this.runProbe(probeType, ctx, probe, pod, status, container, containerId);
 			} catch (error) {
 				lastError = error;
 			}
@@ -83,6 +87,7 @@ export class Prober {
 	// Models kubernetes/pkg/kubelet/prober/prober.go runProbe.
 	private async runProbe(
 		_probeType: ProbeType,
+		ctx: context.Context,
 		probe: V1Probe,
 		pod: V1Pod,
 		status: V1PodStatus,
@@ -91,7 +96,7 @@ export class Prober {
 	): Promise<ProbeResult> {
 		const timeoutMs = (probe.timeoutSeconds ?? 1) * 1000;
 		if (probe.exec) {
-			return await this.exec.probe(containerId, container, probe.exec, timeoutMs);
+			return await this.exec.probe(ctx, containerId, container, probe.exec, timeoutMs);
 		}
 		if (probe.httpGet) {
 			return await this.http.probe(status.podIP, container, probe.httpGet);

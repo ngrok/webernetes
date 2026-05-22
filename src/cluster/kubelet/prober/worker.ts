@@ -57,6 +57,7 @@ export class ProbeWorker {
 		if (probeTickerPeriod > sinceStart) {
 			const delay = time.after(this.probeManager.clock, Math.random() * probeTickerPeriod);
 			const selected = await select()
+				.case(ctx.done(), () => "stop")
 				.case(this.stopCh, () => "stop")
 				.case(delay, () => "continue");
 			if (selected !== "continue") {
@@ -73,6 +74,7 @@ export class ProbeWorker {
 		try {
 			for (; await this.doProbe(ctx); ) {
 				const selected = await select()
+					.case(ctx.done(), () => "stop")
 					.case(this.stopCh, () => "stop")
 					.case(probeTicker.C, () => "tick")
 					.case(this.manualTriggerCh, () => "manual");
@@ -97,7 +99,10 @@ export class ProbeWorker {
 	}
 
 	// Models kubernetes/pkg/kubelet/prober/worker.go doProbe.
-	private async doProbe(_ctx: Context): Promise<boolean> {
+	private async doProbe(ctx: Context): Promise<boolean> {
+		if (ctx.err()) {
+			return false;
+		}
 		const status = this.probeManager.statusManager.getPodStatus(this.pod.metadata?.uid ?? "");
 		if (!status) {
 			return true;
@@ -155,6 +160,7 @@ export class ProbeWorker {
 		let result: ProberResult;
 		try {
 			result = await this.probeManager.prober.probe(
+				ctx,
 				this.probeType,
 				this.pod,
 				status,

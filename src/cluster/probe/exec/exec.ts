@@ -1,4 +1,5 @@
 import type { V1Container, V1ExecAction } from "../../../client";
+import type * as context from "../../../go/context";
 import type { CommandRunner, ContainerID } from "../../kubelet/container";
 import type { ProbeResult } from "../probe";
 
@@ -7,12 +8,14 @@ export class ExecProber {
 
 	// Models kubernetes/pkg/probe/exec/exec.go Probe.
 	async probe(
+		ctx: context.Context,
 		containerId: ContainerID,
 		container: V1Container,
 		action: V1ExecAction,
 		timeoutMs: number,
 	): Promise<ProbeResult> {
 		const [, err] = await this.runner.runInContainer(
+			ctx,
 			containerId,
 			expandCommand(action.command ?? [], container.env ?? []),
 			timeoutMs / 1000,

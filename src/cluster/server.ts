@@ -23,7 +23,7 @@ export class Server {
 	runtime: InProcessRuntimeService;
 	runtimeService: RuntimeService;
 	imageService: ImageManagerService;
-	containerRuntime: KubeletRuntime;
+	containerRuntime!: KubeletRuntime;
 	runtimeDiagnostics: RuntimeDiagnostics;
 	network: ClusterNetwork;
 	private ctx: context.Context | undefined;
@@ -45,7 +45,6 @@ export class Server {
 		});
 		this.runtimeService = this.runtime;
 		this.imageService = this.runtime;
-		this.containerRuntime = this.runtime;
 		this.runtimeDiagnostics = this.runtime;
 		this.network = cluster.network;
 		this.kubelet = new Kubelet(this);

@@ -9,17 +9,18 @@ import type { PodRuntimeStatus } from "../../cri";
 import { resolveContainerPort } from "../../probe/util";
 import type { HandlerRunner, Pod as RuntimePod } from "../container";
 import type { CommandRunner, ContainerID } from "../container";
+import * as format from "../util/format";
 
 // Models kubernetes/pkg/kubelet/lifecycle/handlers.go podStatusProvider.
 interface PodStatusProvider {
 	getPod(
 		ctx: context.Context,
 		podUid: string,
-	): [pod: RuntimePod | undefined, err: Error | undefined];
+	): Promise<[pod: RuntimePod | undefined, err: Error | undefined]>;
 	getPodStatus(
 		ctx: context.Context,
 		pod: RuntimePod,
-	): [podStatus: PodRuntimeStatus | undefined, err: Error | undefined];
+	): Promise<[podStatus: PodRuntimeStatus | undefined, err: Error | undefined]>;
 }
 
 export interface HandlerRunnerOptions {
@@ -61,10 +62,10 @@ class LifecycleHandlerRunner implements HandlerRunner {
 	): Promise<[message: string, err: Error | undefined]> {
 		if (handler.exec) {
 			const command = handler.exec.command ?? [];
-			const [output, err] = await this.commandRunner.runInContainer(containerID, command, 0);
+			const [output, err] = await this.commandRunner.runInContainer(ctx, containerID, command, 0);
 			if (err) {
 				return [
-					`Exec lifecycle hook (${command.join(" ")}) for Container "${container.name}" in Pod "${formatPod(pod)}" failed - error: ${err.message}, message: "${output}"`,
+					`Exec lifecycle hook (${command.join(" ")}) for Container "${container.name}" in Pod "${format.pod(pod)}" failed - error: ${err.message}, message: "${output}"`,
 					err,
 				];
 			}
@@ -74,7 +75,7 @@ class LifecycleHandlerRunner implements HandlerRunner {
 			const err = await this.runHTTPHandler(ctx, pod, container, handler, this.eventRecorder);
 			if (err) {
 				return [
-					`HTTP lifecycle hook (${handler.httpGet.path ?? ""}) for Container "${container.name}" in Pod "${formatPod(pod)}" failed - error: ${err.message}`,
+					`HTTP lifecycle hook (${handler.httpGet.path ?? ""}) for Container "${container.name}" in Pod "${format.pod(pod)}" failed - error: ${err.message}`,
 					err,
 				];
 			}
@@ -84,7 +85,7 @@ class LifecycleHandlerRunner implements HandlerRunner {
 			const err = await this.runSleepHandler(ctx, handler.sleep.seconds);
 			if (err) {
 				return [
-					`Sleep lifecycle hook (${handler.sleep.seconds}) for Container "${container.name}" in Pod "${formatPod(pod)}" failed - error: ${err.message}`,
+					`Sleep lifecycle hook (${handler.sleep.seconds}) for Container "${container.name}" in Pod "${format.pod(pod)}" failed - error: ${err.message}`,
 					err,
 				];
 			}
@@ -119,14 +120,14 @@ class LifecycleHandlerRunner implements HandlerRunner {
 		}
 		let host = httpGet.host ?? "";
 		if (host.length === 0) {
-			const [runtimePod, podErr] = this.containerManager.getPod(ctx, pod.metadata?.uid ?? "");
+			const [runtimePod, podErr] = await this.containerManager.getPod(ctx, pod.metadata?.uid ?? "");
 			if (podErr) {
 				return new Error(`unable to get pod, event handlers may be invalid: ${podErr.message}`);
 			}
 			if (!runtimePod) {
 				return new Error("unable to get pod, event handlers may be invalid: pod not found");
 			}
-			const [status, statusErr] = this.containerManager.getPodStatus(ctx, runtimePod);
+			const [status, statusErr] = await this.containerManager.getPodStatus(ctx, runtimePod);
 			if (statusErr) {
 				return new Error(
 					`unable to get pod status, event handlers may be invalid: ${statusErr.message}`,
@@ -159,8 +160,4 @@ class LifecycleHandlerRunner implements HandlerRunner {
 			return error instanceof Error ? error : new Error(String(error));
 		}
 	}
-}
-
-function formatPod(pod: V1Pod): string {
-	return `${pod.metadata?.namespace ?? "default"}/${pod.metadata?.name ?? ""}`;
 }

@@ -14,6 +14,9 @@ export interface ProbeManagerOptions {
 	runner: CommandRunner;
 	network: ClusterNetwork;
 	statusManager: StatusManager;
+	livenessManager?: ResultsManager;
+	readinessManager?: ResultsManager;
+	startupManager?: ResultsManager;
 }
 
 interface ProbeKey {
@@ -23,9 +26,9 @@ interface ProbeKey {
 }
 
 export class ProbeManager {
-	readonly livenessManager = new ResultsManager();
-	readonly readinessManager = new ResultsManager();
-	readonly startupManager = new ResultsManager();
+	readonly livenessManager: ResultsManager;
+	readonly readinessManager: ResultsManager;
+	readonly startupManager: ResultsManager;
 	readonly prober: Prober;
 	readonly statusManager: StatusManager;
 	readonly clock: Clock;
@@ -39,6 +42,9 @@ export class ProbeManager {
 
 	constructor(options: ProbeManagerOptions) {
 		this.clock = options.clock;
+		this.livenessManager = options.livenessManager ?? new ResultsManager();
+		this.readinessManager = options.readinessManager ?? new ResultsManager();
+		this.startupManager = options.startupManager ?? new ResultsManager();
 		this.prober = new Prober(options.runner, options.network);
 		this.statusManager = options.statusManager;
 		this.startedAt = options.clock.now();
