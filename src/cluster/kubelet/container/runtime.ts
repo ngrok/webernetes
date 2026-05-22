@@ -1,8 +1,13 @@
 import type { V1Pod } from "../../../client";
 import type { Backoff } from "../../../client-go/util/flowcontrol/backoff";
 import type * as context from "../../../go/context";
-import type { ContainerStatus, ImageSpec, PodRuntimeStatus, PodSandboxConfig } from "../../cri";
-import type { StatusResponse } from "../../cri/runtime/v1/api";
+import type { ContainerStatus, PodRuntimeStatus, PodSandboxConfig } from "../../cri";
+import type {
+	CheckpointContainerRequest,
+	ContainerEventResponse,
+	MetricDescriptor,
+	PodSandboxMetrics,
+} from "../../cri/runtime/v1/api";
 import type { PodSyncResult } from "./sync-result";
 
 // Models kubernetes/pkg/kubelet/container/runtime.go Version.
@@ -11,22 +16,107 @@ export interface Version {
 	toString(): string;
 }
 
-// Models kubernetes/pkg/kubelet/container/runtime.go Image.
-export interface Image {
-	id: string;
-	repoTags: string[];
-	repoDigests: string[];
-	size: number;
-	pinned: boolean;
-}
+// Models kubernetes/pkg/kubelet/container/runtime.go RuntimeConditionType.
+export type RuntimeConditionType = string;
 
-// Models kubernetes/pkg/kubelet/container/runtime.go ImageStats.
-export interface ImageStats {
-	totalStorageBytes: number;
-}
+// Models kubernetes/pkg/kubelet/container/runtime.go RuntimeReady.
+export const runtimeReady: RuntimeConditionType = "RuntimeReady";
+
+// Models kubernetes/pkg/kubelet/container/runtime.go NetworkReady.
+export const networkReady: RuntimeConditionType = "NetworkReady";
 
 // Models kubernetes/pkg/kubelet/container/runtime.go RuntimeStatus.
-export type RuntimeStatus = StatusResponse["status"];
+export class RuntimeStatus {
+	conditions: RuntimeCondition[];
+	handlers: RuntimeHandler[];
+	features: RuntimeFeatures | undefined;
+
+	constructor(
+		options: {
+			conditions?: RuntimeCondition[];
+			handlers?: RuntimeHandler[];
+			features?: RuntimeFeatures | undefined;
+		} = {},
+	) {
+		this.conditions = options.conditions ?? [];
+		this.handlers = options.handlers ?? [];
+		this.features = options.features;
+	}
+
+	// Models kubernetes/pkg/kubelet/container/runtime.go RuntimeStatus.GetRuntimeCondition.
+	getRuntimeCondition(type: RuntimeConditionType): RuntimeCondition | undefined {
+		return this.conditions.find((condition) => condition.type === type);
+	}
+
+	toString(): string {
+		return `Runtime Conditions: ${this.conditions.map((condition) => condition.toString()).join(", ")}; Handlers: ${this.handlers.map((handler) => handler.toString()).join(", ")}, Features: ${this.features?.toString() ?? "nil"}`;
+	}
+}
+
+// Models kubernetes/pkg/kubelet/container/runtime.go RuntimeHandler.
+export class RuntimeHandler {
+	name: string;
+	supportsRecursiveReadOnlyMounts: boolean;
+	supportsUserNamespaces: boolean;
+
+	constructor(options: {
+		name: string;
+		supportsRecursiveReadOnlyMounts?: boolean;
+		supportsUserNamespaces?: boolean;
+	}) {
+		this.name = options.name;
+		this.supportsRecursiveReadOnlyMounts = options.supportsRecursiveReadOnlyMounts ?? false;
+		this.supportsUserNamespaces = options.supportsUserNamespaces ?? false;
+	}
+
+	toString(): string {
+		return `Name=${this.name} SupportsRecursiveReadOnlyMounts: ${this.supportsRecursiveReadOnlyMounts} SupportsUserNamespaces: ${this.supportsUserNamespaces}`;
+	}
+}
+
+// Models kubernetes/pkg/kubelet/container/runtime.go RuntimeCondition.
+export class RuntimeCondition {
+	type: RuntimeConditionType;
+	status: boolean;
+	reason: string;
+	message: string;
+
+	constructor(options: {
+		type: RuntimeConditionType;
+		status: boolean;
+		reason?: string;
+		message?: string;
+	}) {
+		this.type = options.type;
+		this.status = options.status;
+		this.reason = options.reason ?? "";
+		this.message = options.message ?? "";
+	}
+
+	toString(): string {
+		return `${this.type}=${this.status} reason:${this.reason} message:${this.message}`;
+	}
+}
+
+// Models kubernetes/pkg/kubelet/container/runtime.go RuntimeFeatures.
+export class RuntimeFeatures {
+	supplementalGroupsPolicy: boolean;
+	userNamespacesHostNetwork: boolean;
+
+	constructor(
+		options: {
+			supplementalGroupsPolicy?: boolean;
+			userNamespacesHostNetwork?: boolean;
+		} = {},
+	) {
+		this.supplementalGroupsPolicy = options.supplementalGroupsPolicy ?? false;
+		this.userNamespacesHostNetwork = options.userNamespacesHostNetwork ?? false;
+	}
+
+	toString(): string {
+		return `SupplementalGroupsPolicy: ${this.supplementalGroupsPolicy} UserNamespacesHostNetwork: ${this.userNamespacesHostNetwork}`;
+	}
+}
 
 // Models kubernetes/pkg/kubelet/container/runtime.go Status.
 export type Status = ContainerStatus;
@@ -72,7 +162,7 @@ export interface Pod {
 
 // Models kubernetes/pkg/kubelet/container/runtime.go Container.
 export interface Container {
-	id: string;
+	id: ContainerID;
 	name: string;
 	image: string;
 	imageID: string;
@@ -92,6 +182,28 @@ export interface EnvVar {
 export interface Annotation {
 	name: string;
 	value: string;
+}
+
+// Models kubernetes/pkg/kubelet/container/runtime.go ImageSpec.
+export interface ImageSpec {
+	image: string;
+	runtimeHandler?: string;
+	annotations?: Annotation[];
+}
+
+// Models kubernetes/pkg/kubelet/container/runtime.go Image.
+export interface Image {
+	id: string;
+	repoTags: string[];
+	repoDigests: string[];
+	size: number;
+	spec: ImageSpec;
+	pinned: boolean;
+}
+
+// Models kubernetes/pkg/kubelet/container/runtime.go ImageStats.
+export interface ImageStats {
+	totalStorageBytes: number;
 }
 
 // Models kubernetes/pkg/kubelet/container/runtime.go Mount.
@@ -196,14 +308,17 @@ export interface Runtime extends ImageService {
 	): Promise<Error | undefined>;
 	deleteContainer(ctx: context.Context, containerID: ContainerID): Promise<Error | undefined>;
 	updatePodCIDR(ctx: context.Context, podCIDR: string): Promise<Error | undefined>;
-	checkpointContainer(ctx: context.Context, options: unknown): Promise<Error | undefined>;
-	generatePodStatus(event: unknown): PodRuntimeStatus | undefined;
+	checkpointContainer(
+		ctx: context.Context,
+		options: CheckpointContainerRequest,
+	): Promise<Error | undefined>;
+	generatePodStatus(event: ContainerEventResponse): PodRuntimeStatus | undefined;
 	listMetricDescriptors(
 		ctx: context.Context,
-	): Promise<[descriptors: unknown[], err: Error | undefined]>;
+	): Promise<[descriptors: MetricDescriptor[], err: Error | undefined]>;
 	listPodSandboxMetrics(
 		ctx: context.Context,
-	): Promise<[metrics: unknown[], err: Error | undefined]>;
+	): Promise<[metrics: PodSandboxMetrics[], err: Error | undefined]>;
 	getContainerStatus(
 		ctx: context.Context,
 		podUid: string,
