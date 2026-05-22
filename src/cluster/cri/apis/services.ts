@@ -1,17 +1,23 @@
 import type {
 	ContainerFilter,
 	ContainerStatusResponse,
+	CheckpointContainerRequest,
 	ExecSyncResponse,
+	ImageFilter,
+	ImageFsInfoResponse,
 	ImageStatusResponse,
 	ListContainersResponse,
+	MetricDescriptor,
+	PodSandboxMetrics,
 	ListPodSandboxResponse,
 	PodSandboxFilter,
 	PodSandboxStatusResponse,
 	StatusResponse,
+	UpdateRuntimeConfigRequest,
 	VersionResponse,
 } from "../runtime/v1/api";
 import type * as context from "../../../go/context";
-import type { ContainerConfig, ImageSpec, PodSandboxConfig } from "../runtime";
+import type { ContainerConfig, Image, ImageSpec, PodSandboxConfig } from "../runtime";
 
 export type ServiceError = Error | undefined;
 
@@ -49,6 +55,10 @@ export interface ContainerManager {
 		cmd: string[],
 		timeout?: number,
 	): Promise<[response: ExecSyncResponse | undefined, err: ServiceError]>;
+	checkpointContainer(
+		ctx: context.Context,
+		options: CheckpointContainerRequest,
+	): Promise<ServiceError>;
 }
 
 // Models staging/src/k8s.io/cri-api/pkg/apis/services.go PodSandboxManager.
@@ -77,18 +87,20 @@ export interface RuntimeService extends RuntimeVersioner, ContainerManager, PodS
 		ctx: context.Context,
 		verbose?: boolean,
 	): Promise<[response: StatusResponse | undefined, err: ServiceError]>;
+	updateRuntimeConfig(
+		ctx: context.Context,
+		config: UpdateRuntimeConfigRequest,
+	): Promise<ServiceError>;
+	listMetricDescriptors(
+		ctx: context.Context,
+	): Promise<[descriptors: MetricDescriptor[], err: ServiceError]>;
+	listPodSandboxMetrics(
+		ctx: context.Context,
+	): Promise<[metrics: PodSandboxMetrics[], err: ServiceError]>;
 }
 
 // Models staging/src/k8s.io/cri-api/pkg/apis/services.go ImageManagerService.
 export interface ImageManagerService {
-	getImageRef(
-		ctx: context.Context,
-		image: ImageSpec,
-	): Promise<[imageRef: string, err: ServiceError]>;
-	getImageSize(
-		ctx: context.Context,
-		image: ImageSpec,
-	): Promise<[imageSize: number, err: ServiceError]>;
 	imageStatus(
 		ctx: context.Context,
 		image: ImageSpec,
@@ -99,5 +111,11 @@ export interface ImageManagerService {
 		image: ImageSpec,
 		credentials: unknown[],
 		podSandboxConfig?: PodSandboxConfig,
-	): Promise<[imageRef: string, credentialsUsed: unknown | undefined, err: ServiceError]>;
+	): Promise<[imageRef: string, err: ServiceError]>;
+	listImages(
+		ctx: context.Context,
+		filter?: ImageFilter,
+	): Promise<[images: Image[], err: ServiceError]>;
+	removeImage(ctx: context.Context, image: ImageSpec): Promise<ServiceError>;
+	imageFsInfo(ctx: context.Context): Promise<[response: ImageFsInfoResponse, err: ServiceError]>;
 }
