@@ -1,5 +1,6 @@
 import type {
 	ContainerConfig,
+	Image,
 	ContainerStatus,
 	ImageSpec,
 	PodSandboxConfig,
@@ -176,7 +177,7 @@ export interface ContainerStatusRequest {
 
 // Models staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api.proto ContainerStatusResponse.
 export interface ContainerStatusResponse {
-	status: ContainerStatus;
+	status?: ContainerStatus;
 	info?: Record<string, string>;
 }
 
@@ -207,6 +208,24 @@ export interface RuntimeStatus {
 	conditions: RuntimeCondition[];
 }
 
+// Models staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api.proto RuntimeHandlerFeatures.
+export interface RuntimeHandlerFeatures {
+	recursiveReadOnlyMounts?: boolean;
+	userNamespaces?: boolean;
+}
+
+// Models staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api.proto RuntimeHandler.
+export interface RuntimeHandler {
+	name: string;
+	features?: RuntimeHandlerFeatures;
+}
+
+// Models staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api.proto RuntimeFeatures.
+export interface RuntimeFeatures {
+	supplementalGroupsPolicy?: boolean;
+	userNamespacesHostNetwork?: boolean;
+}
+
 // Models staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api.proto StatusRequest.
 export interface StatusRequest {
 	verbose?: boolean;
@@ -214,8 +233,95 @@ export interface StatusRequest {
 
 // Models staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api.proto StatusResponse.
 export interface StatusResponse {
-	status: RuntimeStatus;
+	status?: RuntimeStatus;
+	runtimeHandlers?: RuntimeHandler[];
+	features?: RuntimeFeatures;
 	info?: Record<string, string>;
+}
+
+// Models staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api.proto NetworkConfig.
+export interface NetworkConfig {
+	podCidr?: string;
+}
+
+// Models staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api.proto RuntimeConfig.
+export interface RuntimeConfig {
+	networkConfig?: NetworkConfig;
+}
+
+// Models staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api.proto UpdateRuntimeConfigRequest.
+export interface UpdateRuntimeConfigRequest {
+	runtimeConfig: RuntimeConfig;
+}
+
+// Models staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api.proto UpdateRuntimeConfigResponse.
+export type UpdateRuntimeConfigResponse = Record<string, never>;
+
+// Models staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api.proto CheckpointContainerRequest.
+export interface CheckpointContainerRequest {
+	containerId: string;
+	location: string;
+	timeout: number;
+}
+
+// Models staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api.proto CheckpointContainerResponse.
+export type CheckpointContainerResponse = Record<string, never>;
+
+// Models staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api.proto ContainerEventResponse.
+export interface ContainerEventResponse {
+	containerId: string;
+	containerEventType: string;
+	createdAt: number;
+	podSandboxStatus: PodSandboxStatus;
+	containersStatuses: ContainerStatus[];
+}
+
+// Models staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api.proto ListMetricDescriptorsRequest.
+export type ListMetricDescriptorsRequest = Record<string, never>;
+
+// Models staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api.proto MetricDescriptor.
+export interface MetricDescriptor {
+	name: string;
+	help: string;
+	labelKeys: string[];
+}
+
+// Models staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api.proto ListMetricDescriptorsResponse.
+export interface ListMetricDescriptorsResponse {
+	descriptors: MetricDescriptor[];
+}
+
+// Models staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api.proto MetricType.
+export type MetricType = "COUNTER" | "GAUGE";
+
+// Models staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api.proto Metric.
+export interface Metric {
+	name: string;
+	timestamp: number;
+	metricType: MetricType;
+	labelValues: string[];
+	value?: number;
+}
+
+// Models staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api.proto ContainerMetrics.
+export interface ContainerMetrics {
+	containerId: string;
+	metrics: Metric[];
+}
+
+// Models staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api.proto PodSandboxMetrics.
+export interface PodSandboxMetrics {
+	podSandboxId: string;
+	metrics: Metric[];
+	containerMetrics: ContainerMetrics[];
+}
+
+// Models staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api.proto ListPodSandboxMetricsRequest.
+export type ListPodSandboxMetricsRequest = Record<string, never>;
+
+// Models staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api.proto ListPodSandboxMetricsResponse.
+export interface ListPodSandboxMetricsResponse {
+	podMetrics: PodSandboxMetrics[];
 }
 
 // Models staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api.proto ImageStatusRequest.
@@ -224,9 +330,24 @@ export interface ImageStatusRequest {
 	verbose?: boolean;
 }
 
+// Models staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api.proto ImageFilter.
+export interface ImageFilter {
+	image?: ImageSpec;
+}
+
+// Models staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api.proto ListImagesRequest.
+export interface ListImagesRequest {
+	filter?: ImageFilter;
+}
+
+// Models staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api.proto ListImagesResponse.
+export interface ListImagesResponse {
+	images: Image[];
+}
+
 // Models staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api.proto ImageStatusResponse.
 export interface ImageStatusResponse {
-	image?: ImageSpec;
+	image?: Image;
 	info?: Record<string, string>;
 }
 
@@ -240,6 +361,20 @@ export interface PullImageRequest {
 export interface PullImageResponse {
 	imageRef: string;
 }
+
+// Models staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api.proto RemoveImageRequest.
+export interface RemoveImageRequest {
+	image: ImageSpec;
+}
+
+// Models staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api.proto RemoveImageResponse.
+export type RemoveImageResponse = Record<string, never>;
+
+// Models staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api.proto ImageFsInfoRequest.
+export type ImageFsInfoRequest = Record<string, never>;
+
+// Models staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api.proto ImageFsInfoResponse.
+export type ImageFsInfoResponse = unknown;
 
 // Models staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api_grpc.pb.go RuntimeServiceClient.
 export interface RuntimeServiceClient {
@@ -257,10 +392,21 @@ export interface RuntimeServiceClient {
 	containerStatus(request: ContainerStatusRequest): Promise<ContainerStatusResponse>;
 	execSync(request: ExecSyncRequest): Promise<ExecSyncResponse>;
 	status(request: StatusRequest): Promise<StatusResponse>;
+	updateRuntimeConfig(request: UpdateRuntimeConfigRequest): Promise<UpdateRuntimeConfigResponse>;
+	checkpointContainer(request: CheckpointContainerRequest): Promise<CheckpointContainerResponse>;
+	listMetricDescriptors(
+		request: ListMetricDescriptorsRequest,
+	): Promise<ListMetricDescriptorsResponse>;
+	listPodSandboxMetrics(
+		request: ListPodSandboxMetricsRequest,
+	): Promise<ListPodSandboxMetricsResponse>;
 }
 
 // Models staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api_grpc.pb.go ImageServiceClient.
 export interface ImageServiceClient {
+	listImages(request: ListImagesRequest): Promise<ListImagesResponse>;
 	imageStatus(request: ImageStatusRequest): Promise<ImageStatusResponse>;
 	pullImage(request: PullImageRequest): Promise<PullImageResponse>;
+	removeImage(request: RemoveImageRequest): Promise<RemoveImageResponse>;
+	imageFsInfo(request: ImageFsInfoRequest): Promise<ImageFsInfoResponse>;
 }
