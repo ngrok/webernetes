@@ -44,3 +44,83 @@ export function minBackoffExpiration(error: unknown): [Date | undefined, boolean
 
 	return [undefined, false];
 }
+
+// Models kubernetes/pkg/kubelet/container/sync_result.go SyncAction.
+export type SyncAction =
+	| "StartContainer"
+	| "KillContainer"
+	| "InitContainer"
+	| "CreatePodSandbox"
+	| "ConfigPodSandbox"
+	| "KillPodSandbox"
+	| "ResizePodInPlace"
+	| "RemoveContainer";
+
+// Models kubernetes/pkg/kubelet/container/sync_result.go SyncResult.
+export class SyncResult {
+	error: Error | undefined;
+	message = "";
+
+	constructor(
+		readonly action: SyncAction,
+		readonly target: unknown,
+	) {}
+
+	// Models kubernetes/pkg/kubelet/container/sync_result.go SyncResult.Fail.
+	fail(error: Error, message: string): void {
+		this.error = error;
+		this.message = message;
+	}
+}
+
+// Models kubernetes/pkg/kubelet/container/sync_result.go NewSyncResult.
+export function newSyncResult(action: SyncAction, target: unknown): SyncResult {
+	return new SyncResult(action, target);
+}
+
+// Models kubernetes/pkg/kubelet/container/sync_result.go PodSyncResult.
+export class PodSyncResult {
+	syncResults: SyncResult[] = [];
+	syncError: Error | undefined;
+
+	// Models kubernetes/pkg/kubelet/container/sync_result.go PodSyncResult.AddSyncResult.
+	addSyncResult(...results: SyncResult[]): void {
+		this.syncResults.push(...results);
+	}
+
+	// Models kubernetes/pkg/kubelet/container/sync_result.go PodSyncResult.AddPodSyncResult.
+	addPodSyncResult(result: PodSyncResult): void {
+		this.addSyncResult(...result.syncResults);
+		this.syncError = result.syncError;
+	}
+
+	// Models kubernetes/pkg/kubelet/container/sync_result.go PodSyncResult.Fail.
+	fail(error: Error): void {
+		this.syncError = error;
+	}
+
+	// Models kubernetes/pkg/kubelet/container/sync_result.go PodSyncResult.Error.
+	error(): Error | undefined {
+		const errlist: Error[] = [];
+		if (this.syncError) {
+			errlist.push(
+				new Error(`failed to SyncPod: ${this.syncError.message}`, { cause: this.syncError }),
+			);
+		}
+		for (const result of this.syncResults) {
+			if (!result.error) {
+				continue;
+			}
+			errlist.push(
+				new Error(
+					`failed to "${result.action}" for "${String(result.target)}" with ${result.error.message}: "${result.message}"`,
+					{ cause: result.error },
+				),
+			);
+		}
+		if (errlist.length === 0) {
+			return undefined;
+		}
+		return new AggregateError(errlist);
+	}
+}
