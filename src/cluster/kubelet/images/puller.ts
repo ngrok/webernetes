@@ -1,7 +1,8 @@
 import type { Clock } from "../../../clock";
 import { Channel, type SendChannel } from "../../../go/channel";
 import type * as context from "../../../go/context";
-import type { ImageManagerService, ImageSpec, PodSandboxConfig } from "../../cri";
+import type { PodSandboxConfig } from "../../cri";
+import type { ImageService, ImageSpec } from "../container";
 
 // Models kubernetes/pkg/kubelet/images/puller.go pullResult.
 export interface PullResult {
@@ -29,7 +30,7 @@ class ParallelImagePuller implements ImagePuller {
 
 	constructor(
 		private readonly clock: Clock,
-		private readonly imageService: ImageManagerService,
+		private readonly imageService: ImageService,
 		maxParallelImagePulls: number | undefined,
 	) {
 		if (maxParallelImagePulls !== undefined && maxParallelImagePulls >= 1) {
@@ -81,7 +82,7 @@ class ParallelImagePuller implements ImagePuller {
 // Models kubernetes/pkg/kubelet/images/puller.go newParallelImagePuller.
 export function newParallelImagePuller(
 	clock: Clock,
-	imageService: ImageManagerService,
+	imageService: ImageService,
 	maxParallelImagePulls?: number,
 ): ImagePuller {
 	return new ParallelImagePuller(clock, imageService, maxParallelImagePulls);
