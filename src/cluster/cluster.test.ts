@@ -72,4 +72,45 @@ browser.describe("Cluster shutdown", () => {
 			await cluster.close();
 		}
 	});
+
+	it("cancels in-flight exec probes during shutdown", async () => {
+		const cluster = new Cluster();
+		await cluster.init();
+		try {
+			await cluster.api.corev1.createNamespacedPod({
+				namespace: "default",
+				body: {
+					metadata: { name: "shutdown-exec-probed" },
+					spec: {
+						nodeName: "node-1",
+						containers: [
+							{
+								name: "busybox",
+								image: "busybox:1.36",
+								readinessProbe: {
+									exec: { command: ["sleep", "3600"] },
+									periodSeconds: 1,
+									timeoutSeconds: 30,
+								},
+							},
+						],
+					},
+				},
+			});
+
+			await waitFor(() => {
+				expect(cluster.servers[0].runtime.processCount()).toBeGreaterThan(1);
+			});
+
+			await cluster.close();
+
+			for (const server of cluster.servers) {
+				expect(server.runtime.processCount()).toBe(0);
+				expect(server.kubelet.probeWorkerCount()).toBe(0);
+			}
+			expect(cluster.clock.pendingTaskCount()).toBe(0);
+		} finally {
+			await cluster.close();
+		}
+	});
 });
