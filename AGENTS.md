@@ -32,6 +32,10 @@ General rules for this repository:
 - The simulator has partial static pod bookkeeping, but does not currently
   support static pods end to end. Do not add static-pod-specific behavior unless
   the task explicitly expands static pod support.
+- The simulator does not currently model Kubernetes `RuntimeClass` objects or
+  kubelet's `runtimeClassManager`. Preserve upstream call shapes around runtime
+  handlers where useful for parity, but resolve runtime handlers as the default
+  empty string unless a task explicitly expands RuntimeClass support.
 - In cluster simulation code, do not call global timer/time APIs such as
   `setTimeout`, `setInterval`, or `Date.now` directly. Route timeout, interval,
   and current-time behavior through the cluster `Clock` instance so the
@@ -67,6 +71,26 @@ General rules for this repository:
   of `kubernetes/kubernetes` at commit
   `ecf6decece6a6de25a57aad9ba90b6ce580f6f78` is available at
   `~/Developer/github.com/kubernetes/kubernetes` for upstream source reference.
+- When asked to copy, mirror, port, transliterate, audit, or compare against
+  upstream Kubernetes code, treat the upstream source as the specification.
+  Mechanical fidelity is more important than local cleanup or simplification.
+- For Kubernetes parity tasks, do not collapse, rename, combine, or omit
+  upstream constructs merely because the local behavior would be equivalent.
+  Preserve upstream control flow, test table shape, case names, helper names,
+  expected fields, and distinctions such as literal empty maps versus
+  helper-built maps unless an existing repository constraint explicitly prevents
+  it.
+- Passing tests are necessary but not sufficient for upstream parity work. The
+  resulting implementation or test should remain reviewable side by side with
+  upstream.
+- If upstream code depends on simulator scope that is intentionally unsupported,
+  do not silently omit it. State the unsupported dependency, explain why it
+  cannot be copied directly, and either keep the closest explicit placeholder
+  shape or ask before skipping it.
+- Before finishing upstream parity work, do a line-by-line audit against the
+  upstream file and report any intentional deviations with concrete reasons.
+  If uncertain whether a shortcut is acceptable, assume it is not acceptable and
+  preserve the upstream structure.
 - Shared tests should exercise the same calling code against the real client and
   the fake client. Favor changes that make the fake's public exported types line
   up with the real client's public exported types closely enough that unions and
