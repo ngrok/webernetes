@@ -1,6 +1,48 @@
 import type { V1Pod } from "../../../client";
+import type { Backoff } from "../../../client-go/util/flowcontrol/backoff";
 import type * as context from "../../../go/context";
-import type { ContainerStatus, ImageSpec, PodRuntimeStatus } from "../../cri";
+import type { ContainerStatus, ImageSpec, PodRuntimeStatus, PodSandboxConfig } from "../../cri";
+import type { StatusResponse } from "../../cri/runtime/v1/api";
+import type { PodSyncResult } from "./sync-result";
+
+// Models kubernetes/pkg/kubelet/container/runtime.go Version.
+export interface Version {
+	compare(other: string): [result: number, err: Error | undefined];
+	toString(): string;
+}
+
+// Models kubernetes/pkg/kubelet/container/runtime.go Image.
+export interface Image {
+	id: string;
+	repoTags: string[];
+	repoDigests: string[];
+	size: number;
+	pinned: boolean;
+}
+
+// Models kubernetes/pkg/kubelet/container/runtime.go ImageStats.
+export interface ImageStats {
+	totalStorageBytes: number;
+}
+
+// Models kubernetes/pkg/kubelet/container/runtime.go RuntimeStatus.
+export type RuntimeStatus = StatusResponse["status"];
+
+// Models kubernetes/pkg/kubelet/container/runtime.go Status.
+export type Status = ContainerStatus;
+
+// Models kubernetes/pkg/kubelet/container/runtime.go GCPolicy.
+export interface GCPolicy {
+	minAgeMs?: number;
+	maxPerPodContainer?: number;
+	maxContainers?: number;
+}
+
+// Models kubernetes/pkg/kubelet/types SwapBehavior.
+export type SwapBehavior = "NoSwap" | "LimitedSwap" | "UnlimitedSwap";
+
+// Models kubernetes/pkg/kubelet/container/runtime.go ErrPodNotFound.
+export const errPodNotFound = new Error("pod sandboxes not found");
 
 // Models kubernetes/pkg/kubelet/container/runtime.go ContainerID.
 export class ContainerID {
@@ -91,30 +133,94 @@ export interface RunContainerOptions {
 	readOnly?: boolean;
 }
 
+// Models kubernetes/pkg/kubelet/container/runtime.go ImageService.
+export interface ImageService {
+	pullImage(
+		ctx: context.Context,
+		image: ImageSpec,
+		credentials: unknown[],
+		podSandboxConfig: PodSandboxConfig,
+	): Promise<[imageRef: string, credentialsUsed: unknown | undefined, err: Error | undefined]>;
+	getImageRef(
+		ctx: context.Context,
+		image: ImageSpec,
+	): Promise<[imageRef: string, err: Error | undefined]>;
+	listImages(ctx: context.Context): Promise<[images: Image[], err: Error | undefined]>;
+	removeImage(ctx: context.Context, image: ImageSpec): Promise<Error | undefined>;
+	imageStats(
+		ctx: context.Context,
+	): Promise<[imageStats: ImageStats | undefined, err: Error | undefined]>;
+	imageFsInfo(ctx: context.Context): Promise<[imageFsInfo: unknown, err: Error | undefined]>;
+	getImageSize(
+		ctx: context.Context,
+		image: ImageSpec,
+	): Promise<[imageSize: number, err: Error | undefined]>;
+}
+
 // Models kubernetes/pkg/kubelet/container/runtime.go Runtime.
-export interface Runtime {
-	getPods(all: boolean): Pod[];
-	getPod(ctx: context.Context, podUid: string): [pod: Pod | undefined, err: Error | undefined];
+export interface Runtime extends ImageService {
+	type(): string;
+	version(ctx: context.Context): Promise<[version: Version | undefined, err: Error | undefined]>;
+	apiVersion(): Promise<[version: Version | undefined, err: Error | undefined]>;
+	status(
+		ctx: context.Context,
+	): Promise<[status: RuntimeStatus | undefined, err: Error | undefined]>;
+	getPods(ctx: context.Context, all: boolean): Promise<[pods: Pod[], err: Error | undefined]>;
+	getPod(
+		ctx: context.Context,
+		podUid: string,
+	): Promise<[pod: Pod | undefined, err: Error | undefined]>;
+	garbageCollect(
+		ctx: context.Context,
+		gcPolicy: GCPolicy,
+		allSourcesReady: boolean,
+		evictNonDeletedPods: boolean,
+	): Promise<Error | undefined>;
+	syncPod(
+		ctx: context.Context,
+		pod: V1Pod,
+		podStatus: PodRuntimeStatus,
+		pullSecrets: unknown[],
+		backOff: Backoff,
+		restartAllContainers: boolean,
+	): Promise<PodSyncResult>;
 	getPodStatus(
 		ctx: context.Context,
 		pod: Pod,
-	): [podStatus: PodRuntimeStatus | undefined, err: Error | undefined];
+	): Promise<[podStatus: PodRuntimeStatus | undefined, err: Error | undefined]>;
 	killPod(
+		ctx: context.Context,
 		pod: V1Pod | undefined,
 		runningPod: Pod,
 		gracePeriodOverride: number | undefined,
-	): Promise<void>;
-	deleteContainer(containerID: ContainerID): Promise<void>;
-	runInContainer(
-		containerID: ContainerID,
-		cmd: string[],
-		timeoutSeconds?: number,
-	): Promise<[output: string, err: Error | undefined]>;
+	): Promise<Error | undefined>;
+	deleteContainer(ctx: context.Context, containerID: ContainerID): Promise<Error | undefined>;
+	updatePodCIDR(ctx: context.Context, podCIDR: string): Promise<Error | undefined>;
+	checkpointContainer(ctx: context.Context, options: unknown): Promise<Error | undefined>;
+	generatePodStatus(event: unknown): PodRuntimeStatus | undefined;
+	listMetricDescriptors(
+		ctx: context.Context,
+	): Promise<[descriptors: unknown[], err: Error | undefined]>;
+	listPodSandboxMetrics(
+		ctx: context.Context,
+	): Promise<[metrics: unknown[], err: Error | undefined]>;
+	getContainerStatus(
+		ctx: context.Context,
+		podUid: string,
+		id: ContainerID,
+	): Promise<[status: Status | undefined, err: Error | undefined]>;
+	getContainerSwapBehavior(
+		pod: V1Pod,
+		container: NonNullable<V1Pod["spec"]>["containers"][number],
+	): SwapBehavior;
+	isPodResizeInProgress(allocatedPod: V1Pod, podStatus: PodRuntimeStatus): boolean;
+	updateActuatedPodLevelResources(actuatedPod: V1Pod): Promise<Error | undefined>;
 }
 
 // Models kubernetes/pkg/kubelet/container/runtime.go CommandRunner.
 export interface CommandRunner {
 	runInContainer(
+		ctx: context.Context,
 		id: ContainerID,
 		cmd: string[],
 		timeoutSeconds?: number,
