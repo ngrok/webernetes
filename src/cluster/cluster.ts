@@ -62,11 +62,14 @@ export class Cluster {
 		this.network = new ClusterNetwork();
 
 		this.imageRegistry = new ImageRegistry();
-		this.imageRegistry.register("registry.k8s.io/pause:3.10", new PauseImage());
-		this.imageRegistry.register("busybox:1.36", new BusyBoxImage());
-		this.imageRegistry.register("crccheck/hello-world:latest", new HelloWorldImage());
-		this.imageRegistry.register("hashicorp/http-echo:1.0", new HttpEchoImage());
-		this.imageRegistry.register("registry.k8s.io/e2e-test-images/agnhost:2.40", new AgnhostImage());
+		this.imageRegistry.register("registry.k8s.io/pause:3.10", () => new PauseImage());
+		this.imageRegistry.register("busybox:1.36", () => new BusyBoxImage());
+		this.imageRegistry.register("crccheck/hello-world:latest", () => new HelloWorldImage());
+		this.imageRegistry.register("hashicorp/http-echo:1.0", () => new HttpEchoImage());
+		this.imageRegistry.register(
+			"registry.k8s.io/e2e-test-images/agnhost:2.40",
+			() => new AgnhostImage(),
+		);
 
 		this.servers = [
 			new Server(this, { name: "node-1", podCIDR: "10.0.0.0/24" }),
@@ -76,35 +79,40 @@ export class Cluster {
 
 		this.imageRegistry.register(
 			"webernetes/kube-scheduler:latest",
-			new Scheduler(
-				this.kubeConfig,
-				this.servers.map((server) => server.name),
-			),
+			() =>
+				new Scheduler(
+					this.kubeConfig,
+					this.servers.map((server) => server.name),
+				),
 		);
 		this.imageRegistry.register(
 			"webernetes/kube-proxy:latest",
-			new KubeProxy({
-				kubeConfig: this.kubeConfig,
-				network: this.network,
-			}),
+			() =>
+				new KubeProxy({
+					kubeConfig: this.kubeConfig,
+					network: this.network,
+				}),
 		);
 		this.imageRegistry.register(
 			"webernetes/endpointslice-controller:latest",
-			new EndpointSliceController({
-				kubeConfig: this.kubeConfig,
-			}),
+			() =>
+				new EndpointSliceController({
+					kubeConfig: this.kubeConfig,
+				}),
 		);
 		this.imageRegistry.register(
 			"webernetes/namespace-controller:latest",
-			new NamespaceController({
-				kubeConfig: this.kubeConfig,
-			}),
+			() =>
+				new NamespaceController({
+					kubeConfig: this.kubeConfig,
+				}),
 		);
 		this.imageRegistry.register(
 			"webernetes/coredns:latest",
-			new CoreDNS({
-				kubeConfig: this.kubeConfig,
-			}),
+			() =>
+				new CoreDNS({
+					kubeConfig: this.kubeConfig,
+				}),
 		);
 	}
 

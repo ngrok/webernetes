@@ -6,15 +6,21 @@ export interface ImageDefinition {
 	exec(context: ProcessContext, argv: readonly string[]): Promise<number>;
 }
 
-export class ImageRegistry {
-	private readonly images = new Map<string, ImageDefinition>();
+export type ImageFactory = () => ImageDefinition;
 
-	register(imageRef: string, image: ImageDefinition): void {
+export class ImageRegistry {
+	private readonly images = new Map<string, ImageFactory>();
+
+	register(imageRef: string, image: ImageFactory): void {
 		this.images.set(imageRef, image);
 	}
 
-	resolve(imageRef: string): ImageDefinition | undefined {
-		return this.images.get(imageRef);
+	create(imageRef: string): ImageDefinition | undefined {
+		return this.images.get(imageRef)?.();
+	}
+
+	has(imageRef: string): boolean {
+		return this.images.has(imageRef);
 	}
 
 	list(): string[] {

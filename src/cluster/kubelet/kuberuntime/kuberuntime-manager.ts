@@ -87,6 +87,8 @@ import {
 	getContainerInfoFromLabels,
 	newContainerAnnotations,
 	newContainerLabels,
+	newPodAnnotations,
+	newPodLabels,
 } from "./labels";
 
 type RuntimeError = Error | undefined;
@@ -1041,7 +1043,11 @@ export class KubeGenericRuntimeManager implements Runtime, CommandRunner {
 		if (!response) {
 			return ["", new Error("execSync returned no response")];
 		}
-		return [response.stdout + response.stderr, undefined];
+		const output = response.stdout + response.stderr;
+		if (response.exitCode !== 0) {
+			return [output, new Error(`command terminated with exit code ${response.exitCode}`)];
+		}
+		return [output, undefined];
 	}
 
 	// Models kubernetes/pkg/kubelet/kuberuntime/kuberuntime_image.go kubeGenericRuntimeManager.PullImage.
@@ -1645,8 +1651,8 @@ export class KubeGenericRuntimeManager implements Runtime, CommandRunner {
 				},
 				hostname,
 				dnsConfig,
-				labels: pod.metadata?.labels,
-				annotations: pod.metadata?.annotations,
+				labels: newPodLabels(pod),
+				annotations: newPodAnnotations(pod),
 				portMappings: podPortMappings(pod),
 			},
 			undefined,

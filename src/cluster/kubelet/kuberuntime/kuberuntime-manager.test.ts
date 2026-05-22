@@ -19,6 +19,7 @@ import type {
 	CheckpointContainerRequest,
 	Container as CRIContainer,
 	ContainerStatusResponse,
+	ExecSyncResponse,
 	MetricDescriptor,
 	PodSandbox,
 	PodSandboxMetrics,
@@ -64,6 +65,55 @@ browser.describe("KubeGenericRuntimeManager", () => {
 
 		expect(versionErr).toBeUndefined();
 		expect(version?.toString()).toBe("0.1.0");
+	});
+
+	it("generatePodSandboxConfig preserves pod labels and Kubernetes identity labels", () => {
+		const tCtx = context.background();
+		const [, , m, err] = createTestRuntimeManager(tCtx);
+		expect(err).toBeUndefined();
+
+		const [config, configErr] = m.generatePodSandboxConfig(
+			tCtx,
+			{
+				metadata: {
+					name: "labeled-pod",
+					namespace: "test-ns",
+					uid: "pod-uid",
+					labels: { app: "demo" },
+				},
+				spec: {
+					containers: [{ name: "main", image: "pause" }],
+				},
+			},
+			0,
+		);
+
+		expect(configErr).toBeUndefined();
+		expect(config?.labels).toMatchObject({
+			app: "demo",
+			"io.kubernetes.pod.name": "labeled-pod",
+			"io.kubernetes.pod.namespace": "test-ns",
+			"io.kubernetes.pod.uid": "pod-uid",
+		});
+	});
+
+	it("runInContainer returns an error for non-zero exec exit codes", async () => {
+		const tCtx = context.background();
+		const [runtime, , m, err] = createTestRuntimeManager(tCtx);
+		expect(err).toBeUndefined();
+		runtime.execSync = async (): Promise<[ExecSyncResponse, undefined]> => [
+			{ exitCode: 42, stdout: "out", stderr: "err" },
+			undefined,
+		];
+
+		const [output, runErr] = await m.runInContainer(
+			tCtx,
+			buildContainerID("simulator", "container-id"),
+			["false"],
+		);
+
+		expect(output).toBe("outerr");
+		expect(runErr?.message).toBe("command terminated with exit code 42");
 	});
 
 	// Models kubernetes/pkg/kubelet/kuberuntime/kuberuntime_manager_test.go TestContainerRuntimeType.
@@ -1770,7 +1820,7 @@ class TestRuntimeService implements RuntimeService {
 		];
 	}
 
-	async execSync(): Promise<[undefined, undefined]> {
+	async execSync(): Promise<[ExecSyncResponse | undefined, undefined]> {
 		return [undefined, undefined];
 	}
 
