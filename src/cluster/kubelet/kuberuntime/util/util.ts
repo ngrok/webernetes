@@ -1,5 +1,5 @@
 import type { V1Pod } from "../../../../client";
-import type { PodRuntimeStatus } from "../../../cri";
+import type { PodStatus as PodRuntimeStatus } from "../../container";
 import { isHostNetworkPod } from "../../container";
 
 // Models kubernetes/pkg/kubelet/util/util.go GetNodenameForKernel.

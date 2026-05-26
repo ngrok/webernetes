@@ -33,7 +33,7 @@ import {
 	errPodNotFound,
 	hashContainer,
 	newBackoffError,
-	type PodRuntimeStatus,
+	type PodStatus as PodRuntimeStatus,
 	type RuntimeHelper,
 	type Pod as RuntimePod,
 	type Status as ContainerStatus,
@@ -2158,15 +2158,14 @@ function containerStatus(
 	return {
 		id: buildContainerID("simulator", id),
 		name,
+		image: container?.image ?? "busybox",
+		imageID: container?.image ?? "busybox",
 		imageRef: container?.image ?? "busybox",
 		imageRuntimeHandler: "",
 		hash: container ? hashContainer(container) : 0,
 		state,
 		restartCount: 0,
 		createdAt: 0,
-		labels: {},
-		annotations: {},
-		ready: state === "Running",
 	};
 }
 

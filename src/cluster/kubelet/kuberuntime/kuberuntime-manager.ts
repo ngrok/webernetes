@@ -7,9 +7,8 @@ import * as context from "../../../go/context";
 import * as time from "../../../go/time";
 import type {
 	ContainerConfig,
-	ContainerStatus,
+	ContainerStatus as CRIContainerStatus,
 	ImageManagerService,
-	PodRuntimeStatus,
 	PodSandboxConfig,
 	PodSandboxStatus,
 	PortMapping,
@@ -48,6 +47,7 @@ import {
 	type ImageSpec,
 	type ImageStats,
 	type Pod as RuntimePod,
+	type PodStatus as PodRuntimeStatus,
 	type Runtime,
 	type RuntimeStatus,
 	type CommandRunner,
@@ -826,8 +826,8 @@ export class KubeGenericRuntimeManager implements Runtime, CommandRunner {
 		}
 
 		const sandboxStatuses: PodSandboxStatus[] = [];
-		let containerStatuses: ContainerStatus[] = [];
-		let activeContainerStatuses: ContainerStatus[] = [];
+		let containerStatuses: Status[] = [];
+		let activeContainerStatuses: Status[] = [];
 		let timestamp = pod.timestamp;
 
 		let podIPs: string[] = [];
@@ -882,15 +882,9 @@ export class KubeGenericRuntimeManager implements Runtime, CommandRunner {
 		ctx: context.Context,
 		pod: RuntimePod,
 		activePodSandboxID: string,
-	): Promise<
-		[
-			statuses: ContainerStatus[],
-			activeContainerStatuses: ContainerStatus[],
-			err: Error | undefined,
-		]
-	> {
-		const statuses: ContainerStatus[] = [];
-		const activeContainerStatuses: ContainerStatus[] = [];
+	): Promise<[statuses: Status[], activeContainerStatuses: Status[], err: Error | undefined]> {
+		const statuses: Status[] = [];
+		const activeContainerStatuses: Status[] = [];
 		for (const c of pod.containers) {
 			const [resp, err] = await this.runtimeService.containerStatus(ctx, c.id.id, false);
 			if (err) {
@@ -918,8 +912,8 @@ export class KubeGenericRuntimeManager implements Runtime, CommandRunner {
 	private convertToKubeContainerStatus(
 		ctx: context.Context,
 		podUID: string,
-		status: ContainerStatus,
-	): ContainerStatus {
+		status: CRIContainerStatus,
+	): Status {
 		const cStatus = this.toKubeContainerStatus(ctx, podUID, status, this.type());
 		if (status.state === "Exited") {
 			const annotatedInfo = getContainerInfoFromAnnotations(ctx, status.annotations);
@@ -949,26 +943,24 @@ export class KubeGenericRuntimeManager implements Runtime, CommandRunner {
 	private toKubeContainerStatus(
 		ctx: context.Context,
 		_podUID: string,
-		status: ContainerStatus,
+		status: CRIContainerStatus,
 		runtimeName: string,
-	): ContainerStatus {
+	): Status {
 		const annotatedInfo = getContainerInfoFromAnnotations(ctx, status.annotations);
 		const labeledInfo = getContainerInfoFromLabels(status.labels);
-		const imageID = status.imageRef;
-		const cStatus: ContainerStatus = {
-			id: buildContainerID(runtimeName, status.id.id),
+		const imageID = status.imageId ?? status.imageRef;
+		const cStatus: Status = {
+			id: buildContainerID(runtimeName, status.id),
 			name: labeledInfo.containerName || status.name,
+			image: status.image?.image ?? status.imageRef,
+			imageID,
 			imageRef: status.imageRef,
 			imageRuntimeHandler: status.imageRuntimeHandler,
 			hash: annotatedInfo.hash || status.hash,
 			state: status.state,
 			restartCount: annotatedInfo.restartCount,
 			createdAt: status.createdAt,
-			labels: { ...status.labels },
-			annotations: { ...status.annotations },
-			ready: status.ready,
 		};
-		void imageID;
 		if (status.state !== "Created") {
 			cStatus.startedAt = status.startedAt;
 		}
@@ -1203,7 +1195,7 @@ export class KubeGenericRuntimeManager implements Runtime, CommandRunner {
 			event.podSandboxStatus,
 		);
 
-		const kubeContainerStatuses: ContainerStatus[] = [];
+		const kubeContainerStatuses: Status[] = [];
 		for (const status of event.containersStatuses) {
 			kubeContainerStatuses.push(this.convertToKubeContainerStatus(ctx, podUID, status));
 		}
@@ -1248,7 +1240,7 @@ export class KubeGenericRuntimeManager implements Runtime, CommandRunner {
 		if (!response?.status) {
 			return [undefined, new Error("container status is nil")];
 		}
-		return [response.status, undefined];
+		return [this.convertToKubeContainerStatus(ctx, _podUid, response.status), undefined];
 	}
 
 	// Models kubernetes/pkg/kubelet/kuberuntime/kuberuntime_container_unsupported.go kubeGenericRuntimeManager.GetContainerSwapBehavior.
@@ -1864,7 +1856,7 @@ function containerSucceeded(container: V1Container, podStatus: PodRuntimeStatus)
 // Models kubernetes/pkg/kubelet/kuberuntime/kuberuntime_manager.go containerChanged.
 function containerChanged(
 	container: V1Container,
-	containerStatus: ContainerStatus,
+	containerStatus: Status,
 ): [expectedHash: number, containerHash: number, changed: boolean] {
 	const expectedHash = hashContainer(container);
 	return [expectedHash, containerStatus.hash, containerStatus.hash !== expectedHash];

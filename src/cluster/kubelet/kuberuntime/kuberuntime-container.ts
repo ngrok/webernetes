@@ -1,7 +1,10 @@
 import type { V1Container, V1Pod } from "../../../client";
-import type { ContainerStatus, PodRuntimeStatus } from "../../cri";
 import type { ContainerFilter, PodSandboxFilter } from "../../cri/runtime/v1/api";
-import { findContainerStatusByName, type ContainerID } from "../container";
+import {
+	findContainerStatusByName,
+	type ContainerID,
+	type PodStatus as PodRuntimeStatus,
+} from "../container";
 import type * as context from "../../../go/context";
 import { kubernetesPodUIDLabel } from "./labels";
 
@@ -120,7 +123,7 @@ export function isNotFoundError(err: Error): boolean {
 
 // Models kubernetes/pkg/kubelet/kuberuntime/kuberuntime_container.go getTerminationMessage.
 export function getTerminationMessage(
-	_status: ContainerStatus,
+	_status: unknown,
 	terminationMessagePath: string,
 	fallbackToLogs: boolean,
 ): [message: string, checkLogs: boolean] {

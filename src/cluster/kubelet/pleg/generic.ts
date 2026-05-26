@@ -3,13 +3,13 @@ import { Channel, select, type ReadOnlyChannel } from "../../../go/channel";
 import type * as context from "../../../go/context";
 import * as time from "../../../go/time";
 import { Mutex } from "../../../mutex";
-import type { PodRuntimeStatus } from "../../cri";
 import { findContainerByID, findSandboxByID } from "../container";
 import type {
 	Cache,
 	Container as RuntimeContainer,
 	ContainerID,
 	Pod as RuntimePod,
+	PodStatus as PodRuntimeStatus,
 	Runtime,
 	State as ContainerState,
 } from "../container";

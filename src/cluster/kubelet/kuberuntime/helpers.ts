@@ -1,12 +1,17 @@
 import type { V1Container, V1Pod } from "../../../client";
 import * as fnv from "../../../fnv";
-import type { ContainerStatus } from "../../cri";
 import type {
 	RuntimeFeatures as CRIRuntimeFeatures,
 	RuntimeHandler as CRIRuntimeHandler,
 	RuntimeStatus as CRIRuntimeStatus,
 } from "../../cri/runtime/v1/api";
-import { RuntimeCondition, RuntimeFeatures, RuntimeHandler, RuntimeStatus } from "../container";
+import {
+	RuntimeCondition,
+	RuntimeFeatures,
+	RuntimeHandler,
+	RuntimeStatus,
+	type Status,
+} from "../container";
 
 // Models kubernetes/pkg/kubelet/kuberuntime/helpers.go GetBackoffKey.
 export function getBackoffKey(pod: V1Pod, container: V1Container): string {
@@ -59,6 +64,6 @@ export function toKubeRuntimeStatus(
 }
 
 // Models kubernetes/pkg/kubelet/kuberuntime/helpers.go containerStatusByCreated.
-export function containerStatusByCreated(left: ContainerStatus, right: ContainerStatus): number {
+export function containerStatusByCreated(left: Status, right: Status): number {
 	return right.createdAt - left.createdAt;
 }

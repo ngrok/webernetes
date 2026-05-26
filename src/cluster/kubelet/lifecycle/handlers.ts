@@ -5,9 +5,8 @@ import type * as context from "../../../go/context";
 import * as time from "../../../go/time";
 import type { ClusterNetwork } from "../../cni";
 import type { EventRecorder } from "../../events";
-import type { PodRuntimeStatus } from "../../cri";
 import { resolveContainerPort } from "../../probe/util";
-import type { HandlerRunner, Pod as RuntimePod } from "../container";
+import type { HandlerRunner, Pod as RuntimePod, PodStatus as PodRuntimeStatus } from "../container";
 import type { CommandRunner, ContainerID } from "../container";
 import * as format from "../util/format";
 
