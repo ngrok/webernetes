@@ -1,12 +1,117 @@
-import type {
-	ContainerConfig,
-	Image,
-	ContainerStatus,
-	ImageSpec,
-	PodSandboxConfig,
-	PodSandboxState,
-	PodSandboxStatus,
-} from "../../runtime";
+// Models staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api.proto PodSandboxMetadata.
+export interface PodSandboxMetadata {
+	uid: string;
+	name: string;
+	namespace: string;
+	attempt: number;
+}
+
+// Models staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api.proto DNSConfig.
+export interface DnsConfig {
+	servers: string[];
+	searches: string[];
+	options: string[];
+}
+
+// Models staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api.proto PortMapping.
+export interface PortMapping {
+	protocol?: "TCP" | "UDP" | "SCTP";
+	containerPort: number;
+	hostPort?: number;
+	hostIp?: string;
+}
+
+// Models staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api.proto PodSandboxConfig.
+export interface PodSandboxConfig {
+	metadata: PodSandboxMetadata;
+	hostname?: string;
+	logDirectory?: string;
+	dnsConfig?: DnsConfig;
+	portMappings?: PortMapping[];
+	labels?: Record<string, string>;
+	annotations?: Record<string, string>;
+}
+
+// Models staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api.proto ImageSpec.
+export interface ImageSpec {
+	image: string;
+	userSpecifiedImage?: string;
+	runtimeHandler?: string;
+	annotations?: Record<string, string>;
+}
+
+// Models staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api.proto Image.
+export interface Image {
+	id: string;
+	repoTags: string[];
+	repoDigests: string[];
+	size: number;
+	spec?: ImageSpec;
+	pinned: boolean;
+}
+
+// Models staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api.proto ContainerMetadata.
+export interface ContainerMetadata {
+	name: string;
+	attempt: number;
+}
+
+// Models staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api.proto ContainerConfig.
+export interface ContainerConfig {
+	metadata: ContainerMetadata;
+	image: ImageSpec;
+	command?: string[];
+	args?: string[];
+	workingDir?: string;
+	env?: Record<string, string>;
+	ports?: ContainerPort[];
+	labels?: Record<string, string>;
+	annotations?: Record<string, string>;
+	stopSignal?: "SIGTERM" | "SIGKILL";
+}
+
+export interface ContainerPort {
+	name?: string;
+	containerPort: number;
+	protocol?: "TCP" | "UDP" | "SCTP";
+}
+
+export type PodSandboxState = "Ready" | "NotReady";
+
+// Models staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api.proto PodSandboxStatus.
+export interface PodSandboxStatus {
+	id: string;
+	metadata: PodSandboxMetadata;
+	state: PodSandboxState;
+	createdAt: number;
+	network?: {
+		ip: string;
+		additionalIps?: Array<{ ip: string }>;
+	};
+	labels: Record<string, string>;
+	annotations: Record<string, string>;
+}
+
+export interface ContainerStatus {
+	id: string;
+	name: string;
+	image?: ImageSpec;
+	imageRef: string;
+	imageId?: string;
+	imageRuntimeHandler: string;
+	hash: number;
+	state: "Created" | "Running" | "Exited";
+	restartCount: number;
+	createdAt: number;
+	startedAt?: number;
+	finishedAt?: number;
+	exitCode?: number;
+	reason?: string;
+	message?: string;
+	labels: Record<string, string>;
+	annotations: Record<string, string>;
+	ready: boolean;
+}
 
 // Models staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api.proto VersionRequest.
 export interface VersionRequest {

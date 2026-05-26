@@ -15,9 +15,12 @@ import type {
 	StatusResponse,
 	UpdateRuntimeConfigRequest,
 	VersionResponse,
+	ContainerConfig,
+	Image,
+	ImageSpec,
+	PodSandboxConfig,
 } from "../runtime/v1/api";
 import type * as context from "../../../go/context";
-import type { ContainerConfig, Image, ImageSpec, PodSandboxConfig } from "../runtime";
 
 export type ServiceError = Error | undefined;
 
