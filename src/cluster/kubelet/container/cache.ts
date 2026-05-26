@@ -1,6 +1,6 @@
 import { Channel, select, type ChannelReceive } from "../../../go/channel";
 import * as context from "../../../go/context";
-import type { PodRuntimeStatus } from "../../cri";
+import type { PodStatus as PodRuntimeStatus } from "./runtime";
 
 export interface ROCache {
 	get(id: string): CacheResult;

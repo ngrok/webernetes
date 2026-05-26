@@ -2,15 +2,15 @@ import type { V1Container, V1LifecycleHandler, V1Pod } from "../../../client";
 import type * as context from "../../../go/context";
 import * as fnv from "../../../fnv";
 import * as hashutil from "../../../hashutil";
-import type {
-	ContainerPort,
-	DnsConfig,
-	PodRuntimeStatus,
-	PodSandboxState,
-	PortMapping,
-} from "../../cri";
+import type { ContainerPort, DnsConfig, PodSandboxState, PortMapping } from "../../cri";
 import { containerShouldRestart } from "../../api/v1/pod/util";
-import { buildContainerID, findContainerStatusByName, type Pod, type State } from "./runtime";
+import {
+	buildContainerID,
+	findContainerStatusByName,
+	type Pod,
+	type PodStatus as PodRuntimeStatus,
+	type State,
+} from "./runtime";
 import type { ContainerID, EnvVar, RunContainerOptions } from "./runtime";
 
 // Models kubernetes/pkg/kubelet/container/helpers.go HandlerRunner.
