@@ -9,9 +9,8 @@ import * as context from "../../../go/context";
 import { browser } from "../../../test/describe";
 import type {
 	ContainerConfig,
-	ContainerStatus,
+	ContainerStatus as CRIContainerStatus,
 	PodSandboxConfig,
-	PodRuntimeStatus,
 	PodSandboxStatus,
 	RuntimeService,
 } from "../../cri";
@@ -34,8 +33,10 @@ import {
 	errPodNotFound,
 	hashContainer,
 	newBackoffError,
+	type PodRuntimeStatus,
 	type RuntimeHelper,
 	type Pod as RuntimePod,
+	type Status as ContainerStatus,
 } from "../container";
 import type { InternalContainerLifecycle } from "../cm";
 import { ResultsManager } from "../prober/results";
@@ -1635,7 +1636,7 @@ interface TestContainerRecord {
 	image: ContainerConfig["image"];
 	imageRef: string;
 	imageId: string;
-	state: ContainerStatus["state"];
+	state: CRIContainerStatus["state"];
 	createdAt: number;
 	labels: Record<string, string>;
 	annotations: Record<string, string>;
@@ -1803,7 +1804,7 @@ class TestRuntimeService implements RuntimeService {
 		return [
 			{
 				status: {
-					id: buildContainerID("simulator", container.id),
+					id: container.id,
 					name: container.metadata.name,
 					imageRef: container.imageRef,
 					imageRuntimeHandler: container.image.runtimeHandler ?? "",
@@ -1985,7 +1986,7 @@ interface ContainerTemplate {
 	sandboxAttempt?: number;
 	attempt?: number;
 	createdAt: number;
-	state: ContainerStatus["state"];
+	state: CRIContainerStatus["state"];
 }
 
 function makeAndSetFakePod(
