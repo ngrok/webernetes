@@ -1,7 +1,7 @@
 import type { V1Pod } from "../../../client";
 import type { Backoff } from "../../../client-go/util/flowcontrol/backoff";
 import type * as context from "../../../go/context";
-import type { ContainerStatus, PodRuntimeStatus, PodSandboxConfig } from "../../cri";
+import type { PodSandboxConfig, PodSandboxStatus } from "../../cri";
 import type {
 	CheckpointContainerRequest,
 	ContainerEventResponse,
@@ -119,7 +119,47 @@ export class RuntimeFeatures {
 }
 
 // Models kubernetes/pkg/kubelet/container/runtime.go Status.
-export type Status = ContainerStatus;
+export interface Status {
+	id: ContainerID;
+	name: string;
+	state: State;
+	createdAt: number;
+	startedAt?: number;
+	finishedAt?: number;
+	exitCode?: number;
+	image: string;
+	imageID: string;
+	imageRef: string;
+	imageRuntimeHandler: string;
+	hash: number;
+	restartCount: number;
+	reason?: string;
+	message?: string;
+	resources?: ContainerResources;
+	user?: ContainerUser;
+	mounts?: Mount[];
+	stopSignal?: string;
+}
+
+// Models kubernetes/pkg/kubelet/container/runtime.go ContainerResources.
+export interface ContainerResources {
+	cpuRequest?: unknown;
+	cpuLimit?: unknown;
+	memoryRequest?: unknown;
+	memoryLimit?: unknown;
+}
+
+// Models kubernetes/pkg/kubelet/container/runtime.go ContainerUser.
+export interface ContainerUser {
+	linux?: LinuxContainerUser;
+}
+
+// Models kubernetes/pkg/kubelet/container/runtime.go LinuxContainerUser.
+export interface LinuxContainerUser {
+	uid?: number;
+	gid?: number;
+	supplementalGroups?: number[];
+}
 
 // Models kubernetes/pkg/kubelet/container/runtime.go GCPolicy.
 export interface GCPolicy {
@@ -172,6 +212,18 @@ export interface Container {
 	state: State;
 	podSandboxID: string;
 	createdAt: number;
+}
+
+// Models kubernetes/pkg/kubelet/container/runtime.go PodStatus.
+export interface PodStatus {
+	id: string;
+	name: string;
+	namespace: string;
+	ips: string[];
+	containerStatuses: Status[];
+	activeContainerStatuses?: Status[];
+	sandboxStatuses: PodSandboxStatus[];
+	timestamp: Date;
 }
 
 export interface EnvVar {
@@ -291,7 +343,7 @@ export interface Runtime extends ImageService {
 	syncPod(
 		ctx: context.Context,
 		pod: V1Pod,
-		podStatus: PodRuntimeStatus,
+		podStatus: PodStatus,
 		pullSecrets: unknown[],
 		backOff: Backoff,
 		restartAllContainers: boolean,
@@ -299,7 +351,7 @@ export interface Runtime extends ImageService {
 	getPodStatus(
 		ctx: context.Context,
 		pod: Pod,
-	): Promise<[podStatus: PodRuntimeStatus | undefined, err: Error | undefined]>;
+	): Promise<[podStatus: PodStatus | undefined, err: Error | undefined]>;
 	killPod(
 		ctx: context.Context,
 		pod: V1Pod | undefined,
@@ -312,7 +364,7 @@ export interface Runtime extends ImageService {
 		ctx: context.Context,
 		options: CheckpointContainerRequest,
 	): Promise<Error | undefined>;
-	generatePodStatus(event: ContainerEventResponse): PodRuntimeStatus | undefined;
+	generatePodStatus(event: ContainerEventResponse): PodStatus | undefined;
 	listMetricDescriptors(
 		ctx: context.Context,
 	): Promise<[descriptors: MetricDescriptor[], err: Error | undefined]>;
@@ -328,7 +380,7 @@ export interface Runtime extends ImageService {
 		pod: V1Pod,
 		container: NonNullable<V1Pod["spec"]>["containers"][number],
 	): SwapBehavior;
-	isPodResizeInProgress(allocatedPod: V1Pod, podStatus: PodRuntimeStatus): boolean;
+	isPodResizeInProgress(allocatedPod: V1Pod, podStatus: PodStatus): boolean;
 	updateActuatedPodLevelResources(actuatedPod: V1Pod): Promise<Error | undefined>;
 }
 
@@ -344,9 +396,9 @@ export interface CommandRunner {
 
 // Models kubernetes/pkg/kubelet/container/runtime.go PodStatus.FindContainerStatusByName.
 export function findContainerStatusByName(
-	podStatus: PodRuntimeStatus,
+	podStatus: PodStatus,
 	containerName: string,
-): ContainerStatus | undefined {
+): Status | undefined {
 	return podStatus.containerStatuses.find(
 		(containerStatus) => containerStatus.name === containerName,
 	);
