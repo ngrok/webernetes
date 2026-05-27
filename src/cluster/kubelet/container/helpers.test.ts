@@ -1,6 +1,8 @@
 import { expect, it } from "vitest";
 import { browser } from "../../../test/describe";
-import { hashContainer } from "./helpers";
+import type { V1Container, V1Pod, V1PodCondition, V1PodStatus } from "../../../client";
+import { hashContainer, shouldAllContainersRestart } from "./helpers";
+import { buildContainerID, type PodStatus, type Status } from "./runtime";
 
 browser.describe("hashContainer", () => {
 	it("matches the upstream Kubernetes container hash fixture", () => {
@@ -107,3 +109,198 @@ browser.describe("hashContainer", () => {
 		).toBe(base);
 	});
 });
+
+// Models kubernetes/pkg/kubelet/container/helpers_test.go TestShouldAllContainersRestart.
+browser.describe("shouldAllContainersRestart", () => {
+	const restartPolicyNever = "Never";
+	const restartPolicyAlways = "Always";
+	const restartRuleRestartAllContainers: NonNullable<V1Container["restartPolicyRules"]>[number] = {
+		action: "RestartAllContainers",
+		exitCodes: {
+			operator: "In",
+			values: [42],
+		},
+	};
+	const restartAllContainersCondition: V1PodCondition = {
+		type: "AllContainersRestarting",
+		status: "True",
+	};
+
+	it.each([
+		{
+			name: "pod marked with condition",
+			pod: {
+				spec: {
+					containers: [
+						{
+							name: "regular",
+							restartPolicy: restartPolicyNever,
+						},
+					],
+				},
+			},
+			podStatus: podStatus([
+				containerStatus({
+					name: "regular",
+					state: "Running",
+				}),
+			]),
+			apiPodStatus: {
+				conditions: [restartAllContainersCondition],
+			},
+			expected: true,
+		},
+		{
+			name: "regular container exited with matching rules",
+			pod: {
+				spec: {
+					containers: [
+						{
+							name: "regular",
+							restartPolicy: restartPolicyNever,
+							restartPolicyRules: [restartRuleRestartAllContainers],
+						},
+					],
+				},
+			},
+			podStatus: podStatus([
+				containerStatus({
+					name: "regular",
+					state: "Exited",
+					exitCode: 42,
+				}),
+			]),
+			expected: true,
+		},
+		{
+			name: "init container exited with matching rules",
+			pod: {
+				spec: {
+					containers: [],
+					initContainers: [
+						{
+							name: "init",
+							restartPolicy: restartPolicyNever,
+							restartPolicyRules: [restartRuleRestartAllContainers],
+						},
+					],
+				},
+			},
+			podStatus: podStatus([
+				containerStatus({
+					name: "init",
+					state: "Exited",
+					exitCode: 42,
+				}),
+			]),
+			expected: true,
+		},
+		{
+			name: "sidecar container exited with matching rules",
+			pod: {
+				spec: {
+					containers: [],
+					initContainers: [
+						{
+							name: "init",
+							restartPolicy: restartPolicyAlways,
+							restartPolicyRules: [restartRuleRestartAllContainers],
+						},
+					],
+				},
+			},
+			podStatus: podStatus([
+				containerStatus({
+					name: "init",
+					state: "Exited",
+					exitCode: 42,
+				}),
+			]),
+			expected: true,
+		},
+		{
+			name: "container exited without rules",
+			pod: {
+				spec: {
+					containers: [
+						{
+							name: "regular",
+						},
+					],
+				},
+			},
+			podStatus: podStatus([
+				containerStatus({
+					name: "regular",
+					state: "Exited",
+					exitCode: 1,
+				}),
+			]),
+			expected: false,
+		},
+		{
+			name: "api pod status regular container exited with matching rules",
+			pod: {
+				spec: {
+					containers: [
+						{
+							name: "regular",
+							restartPolicy: restartPolicyNever,
+							restartPolicyRules: [restartRuleRestartAllContainers],
+						},
+					],
+				},
+			},
+			podStatus: undefined,
+			apiPodStatus: {
+				containerStatuses: [
+					{
+						name: "regular",
+						image: "",
+						imageID: "",
+						ready: false,
+						restartCount: 0,
+						state: { terminated: { exitCode: 42 } },
+					},
+				],
+			},
+			expected: true,
+		},
+	] satisfies Array<{
+		name: string;
+		pod: V1Pod;
+		podStatus?: PodStatus;
+		apiPodStatus?: V1PodStatus;
+		expected: boolean;
+	}>)("$name", (test) => {
+		expect(shouldAllContainersRestart(test.pod, test.podStatus, test.apiPodStatus)).toBe(
+			test.expected,
+		);
+	});
+});
+
+function podStatus(containerStatuses: Status[]): PodStatus {
+	return {
+		id: "",
+		name: "",
+		namespace: "",
+		ips: [],
+		containerStatuses,
+		sandboxStatuses: [],
+		timestamp: new Date(0),
+	};
+}
+
+function containerStatus(status: Pick<Status, "name" | "state"> & Partial<Status>): Status {
+	return {
+		id: buildContainerID("simulator", status.name),
+		createdAt: 0,
+		image: "",
+		imageID: "",
+		imageRef: "",
+		imageRuntimeHandler: "",
+		hash: 0,
+		restartCount: 0,
+		...status,
+	};
+}

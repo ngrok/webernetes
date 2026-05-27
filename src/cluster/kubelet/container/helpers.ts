@@ -1,9 +1,9 @@
-import type { V1Container, V1LifecycleHandler, V1Pod } from "../../../client";
+import type { V1Container, V1LifecycleHandler, V1Pod, V1PodStatus } from "../../../client";
 import type * as context from "../../../go/context";
 import * as fnv from "../../../fnv";
 import * as hashutil from "../../../hashutil";
 import type { ContainerPort, DnsConfig, PodSandboxState, PortMapping } from "../../cri";
-import { containerShouldRestart } from "../../api/v1/pod/util";
+import { containerShouldRestart, findMatchingContainerRestartRule } from "../../api/v1/pod/util";
 import {
 	buildContainerID,
 	findContainerStatusByName,
@@ -255,4 +255,50 @@ export function shouldContainerBeRestarted(
 	}
 
 	return containerShouldRestart(container, pod.spec, status.exitCode ?? 0);
+}
+
+// Models kubernetes/pkg/kubelet/container/helpers.go ShouldAllContainersRestart.
+export function shouldAllContainersRestart(
+	pod: V1Pod,
+	podStatus: PodRuntimeStatus | undefined,
+	apiPodStatus: V1PodStatus | undefined,
+): boolean {
+	if (apiPodStatus) {
+		for (const cond of apiPodStatus.conditions ?? []) {
+			if (cond.type === "AllContainersRestarting" && cond.status === "True") {
+				return true;
+			}
+		}
+	}
+
+	const nameToAPIStatus = new Map(
+		[
+			...(apiPodStatus?.initContainerStatuses ?? []),
+			...(apiPodStatus?.containerStatuses ?? []),
+		].map((status) => [status.name, status]),
+	);
+
+	for (const c of [...(pod.spec?.initContainers ?? []), ...(pod.spec?.containers ?? [])]) {
+		if (podStatus) {
+			const status = findContainerStatusByName(podStatus, c.name);
+			if (!status || status.state !== "Exited") {
+				continue;
+			}
+			const rule = findMatchingContainerRestartRule(c, status.exitCode ?? 0);
+			if (rule?.action === "RestartAllContainers") {
+				return true;
+			}
+		}
+		if (apiPodStatus) {
+			const apiStatus = nameToAPIStatus.get(c.name);
+			if (!apiStatus?.state?.terminated) {
+				continue;
+			}
+			const rule = findMatchingContainerRestartRule(c, apiStatus.state.terminated.exitCode);
+			if (rule?.action === "RestartAllContainers") {
+				return true;
+			}
+		}
+	}
+	return false;
 }
