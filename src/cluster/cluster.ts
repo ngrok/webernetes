@@ -17,12 +17,12 @@ import { KubeProxy } from "./images/proxy";
 import { Scheduler } from "./images/scheduler";
 import { type NodePortRange, ServiceStore } from "./storage";
 import { applyResources } from "./apply";
+import type { KubeletConfiguration } from "./kubelet/apis/config";
 
 const DEFAULT_NODE_PORT_RANGE: NodePortRange = {
 	from: 30000,
 	to: 32767,
 };
-const KUBE_DNS_CLUSTER_IP = "10.96.0.10";
 
 export interface ClusterOptions {
 	serviceCIDR?: string;
@@ -46,7 +46,7 @@ export class Cluster {
 	readonly imageRegistry: ImageRegistry;
 	readonly serviceCIDR: string | undefined;
 	readonly nodePortRange: NodePortRange;
-	readonly dnsServiceIp = KUBE_DNS_CLUSTER_IP;
+	readonly dnsServiceIp = "10.96.0.10";
 	readonly ctx: context.Context;
 	private readonly cancelContext: context.CancelFunc;
 	private closePromise: Promise<void> | undefined;
@@ -71,10 +71,30 @@ export class Cluster {
 			() => new AgnhostImage(),
 		);
 
+		const kubeletConfiguration: KubeletConfiguration = {
+			syncFrequencyMs: 60 * 1000,
+			clusterDNS: [this.dnsServiceIp],
+			serializeImagePulls: true,
+			maxParallelImagePulls: undefined,
+			clusterDomain: "cluster.local",
+		};
+
 		this.servers = [
-			new Server(this, { name: "node-1", podCIDR: "10.0.0.0/24" }),
-			new Server(this, { name: "node-2", podCIDR: "10.0.1.0/24" }),
-			new Server(this, { name: "node-3", podCIDR: "10.0.2.0/24" }),
+			new Server(this, {
+				name: "node-1",
+				podCIDR: "10.0.0.0/24",
+				kubeletConfiguration,
+			}),
+			new Server(this, {
+				name: "node-2",
+				podCIDR: "10.0.1.0/24",
+				kubeletConfiguration,
+			}),
+			new Server(this, {
+				name: "node-3",
+				podCIDR: "10.0.2.0/24",
+				kubeletConfiguration,
+			}),
 		];
 
 		this.imageRegistry.register(

@@ -18,6 +18,7 @@ export interface NewImageManagerOptions {
 	imagePullManager?: ImagePullManager;
 	puller?: ImagePuller;
 	podPullingTimeRecorder?: ImagePodPullingTimeRecorder;
+	maxParallelImagePulls?: number;
 }
 
 // Models kubernetes/pkg/kubelet/images/image_manager.go ImagePodPullingTimeRecorder.
@@ -91,7 +92,9 @@ export class KubeletImageManager implements ImageManager {
 		this.imagePullManager = options.imagePullManager ?? new NoopImagePullManager();
 		this.clock = options.clock;
 		this.backOff = options.imageBackOff;
-		this.puller = options.puller ?? newParallelImagePuller(this.clock, this.imageService);
+		this.puller =
+			options.puller ??
+			newParallelImagePuller(this.clock, this.imageService, options.maxParallelImagePulls);
 		this.podPullingTimeRecorder =
 			options.podPullingTimeRecorder ?? new NoopImagePodPullingTimeRecorder();
 	}

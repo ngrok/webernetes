@@ -8,11 +8,13 @@ import {
 } from "./cri";
 import { Kubelet } from "./kubelet";
 import type { Runtime as KubeletRuntime } from "./kubelet/container";
+import type { KubeletConfiguration } from "./kubelet/apis/config";
 import * as context from "../go/context";
 
 export interface ServerOptions {
 	name: string;
 	podCIDR: string;
+	kubeletConfiguration: KubeletConfiguration;
 }
 
 export class Server {
@@ -47,7 +49,7 @@ export class Server {
 		this.imageService = this.runtime;
 		this.runtimeDiagnostics = this.runtime;
 		this.network = cluster.network;
-		this.kubelet = new Kubelet(this);
+		this.kubelet = new Kubelet(this, options.kubeletConfiguration);
 	}
 
 	async boot(ctx: context.Context) {

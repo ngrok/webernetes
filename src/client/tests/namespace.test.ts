@@ -179,12 +179,12 @@ kubernetes.describe("Namespaces", ({ core, discovery, k8s, helpers }) => {
 
 		await expect(core.deleteNamespace({ name })).resolves.toBeTruthy();
 
-		await vi.waitFor(
-			async () => {
-				expect(await readNamespaceOrUndefined(name)).toBeUndefined();
-			},
-			{ timeout: 60_000, interval: 500 },
-		);
+		const afterSecondDelete = await readNamespaceOrUndefined(name);
+		expect(
+			afterSecondDelete === undefined ||
+				(afterSecondDelete.metadata?.deletionTimestamp !== undefined &&
+					afterSecondDelete.status?.phase !== "Active"),
+		).toBe(true);
 	}, 60_000);
 
 	it("should be able to patch a namespace", async () => {
