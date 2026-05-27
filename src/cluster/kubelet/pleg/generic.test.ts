@@ -6,7 +6,11 @@ import type { Backoff } from "../../../client-go/util/flowcontrol/backoff";
 import type { V1Pod } from "../../../client";
 import { browser } from "../../../test/describe";
 import { Cluster } from "../../cluster";
-import type { MetricDescriptor, PodSandboxMetrics } from "../../cri/runtime/v1/api";
+import type {
+	ImageFsInfoResponse,
+	MetricDescriptor,
+	PodSandboxMetrics,
+} from "../../cri/runtime/v1/api";
 import {
 	buildContainerID,
 	PodSyncResult,
@@ -336,8 +340,10 @@ class FakeRuntime implements Runtime {
 		return [{ totalStorageBytes: 0 }, undefined];
 	}
 
-	async imageFsInfo(): Promise<[imageFsInfo: unknown, err: Error | undefined]> {
-		return [undefined, undefined];
+	async imageFsInfo(): Promise<
+		[imageFsInfo: ImageFsInfoResponse | undefined, err: Error | undefined]
+	> {
+		return [{ imageFilesystems: [], containerFilesystems: [] }, undefined];
 	}
 
 	async getImageSize(): Promise<[imageSize: number, err: Error | undefined]> {

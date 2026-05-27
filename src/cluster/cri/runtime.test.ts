@@ -18,12 +18,20 @@ browser.describe("InProcessRuntimeService images", () => {
 
 			const removeErr = await runtime.removeImage(context.background(), { image: "busybox:1.36" });
 			expect(removeErr).toBeUndefined();
+			const removeMissingErr = await runtime.removeImage(context.background(), {
+				image: "missing:latest",
+			});
+			expect(removeMissingErr).toBeUndefined();
 
 			const [imagesAfterRemove, listAfterRemoveErr] = await runtime.listImages(
 				context.background(),
 			);
 			expect(listAfterRemoveErr).toBeUndefined();
 			expect(imagesAfterRemove.map((image) => image.id)).not.toContain("busybox:1.36");
+
+			const [imageFsInfo, imageFsInfoErr] = await runtime.imageFsInfo(context.background());
+			expect(imageFsInfoErr).toBeUndefined();
+			expect(imageFsInfo).toEqual({ imageFilesystems: [], containerFilesystems: [] });
 		} finally {
 			await cluster.close();
 		}

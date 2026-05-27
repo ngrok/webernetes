@@ -8,6 +8,7 @@ import * as time from "../../../go/time";
 import type {
 	ContainerConfig,
 	ContainerStatus as CRIContainerStatus,
+	ImageFsInfoResponse,
 	ImageManagerService,
 	PodSandboxConfig,
 	PodSandboxStatus,
@@ -1127,7 +1128,9 @@ export class KubeGenericRuntimeManager implements Runtime, CommandRunner {
 	}
 
 	// Models kubernetes/pkg/kubelet/kuberuntime/kuberuntime_image.go kubeGenericRuntimeManager.ImageFsInfo.
-	async imageFsInfo(ctx: context.Context): Promise<[imageFsInfo: unknown, err: Error | undefined]> {
+	async imageFsInfo(
+		ctx: context.Context,
+	): Promise<[imageFsInfo: ImageFsInfoResponse | undefined, err: Error | undefined]> {
 		const [allImages, err] = await this.imageService.imageFsInfo(ctx);
 		if (err) {
 			return [undefined, err];

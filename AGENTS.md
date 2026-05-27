@@ -42,6 +42,9 @@ General rules for this repository:
   simulator can be paused and controlled deterministically.
 - When a function or constructor accepts a `context.Context`, make that argument
   the first parameter and name it `ctx`, matching Kubernetes Go conventions.
+- For intentionally unused parameters, prefix the parameter name with an
+  underscore, such as `_ctx`; do not add `void parameter;` statements just to
+  silence unused-variable checks.
 - When transliterating Go functions into TypeScript, use TypeScript naming
   conventions for function names. In particular, do not preserve Go's exported
   initial capital; `GetPartialReference` should become `getPartialReference`.

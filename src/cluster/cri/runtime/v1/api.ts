@@ -478,8 +478,36 @@ export type RemoveImageResponse = Record<string, never>;
 // Models staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api.proto ImageFsInfoRequest.
 export type ImageFsInfoRequest = Record<string, never>;
 
+// Models staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api.proto UInt64Value.
+export interface UInt64Value {
+	value: number;
+}
+
+// Models staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api.proto FilesystemIdentifier.
+export interface FilesystemIdentifier {
+	mountpoint: string;
+}
+
+// Models staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api.proto FilesystemUsage.
+export interface FilesystemUsage {
+	timestamp: number;
+	fsId?: FilesystemIdentifier;
+	usedBytes?: UInt64Value;
+	inodesUsed?: UInt64Value;
+}
+
+// Models staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api.proto WindowsFilesystemUsage.
+export interface WindowsFilesystemUsage {
+	timestamp: number;
+	fsId?: FilesystemIdentifier;
+	usedBytes?: UInt64Value;
+}
+
 // Models staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api.proto ImageFsInfoResponse.
-export type ImageFsInfoResponse = unknown;
+export interface ImageFsInfoResponse {
+	imageFilesystems: FilesystemUsage[];
+	containerFilesystems: FilesystemUsage[];
+}
 
 // Models staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api_grpc.pb.go RuntimeServiceClient.
 export interface RuntimeServiceClient {

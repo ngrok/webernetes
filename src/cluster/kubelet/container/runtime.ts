@@ -1,7 +1,7 @@
 import type { V1Pod } from "../../../client";
 import type { Backoff } from "../../../client-go/util/flowcontrol/backoff";
 import type * as context from "../../../go/context";
-import type { PodSandboxConfig, PodSandboxStatus } from "../../cri";
+import type { ImageFsInfoResponse, PodSandboxConfig, PodSandboxStatus } from "../../cri";
 import type {
 	CheckpointContainerRequest,
 	ContainerEventResponse,
@@ -181,6 +181,11 @@ export class ContainerID {
 		readonly id: string,
 	) {}
 
+	// Models kubernetes/pkg/kubelet/container/runtime.go ContainerID.IsEmpty.
+	isEmpty(): boolean {
+		return this.type === "" && this.id === "";
+	}
+
 	toString(): string {
 		return `${this.type}://${this.id}`;
 	}
@@ -314,7 +319,9 @@ export interface ImageService {
 	imageStats(
 		ctx: context.Context,
 	): Promise<[imageStats: ImageStats | undefined, err: Error | undefined]>;
-	imageFsInfo(ctx: context.Context): Promise<[imageFsInfo: unknown, err: Error | undefined]>;
+	imageFsInfo(
+		ctx: context.Context,
+	): Promise<[imageFsInfo: ImageFsInfoResponse | undefined, err: Error | undefined]>;
 	getImageSize(
 		ctx: context.Context,
 		image: ImageSpec,
