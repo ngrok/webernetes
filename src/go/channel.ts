@@ -1,3 +1,5 @@
+import type { MaybePromise } from "../promise";
+
 export interface ReceiveResult<T> {
 	ok: true;
 	value: T;
@@ -15,8 +17,6 @@ interface PendingSender<T> {
 	reject(error: Error): void;
 	resolve(): void;
 }
-
-type MaybePromise<T> = T | Promise<T>;
 
 const channelSource = Symbol("channelSource");
 

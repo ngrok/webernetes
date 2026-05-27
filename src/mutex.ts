@@ -1,4 +1,4 @@
-type MaybePromise<T> = T | Promise<T>;
+import type { MaybePromise } from "./promise";
 
 export type Release = () => void;
 
