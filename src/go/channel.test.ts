@@ -505,6 +505,49 @@ browser.describe("select", () => {
 	//   import "fmt"
 	//
 	//   func main() {
+	//   	var nilCh <-chan string
+	//   	ready := make(chan string, 1)
+	//   	ready <- "ready"
+	//   	select {
+	//   	case <-nilCh:
+	//   		fmt.Println("nil")
+	//   	case value := <-ready:
+	//   		fmt.Println(value)
+	//   	}
+	//   	select {
+	//   	case <-nilCh:
+	//   		fmt.Println("nil")
+	//   	default:
+	//   		fmt.Println("default")
+	//   	}
+	//   }
+	//
+	// Output:
+	//   ready
+	//   default
+	it("disables undefined receive cases like nil Go channels", async () => {
+		const ready = new Channel<string>(1);
+		expect(ready.trySend("ready")).toBe(true);
+
+		await expect(
+			select()
+				.case(undefined, () => "nil")
+				.case(ready, ({ value }) => value),
+		).resolves.toBe("ready");
+		await expect(
+			select()
+				.case(undefined, () => "nil")
+				.default(() => "default"),
+		).resolves.toBe("default");
+	});
+
+	// Go check:
+	//
+	//   package main
+	//
+	//   import "fmt"
+	//
+	//   func main() {
 	//   	select {
 	//   	default:
 	//   		fmt.Println("default")

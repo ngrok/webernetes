@@ -27,16 +27,16 @@ export type SelectDefault<R = unknown> = () => MaybePromise<R>;
 
 export class SelectBuilder<T = never> implements PromiseLike<T> {
 	private readonly cases: Array<{
-		channel: Channel<unknown>;
+		channel: Channel<unknown> | undefined;
 		handler: SelectHandler<unknown>;
 	}> = [];
 
 	case<V, R>(
-		channel: ReceiveChannel<V>,
+		channel: ReceiveChannel<V> | undefined,
 		handler: SelectHandler<V, R>,
 	): SelectBuilder<T | Awaited<R>> {
 		this.cases.push({
-			channel: channel[channelSource]() as unknown as Channel<unknown>,
+			channel: channel?.[channelSource]() as Channel<unknown> | undefined,
 			handler: handler as unknown as SelectHandler<unknown>,
 		});
 		return this as unknown as SelectBuilder<T | Awaited<R>>;
@@ -84,7 +84,7 @@ export class Channel<T> implements AsyncIterable<T> {
 	): Promise<R | Awaited<D>> {
 		const readyCases: SelectReceiveCase[] = [];
 		for (const receiveCase of cases) {
-			if (receiveCase.channel.canReceive()) {
+			if (receiveCase.channel?.canReceive()) {
 				readyCases.push(receiveCase);
 			}
 		}
@@ -92,7 +92,7 @@ export class Channel<T> implements AsyncIterable<T> {
 			const selected = readyCases[
 				Math.floor(Math.random() * readyCases.length)
 			] as SelectReceiveCase;
-			const result = selected.channel.tryReceive();
+			const result = selected.channel?.tryReceive();
 			if (!result) {
 				throw new Error("selected channel was not ready");
 			}
@@ -119,6 +119,9 @@ export class Channel<T> implements AsyncIterable<T> {
 			};
 
 			for (const { channel, handler } of cases) {
+				if (!channel) {
+					continue;
+				}
 				cancelReceivers.push(
 					channel.receiveWithCancel((result) => {
 						settle(handler, result);
@@ -326,7 +329,7 @@ export class WriteOnlyChannel<T> {
 }
 
 interface SelectReceiveCase {
-	channel: Channel<unknown>;
+	channel: Channel<unknown> | undefined;
 	handler: SelectHandler<unknown>;
 }
 
