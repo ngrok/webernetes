@@ -401,5 +401,9 @@ function isGoneError(error: unknown): error is HttpError {
 
 	const statusCode = "statusCode" in error ? error.statusCode : undefined;
 	const code = "code" in error ? error.code : undefined;
-	return statusCode === 410 || code === 410;
+	return (
+		statusCode === 410 ||
+		code === 410 ||
+		error.message.includes("required revision has been compacted")
+	);
 }

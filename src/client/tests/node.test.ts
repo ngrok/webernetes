@@ -1,5 +1,6 @@
 import { expect, it } from "vitest";
 import { kubernetes } from "../../test/harnesses/kubernetes";
+import { apiErrorCode } from "../../test/harnesses/helpers";
 
 kubernetes.describe("Nodes", ({ core, k8s }) => {
 	const mergePatchOptions = k8s.setHeaderOptions("Content-Type", k8s.PatchStrategy.MergePatch);
@@ -46,6 +47,81 @@ kubernetes.describe("Nodes", ({ core, k8s }) => {
 		]);
 	});
 
+	it("should list nodes from an exact resourceVersion snapshot", async () => {
+		const before = await core.createNode({
+			body: {
+				metadata: {
+					generateName: "exact-list-before-",
+				},
+			},
+		});
+		const beforeName = before.metadata?.name;
+		if (!beforeName) {
+			throw new Error("Expected node name");
+		}
+		const firstList = await core.listNode();
+		const snapshotResourceVersion = firstList.metadata?.resourceVersion ?? "";
+		expect(Number(snapshotResourceVersion)).toBeGreaterThan(0);
+
+		const after = await core.createNode({
+			body: {
+				metadata: {
+					generateName: "exact-list-after-",
+				},
+			},
+		});
+		const afterName = after.metadata?.name;
+		if (!afterName) {
+			throw new Error("Expected node name");
+		}
+
+		try {
+			const exactList = await core.listNode({
+				resourceVersion: snapshotResourceVersion,
+				resourceVersionMatch: "Exact",
+			});
+
+			expect(exactList.metadata?.resourceVersion).toBe(snapshotResourceVersion);
+			expect(exactList.items.map((node) => node.metadata?.name)).toContain(beforeName);
+			expect(exactList.items.map((node) => node.metadata?.name)).not.toContain(afterName);
+		} finally {
+			await core.deleteNode({ name: beforeName });
+			await core.deleteNode({ name: afterName });
+		}
+	});
+
+	it("should list nodes not older than a resourceVersion", async () => {
+		const firstList = await core.listNode();
+		const snapshotResourceVersion = firstList.metadata?.resourceVersion ?? "";
+		expect(Number(snapshotResourceVersion)).toBeGreaterThan(0);
+
+		const node = await core.createNode({
+			body: {
+				metadata: {
+					generateName: "not-older-than-after-",
+				},
+			},
+		});
+		const name = node.metadata?.name;
+		if (!name) {
+			throw new Error("Expected node name");
+		}
+
+		try {
+			const notOlderThanList = await core.listNode({
+				resourceVersion: snapshotResourceVersion,
+				resourceVersionMatch: "NotOlderThan",
+			});
+
+			expect(Number(notOlderThanList.metadata?.resourceVersion)).toBeGreaterThanOrEqual(
+				Number(snapshotResourceVersion),
+			);
+			expect(notOlderThanList.items.map((node) => node.metadata?.name)).toContain(name);
+		} finally {
+			await core.deleteNode({ name });
+		}
+	});
+
 	it("should be able to patch a node", async () => {
 		const nodes = await core.listNode();
 		const node = nodes.items.find((candidate) => candidate.metadata?.name);
@@ -70,6 +146,123 @@ kubernetes.describe("Nodes", ({ core, k8s }) => {
 
 		expect(patched.metadata?.name).toBe(nodeName);
 		expect(patched.metadata?.labels?.["webernetes.test/patch"]).toBe("true");
+	});
+
+	it("should reject replacing a node with a stale resourceVersion", async () => {
+		const node = await core.createNode({
+			body: {
+				metadata: {
+					generateName: "replace-resource-version-conflict-",
+					labels: { revision: "created" },
+				},
+			},
+		});
+		const name = node.metadata?.name;
+		if (!name) {
+			throw new Error("Expected node name");
+		}
+
+		try {
+			const current = await core.readNode({ name });
+
+			let replaceError: unknown;
+			try {
+				await core.replaceNode({
+					name,
+					body: {
+						...current,
+						metadata: {
+							...current.metadata,
+							resourceVersion: "1",
+							labels: { revision: "stale" },
+						},
+					},
+				});
+			} catch (error) {
+				replaceError = error;
+			}
+
+			expect(apiErrorCode(replaceError)).toBe(409);
+			const unchanged = await core.readNode({ name });
+			expect(unchanged.metadata?.labels?.revision).toBe("created");
+		} finally {
+			await core.deleteNode({ name });
+		}
+	});
+
+	it("should allow replacing a node without a resourceVersion", async () => {
+		const node = await core.createNode({
+			body: {
+				metadata: {
+					generateName: "replace-without-resource-version-",
+				},
+			},
+		});
+		const name = node.metadata?.name;
+		if (!name) {
+			throw new Error("Expected node name");
+		}
+
+		try {
+			const current = await core.readNode({ name });
+			const { resourceVersion: _resourceVersion, ...metadata } = current.metadata ?? {};
+			const replaced = await core.replaceNode({
+				name,
+				body: {
+					...current,
+					metadata: {
+						...metadata,
+						labels: { revision: "unconditional" },
+					},
+				},
+			});
+
+			expect(replaced.metadata?.labels?.revision).toBe("unconditional");
+		} finally {
+			await core.deleteNode({ name });
+		}
+	});
+
+	it("should reject deleting a node with a stale resourceVersion precondition", async () => {
+		const node = await core.createNode({
+			body: {
+				metadata: {
+					generateName: "delete-resource-version-precondition-",
+					labels: { revision: "created" },
+				},
+			},
+		});
+		const name = node.metadata?.name;
+		if (!name) {
+			throw new Error("Expected node name");
+		}
+
+		try {
+			let deleteError: unknown;
+			try {
+				await core.deleteNode({
+					name,
+					body: {
+						preconditions: {
+							resourceVersion: "1",
+						},
+					},
+				});
+			} catch (error) {
+				deleteError = error;
+			}
+
+			expect(apiErrorCode(deleteError)).toBe(409);
+			const current = await core.readNode({ name });
+			expect(current.metadata?.name).toBe(name);
+		} finally {
+			try {
+				await core.deleteNode({ name });
+			} catch {
+				// If the simulator incorrectly ignores the stale precondition, the node
+				// is already gone; keep the test failure focused on the precondition.
+			}
+		}
 	});
 
 	it("should reject patching a node name", async () => {

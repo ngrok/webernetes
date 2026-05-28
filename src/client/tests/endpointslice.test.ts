@@ -1,6 +1,7 @@
 import { expect, it } from "vitest";
 import type { V1Endpoint, V1EndpointSlice, V1Pod } from "../gen/models";
 import { kubernetes } from "../../test/harnesses/kubernetes";
+import { apiErrorCode } from "../../test/harnesses/helpers";
 
 const READY_IMAGE = "crccheck/hello-world:latest";
 
@@ -206,6 +207,183 @@ kubernetes.describe("EndpointSlices", ({ core, discovery, helpers }) => {
 				namespace,
 			}),
 		).rejects.toThrow(/NotFound|not found/);
+	});
+
+	it("should list endpoint slices from an exact resourceVersion snapshot", async () => {
+		const namespace = await getSuiteNamespace();
+		await discovery.createNamespacedEndpointSlice({
+			namespace,
+			body: endpointSlice(namespace, {
+				metadata: {
+					name: "exact-list-before",
+				},
+			}),
+		});
+		const firstList = await discovery.listNamespacedEndpointSlice({ namespace });
+		const snapshotResourceVersion = firstList.metadata?.resourceVersion ?? "";
+		expect(Number(snapshotResourceVersion)).toBeGreaterThan(0);
+
+		await discovery.createNamespacedEndpointSlice({
+			namespace,
+			body: endpointSlice(namespace, {
+				metadata: {
+					name: "exact-list-after",
+				},
+			}),
+		});
+
+		const exactList = await discovery.listNamespacedEndpointSlice({
+			namespace,
+			resourceVersion: snapshotResourceVersion,
+			resourceVersionMatch: "Exact",
+		});
+
+		expect(exactList.metadata?.resourceVersion).toBe(snapshotResourceVersion);
+		expect(exactList.items.map((slice) => slice.metadata?.name)).toContain("exact-list-before");
+		expect(exactList.items.map((slice) => slice.metadata?.name)).not.toContain("exact-list-after");
+	});
+
+	it("should list endpoint slices not older than a resourceVersion", async () => {
+		const namespace = await getSuiteNamespace();
+		const firstList = await discovery.listNamespacedEndpointSlice({ namespace });
+		const snapshotResourceVersion = firstList.metadata?.resourceVersion ?? "";
+		expect(Number(snapshotResourceVersion)).toBeGreaterThan(0);
+
+		await discovery.createNamespacedEndpointSlice({
+			namespace,
+			body: endpointSlice(namespace, {
+				metadata: {
+					name: "not-older-than-after",
+				},
+			}),
+		});
+
+		const notOlderThanList = await discovery.listNamespacedEndpointSlice({
+			namespace,
+			resourceVersion: snapshotResourceVersion,
+			resourceVersionMatch: "NotOlderThan",
+		});
+
+		expect(Number(notOlderThanList.metadata?.resourceVersion)).toBeGreaterThanOrEqual(
+			Number(snapshotResourceVersion),
+		);
+		expect(notOlderThanList.items.map((slice) => slice.metadata?.name)).toContain(
+			"not-older-than-after",
+		);
+	});
+
+	it("should reject replacing an endpoint slice with a stale resourceVersion", async () => {
+		const namespace = await getSuiteNamespace();
+		const slice = await discovery.createNamespacedEndpointSlice({
+			namespace,
+			body: endpointSlice(namespace, {
+				metadata: {
+					name: "replace-resource-version-conflict",
+				},
+				endpoints: [{ addresses: ["10.0.0.12"] }],
+			}),
+		});
+
+		await discovery.replaceNamespacedEndpointSlice({
+			name: "replace-resource-version-conflict",
+			namespace,
+			body: {
+				...slice,
+				endpoints: [{ addresses: ["10.0.0.13"] }],
+			},
+		});
+
+		let replaceError: unknown;
+		try {
+			await discovery.replaceNamespacedEndpointSlice({
+				name: "replace-resource-version-conflict",
+				namespace,
+				body: {
+					...slice,
+					endpoints: [{ addresses: ["10.0.0.14"] }],
+				},
+			});
+		} catch (error) {
+			replaceError = error;
+		}
+
+		expect(apiErrorCode(replaceError)).toBe(409);
+		const current = await discovery.readNamespacedEndpointSlice({
+			name: "replace-resource-version-conflict",
+			namespace,
+		});
+		expect(current.endpoints[0]?.addresses).toEqual(["10.0.0.13"]);
+	});
+
+	it("should allow replacing an endpoint slice without a resourceVersion", async () => {
+		const namespace = await getSuiteNamespace();
+		const slice = await discovery.createNamespacedEndpointSlice({
+			namespace,
+			body: endpointSlice(namespace, {
+				metadata: {
+					name: "replace-without-resource-version",
+				},
+			}),
+		});
+		const { resourceVersion: _resourceVersion, ...metadata } = slice.metadata ?? {};
+
+		const replaced = await discovery.replaceNamespacedEndpointSlice({
+			name: "replace-without-resource-version",
+			namespace,
+			body: {
+				...slice,
+				metadata,
+				endpoints: [{ addresses: ["10.0.0.17"] }],
+			},
+		});
+
+		expect(replaced.endpoints[0]?.addresses).toEqual(["10.0.0.17"]);
+	});
+
+	it("should reject deleting an endpoint slice with a stale resourceVersion precondition", async () => {
+		const namespace = await getSuiteNamespace();
+		const slice = await discovery.createNamespacedEndpointSlice({
+			namespace,
+			body: endpointSlice(namespace, {
+				metadata: {
+					name: "delete-resource-version-precondition",
+				},
+				endpoints: [{ addresses: ["10.0.0.15"] }],
+			}),
+		});
+		const staleResourceVersion = slice.metadata?.resourceVersion ?? "";
+		expect(Number(staleResourceVersion)).toBeGreaterThan(0);
+
+		await discovery.replaceNamespacedEndpointSlice({
+			name: "delete-resource-version-precondition",
+			namespace,
+			body: {
+				...slice,
+				endpoints: [{ addresses: ["10.0.0.16"] }],
+			},
+		});
+
+		let deleteError: unknown;
+		try {
+			await discovery.deleteNamespacedEndpointSlice({
+				name: "delete-resource-version-precondition",
+				namespace,
+				body: {
+					preconditions: {
+						resourceVersion: staleResourceVersion,
+					},
+				},
+			});
+		} catch (error) {
+			deleteError = error;
+		}
+
+		expect(apiErrorCode(deleteError)).toBe(409);
+		const current = await discovery.readNamespacedEndpointSlice({
+			name: "delete-resource-version-precondition",
+			namespace,
+		});
+		expect(current.endpoints[0]?.addresses).toEqual(["10.0.0.16"]);
 	});
 
 	it("should create and update endpoint slices for services with selectors", async () => {

@@ -706,7 +706,7 @@ kubernetes.describe("Pods", (context) => {
 			namespace,
 		});
 
-		expect(stale.metadata?.resourceVersion).toBeTruthy();
+		expect(Number(stale.metadata?.resourceVersion)).toBeGreaterThan(0);
 
 		await replacePod("replace-conflict-test", (current) => {
 			current.metadata = {
@@ -737,6 +737,34 @@ kubernetes.describe("Pods", (context) => {
 		expect(current.metadata?.labels?.app).toBe("fresh");
 	});
 
+	it("should allow replacing a pod without a resourceVersion", async () => {
+		await createPod({
+			metadata: {
+				name: "replace-without-resource-version",
+			},
+		});
+		const namespace = await getTestNamespace();
+		const current = await core.readNamespacedPod({
+			name: "replace-without-resource-version",
+			namespace,
+		});
+		const { resourceVersion: _resourceVersion, ...metadata } = current.metadata ?? {};
+
+		const replaced = await core.replaceNamespacedPod({
+			name: "replace-without-resource-version",
+			namespace,
+			body: {
+				...current,
+				metadata: {
+					...metadata,
+					labels: { revision: "unconditional" },
+				},
+			},
+		});
+
+		expect(replaced.metadata?.labels?.revision).toBe("unconditional");
+	});
+
 	it("should list pods from an exact resourceVersion snapshot", async () => {
 		const namespace = await getTestNamespace();
 		await createPod({
@@ -746,11 +774,8 @@ kubernetes.describe("Pods", (context) => {
 		});
 
 		const firstList = await core.listNamespacedPod({ namespace });
-		const snapshotResourceVersion = firstList.metadata?.resourceVersion;
-		expect(snapshotResourceVersion).toBeTruthy();
-		if (!snapshotResourceVersion) {
-			throw new Error("Expected list to have metadata.resourceVersion");
-		}
+		const snapshotResourceVersion = firstList.metadata?.resourceVersion ?? "";
+		expect(Number(snapshotResourceVersion)).toBeGreaterThan(0);
 
 		await createPod({
 			metadata: {
@@ -772,11 +797,8 @@ kubernetes.describe("Pods", (context) => {
 	it("should apply field selectors to exact resourceVersion snapshots", async () => {
 		const namespace = await getTestNamespace();
 		const firstList = await core.listNamespacedPod({ namespace });
-		const snapshotResourceVersion = firstList.metadata?.resourceVersion;
-		expect(snapshotResourceVersion).toBeTruthy();
-		if (!snapshotResourceVersion) {
-			throw new Error("Expected list to have metadata.resourceVersion");
-		}
+		const snapshotResourceVersion = firstList.metadata?.resourceVersion ?? "";
+		expect(Number(snapshotResourceVersion)).toBeGreaterThan(0);
 
 		await createPod({
 			metadata: {
@@ -795,6 +817,75 @@ kubernetes.describe("Pods", (context) => {
 		expect(exactList.items).toHaveLength(0);
 	});
 
+	it("should list pods not older than a resourceVersion", async () => {
+		const namespace = await getTestNamespace();
+		const firstList = await core.listNamespacedPod({ namespace });
+		const snapshotResourceVersion = firstList.metadata?.resourceVersion ?? "";
+		expect(Number(snapshotResourceVersion)).toBeGreaterThan(0);
+
+		await createPod({
+			metadata: {
+				name: "not-older-than-after",
+			},
+			spec: {
+				nodeName: "missing-not-older-than-node",
+			},
+		});
+
+		const notOlderThanList = await core.listNamespacedPod({
+			namespace,
+			resourceVersion: snapshotResourceVersion,
+			resourceVersionMatch: "NotOlderThan",
+		});
+
+		expect(Number(notOlderThanList.metadata?.resourceVersion)).toBeGreaterThanOrEqual(
+			Number(snapshotResourceVersion),
+		);
+		expect(notOlderThanList.items.map((pod) => pod.metadata?.name)).toContain(
+			"not-older-than-after",
+		);
+	});
+
+	it("should reject invalid resourceVersionMatch list options", async () => {
+		const namespace = await getTestNamespace();
+		const cases = [
+			{
+				request: {
+					namespace,
+					resourceVersionMatch: "NotARealMatch",
+				},
+				message: `ListOptions.meta.k8s.io "" is invalid: [resourceVersionMatch: Forbidden: resourceVersionMatch is forbidden unless resourceVersion is provided, resourceVersionMatch: Unsupported value: "NotARealMatch": supported values: "Exact", "NotOlderThan", ""]`,
+			},
+			{
+				request: {
+					namespace,
+					resourceVersionMatch: "Exact",
+				},
+				message: `ListOptions.meta.k8s.io "" is invalid: resourceVersionMatch: Forbidden: resourceVersionMatch is forbidden unless resourceVersion is provided`,
+			},
+			{
+				request: {
+					namespace,
+					resourceVersion: "0",
+					resourceVersionMatch: "Exact",
+				},
+				message: `ListOptions.meta.k8s.io "" is invalid: resourceVersionMatch: Forbidden: resourceVersionMatch "exact" is forbidden for resourceVersion "0"`,
+			},
+		];
+
+		for (const { request, message } of cases) {
+			let listError: unknown;
+			try {
+				await core.listNamespacedPod(request);
+			} catch (error) {
+				listError = error;
+			}
+
+			expect(apiErrorCode(listError)).toBe(422);
+			expect(apiStatusMessage(listError)).toBe(message);
+		}
+	});
+
 	it("should reject deletes with a stale resourceVersion precondition", async () => {
 		const pod = await createPod({
 			metadata: {
@@ -806,11 +897,8 @@ kubernetes.describe("Pods", (context) => {
 			},
 		});
 		const namespace = await getTestNamespace();
-		const staleResourceVersion = pod.metadata?.resourceVersion;
-		expect(staleResourceVersion).toBeTruthy();
-		if (!staleResourceVersion) {
-			throw new Error("Expected created pod to have metadata.resourceVersion");
-		}
+		const staleResourceVersion = pod.metadata?.resourceVersion ?? "";
+		expect(Number(staleResourceVersion)).toBeGreaterThan(0);
 
 		const updated = await replacePod("delete-resource-version-precondition-test", (current) => {
 			current.metadata = {
@@ -818,11 +906,8 @@ kubernetes.describe("Pods", (context) => {
 				labels: { revision: "updated" },
 			};
 		});
-		const currentResourceVersion = updated.metadata?.resourceVersion;
-		expect(currentResourceVersion).toBeTruthy();
-		if (!currentResourceVersion) {
-			throw new Error("Expected updated pod to have metadata.resourceVersion");
-		}
+		const currentResourceVersion = updated.metadata?.resourceVersion ?? "";
+		expect(Number(currentResourceVersion)).toBeGreaterThan(0);
 
 		let deleteError: unknown;
 		try {

@@ -112,7 +112,37 @@ export class Watch {
 		const fields = parseFieldSelector(fieldSelector);
 		const matchingKeys = new Set<string>();
 
-		const watcher = store.watch(namespace, watchStartRevision(queryParams.resourceVersion));
+		const parsedResourceVersion = watchStartRevision(queryParams.resourceVersion);
+		if (parsedResourceVersion instanceof Error) {
+			Object.assign(parsedResourceVersion, { code: 400, statusCode: 400 });
+			doneOnce(parsedResourceVersion);
+			return controller;
+		}
+
+		let startRevision = parsedResourceVersion;
+		if (shouldSendInitialEvents(queryParams.resourceVersion)) {
+			try {
+				const list = await store.listWithResourceVersion(namespace);
+				for (const obj of list.items) {
+					const key = objectKey(obj);
+					if (!labelsMatch(obj, labels) || !fieldSelectorMatches(obj, fields)) {
+						continue;
+					}
+					matchingKeys.add(key);
+					callback("ADDED", obj, { type: "ADDED", object: obj });
+				}
+				const listedStartRevision = watchStartRevision(list.resourceVersion);
+				if (listedStartRevision instanceof Error) {
+					throw listedStartRevision;
+				}
+				startRevision = listedStartRevision;
+			} catch (error) {
+				doneOnce(error);
+				return controller;
+			}
+		}
+
+		const watcher = store.watch(namespace, startRevision);
 		watcher.on("event", (phase, obj) => {
 			const key = objectKey(obj);
 			const matches = labelsMatch(obj, labels) && fieldSelectorMatches(obj, fields);
@@ -153,13 +183,24 @@ export class Watch {
 
 function watchStartRevision(
 	resourceVersion: string | number | boolean | undefined,
-): number | undefined {
+): number | Error | undefined {
 	if (resourceVersion === undefined || resourceVersion === "") {
 		return undefined;
 	}
 	const revision = Number(resourceVersion);
 	if (!Number.isInteger(revision) || revision < 0) {
-		return undefined;
+		return new Error(
+			`invalid resourceVersion "${resourceVersion}": must be an integer greater than or equal to 0`,
+		);
 	}
 	return revision + 1;
+}
+
+function shouldSendInitialEvents(resourceVersion: string | number | boolean | undefined): boolean {
+	return (
+		resourceVersion === undefined ||
+		resourceVersion === "" ||
+		resourceVersion === "0" ||
+		resourceVersion === 0
+	);
 }

@@ -309,11 +309,10 @@ kubernetes.describe("Watch", ({ core, k8s, kubeConfig, helpers }) => {
 			namespace,
 			fieldSelector: `metadata.name=${podName}`,
 		});
-		const listResourceVersion = listed.metadata?.resourceVersion;
-		const listedPodResourceVersion = listed.items[0]?.metadata?.resourceVersion;
-		if (!listResourceVersion || !listedPodResourceVersion) {
-			throw new Error("Expected list and item resourceVersions");
-		}
+		const listResourceVersion = listed.metadata?.resourceVersion ?? "";
+		const listedPodResourceVersion = listed.items[0]?.metadata?.resourceVersion ?? "";
+		expect(Number(listResourceVersion)).toBeGreaterThan(0);
+		expect(Number(listedPodResourceVersion)).toBeGreaterThan(0);
 
 		await replacePod(podName, (current) => {
 			current.metadata = {
@@ -350,7 +349,7 @@ kubernetes.describe("Watch", ({ core, k8s, kubeConfig, helpers }) => {
 						event.phase === "MODIFIED" &&
 						event.obj.metadata?.labels?.revision === "updated-after-list",
 				);
-				expect(modified?.obj.metadata?.resourceVersion).toBeTruthy();
+				expect(Number(modified?.obj.metadata?.resourceVersion)).toBeGreaterThan(0);
 				expect(modified?.obj.metadata?.resourceVersion).not.toBe(listedPodResourceVersion);
 			},
 		});

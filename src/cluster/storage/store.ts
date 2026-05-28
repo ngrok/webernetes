@@ -29,6 +29,10 @@ export interface StoreUpdateOptions {
 	skipValidateUpdate?: boolean;
 }
 
+export interface StoreListOptions {
+	resourceVersion?: string;
+}
+
 export type FinishFunc = (success: boolean) => void | Promise<void>;
 
 const finishNothing: FinishFunc = () => undefined;
@@ -89,9 +93,10 @@ export class Store<T extends Storable> {
 	}
 
 	private withResourceVersion(obj: T, resourceVersion: string): T {
-		obj.metadata ??= {};
-		obj.metadata.resourceVersion = resourceVersion;
-		return obj;
+		const withResourceVersion = structuredClone(obj);
+		withResourceVersion.metadata ??= {};
+		withResourceVersion.metadata.resourceVersion = resourceVersion;
+		return withResourceVersion;
 	}
 
 	private defaultTypeMeta(obj: T): void {
@@ -132,9 +137,13 @@ export class Store<T extends Storable> {
 		return (await this.readStored(name, namespace))?.obj;
 	}
 
-	async create(obj: T): Promise<T> {
+	async create(input: T): Promise<T> {
+		const obj = structuredClone(input);
 		if (!obj.metadata) {
 			throw new Error(`Object must have metadata`);
+		}
+		if (obj.metadata.resourceVersion) {
+			throw new Error("resourceVersion should not be set on objects to be created");
 		}
 		this.defaultTypeMeta(obj);
 		this.validateTypeMeta(obj);
@@ -199,7 +208,8 @@ export class Store<T extends Storable> {
 		}
 	}
 
-	async update(name: string, obj: T, options: StoreUpdateOptions = {}): Promise<T> {
+	async update(name: string, input: T, options: StoreUpdateOptions = {}): Promise<T> {
+		const obj = structuredClone(input);
 		if (!obj.metadata) {
 			throw new Error(`Object must have metadata`);
 		}
@@ -282,9 +292,14 @@ export class Store<T extends Storable> {
 
 	async listWithResourceVersion(
 		namespace?: string,
+		options: StoreListOptions = {},
 	): Promise<{ items: T[]; resourceVersion: string }> {
 		const k = this.listPrefix(namespace);
-		const response = await this.etcd.getAll().prefix(k).exec();
+		let builder = this.etcd.getAll().prefix(k);
+		if (options.resourceVersion !== undefined && options.resourceVersion !== "") {
+			builder = builder.revision(options.resourceVersion);
+		}
+		const response = await builder.exec();
 		return {
 			resourceVersion: response.header.revision,
 			items: response.kvs.map((kv) => {

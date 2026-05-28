@@ -13,6 +13,7 @@ import type {
 	DiscoveryV1ApiReplaceNamespacedEndpointSliceRequest,
 } from "../types/DiscoveryV1Api";
 import { rethrowApiErrors } from "./errors";
+import { listResourceVersionOptions, validateDeletePreconditions } from "./resource-version";
 
 export class DiscoveryV1Api implements DiscoveryV1ApiInterface {
 	private readonly endpointSlices: EndpointSliceStore;
@@ -39,6 +40,7 @@ export class DiscoveryV1Api implements DiscoveryV1ApiInterface {
 			if (!endpointSlice) {
 				throw new NotFound(`EndpointSlice "${request.name}" not found`);
 			}
+			validateDeletePreconditions("EndpointSlice", request.name, request.body, endpointSlice);
 
 			await this.endpointSlices.delete(request.name, request.namespace);
 			return {
@@ -54,7 +56,10 @@ export class DiscoveryV1Api implements DiscoveryV1ApiInterface {
 	): Promise<V1EndpointSliceList> {
 		return await rethrowApiErrors(async () => {
 			const selector = parseLabelSelector(request.labelSelector);
-			const list = await this.endpointSlices.listWithResourceVersion();
+			const list = await this.endpointSlices.listWithResourceVersion(
+				undefined,
+				listResourceVersionOptions(request),
+			);
 			return {
 				apiVersion: "discovery.k8s.io/v1",
 				kind: "EndpointSliceList",
@@ -69,7 +74,10 @@ export class DiscoveryV1Api implements DiscoveryV1ApiInterface {
 	): Promise<V1EndpointSliceList> {
 		return await rethrowApiErrors(async () => {
 			const selector = parseLabelSelector(request.labelSelector);
-			const list = await this.endpointSlices.listWithResourceVersion(request.namespace);
+			const list = await this.endpointSlices.listWithResourceVersion(
+				request.namespace,
+				listResourceVersionOptions(request),
+			);
 			return {
 				apiVersion: "discovery.k8s.io/v1",
 				kind: "EndpointSliceList",

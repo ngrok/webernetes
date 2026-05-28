@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 import type { V1Pod, V1Service } from "../gen/models";
 import { kubernetes } from "../../test/harnesses/kubernetes";
-import { apiStatusMessage } from "../../test/harnesses/helpers";
+import { apiErrorCode, apiStatusMessage } from "../../test/harnesses/helpers";
 
 kubernetes.describe("Services", ({ core, k8s, helpers, target }) => {
 	const { getSuiteNamespace, fetchNodePort, waitFor } = helpers;
@@ -218,6 +218,152 @@ kubernetes.describe("Services", ({ core, k8s, helpers, target }) => {
 		).toBeTruthy();
 	});
 
+	it("should list services from an exact resourceVersion snapshot", async () => {
+		const namespace = await getSuiteNamespace();
+		await createService({
+			metadata: {
+				name: "exact-list-before",
+			},
+			spec: {
+				type: "ClusterIP",
+				ports: [{ port: 80 }],
+			},
+		});
+		const firstList = await core.listNamespacedService({ namespace });
+		const snapshotResourceVersion = firstList.metadata?.resourceVersion ?? "";
+		expect(Number(snapshotResourceVersion)).toBeGreaterThan(0);
+
+		await createService({
+			metadata: {
+				name: "exact-list-after",
+			},
+			spec: {
+				type: "ClusterIP",
+				ports: [{ port: 80 }],
+			},
+		});
+
+		const exactList = await core.listNamespacedService({
+			namespace,
+			resourceVersion: snapshotResourceVersion,
+			resourceVersionMatch: "Exact",
+		});
+
+		expect(exactList.metadata?.resourceVersion).toBe(snapshotResourceVersion);
+		expect(exactList.items.map((service) => service.metadata?.name)).toContain("exact-list-before");
+		expect(exactList.items.map((service) => service.metadata?.name)).not.toContain(
+			"exact-list-after",
+		);
+	});
+
+	it("should list services not older than a resourceVersion", async () => {
+		const namespace = await getSuiteNamespace();
+		const firstList = await core.listNamespacedService({ namespace });
+		const snapshotResourceVersion = firstList.metadata?.resourceVersion ?? "";
+		expect(Number(snapshotResourceVersion)).toBeGreaterThan(0);
+
+		await createService({
+			metadata: {
+				name: "not-older-than-after",
+			},
+			spec: {
+				type: "ClusterIP",
+				ports: [{ port: 80 }],
+			},
+		});
+
+		const notOlderThanList = await core.listNamespacedService({
+			namespace,
+			resourceVersion: snapshotResourceVersion,
+			resourceVersionMatch: "NotOlderThan",
+		});
+
+		expect(Number(notOlderThanList.metadata?.resourceVersion)).toBeGreaterThanOrEqual(
+			Number(snapshotResourceVersion),
+		);
+		expect(notOlderThanList.items.map((service) => service.metadata?.name)).toContain(
+			"not-older-than-after",
+		);
+	});
+
+	it("should reject replacing a service with a stale resourceVersion", async () => {
+		const namespace = await getSuiteNamespace();
+		const service = await createService({
+			metadata: {
+				name: "replace-resource-version-conflict",
+				labels: { revision: "created" },
+			},
+			spec: {
+				type: "ClusterIP",
+				ports: [{ port: 80 }],
+			},
+		});
+
+		await core.replaceNamespacedService({
+			name: "replace-resource-version-conflict",
+			namespace,
+			body: {
+				...service,
+				metadata: {
+					...service.metadata,
+					labels: { revision: "fresh" },
+				},
+			},
+		});
+
+		let replaceError: unknown;
+		try {
+			await core.replaceNamespacedService({
+				name: "replace-resource-version-conflict",
+				namespace,
+				body: {
+					...service,
+					metadata: {
+						...service.metadata,
+						labels: { revision: "stale" },
+					},
+				},
+			});
+		} catch (error) {
+			replaceError = error;
+		}
+
+		expect(apiErrorCode(replaceError)).toBe(409);
+		const current = await core.readNamespacedService({
+			name: "replace-resource-version-conflict",
+			namespace,
+		});
+		expect(current.metadata?.labels?.revision).toBe("fresh");
+	});
+
+	it("should allow replacing a service without a resourceVersion", async () => {
+		const namespace = await getSuiteNamespace();
+		const service = await createService({
+			metadata: {
+				name: "replace-without-resource-version",
+			},
+			spec: {
+				type: "ClusterIP",
+				ports: [{ port: 80 }],
+			},
+		});
+		const { resourceVersion: _resourceVersion, ...metadata } = service.metadata ?? {};
+
+		const replaced = await core.replaceNamespacedService({
+			name: "replace-without-resource-version",
+			namespace,
+			body: {
+				...service,
+				metadata: {
+					...metadata,
+					labels: { revision: "unconditional" },
+				},
+			},
+		});
+
+		expect(replaced.metadata?.labels?.revision).toBe("unconditional");
+	});
+
 	it("should delete services", async () => {
 		const service = await createService({
 			metadata: {
@@ -242,6 +388,56 @@ kubernetes.describe("Services", ({ core, k8s, helpers, target }) => {
 				namespace,
 			}),
 		).rejects.toThrow(/NotFound|not found/);
+	});
+
+	it("should reject deleting a service with a stale resourceVersion precondition", async () => {
+		const namespace = await getSuiteNamespace();
+		const service = await createService({
+			metadata: {
+				name: "delete-resource-version-precondition",
+				labels: { revision: "created" },
+			},
+			spec: {
+				type: "ClusterIP",
+				ports: [{ port: 80 }],
+			},
+		});
+		const staleResourceVersion = service.metadata?.resourceVersion ?? "";
+		expect(Number(staleResourceVersion)).toBeGreaterThan(0);
+
+		await core.replaceNamespacedService({
+			name: "delete-resource-version-precondition",
+			namespace,
+			body: {
+				...service,
+				metadata: {
+					...service.metadata,
+					labels: { revision: "updated" },
+				},
+			},
+		});
+
+		let deleteError: unknown;
+		try {
+			await core.deleteNamespacedService({
+				name: "delete-resource-version-precondition",
+				namespace,
+				body: {
+					preconditions: {
+						resourceVersion: staleResourceVersion,
+					},
+				},
+			});
+		} catch (error) {
+			deleteError = error;
+		}
+
+		expect(apiErrorCode(deleteError)).toBe(409);
+		const current = await core.readNamespacedService({
+			name: "delete-resource-version-precondition",
+			namespace,
+		});
+		expect(current.metadata?.labels?.revision).toBe("updated");
 	});
 
 	it("should release ClusterIP and NodePort allocations on delete", async () => {

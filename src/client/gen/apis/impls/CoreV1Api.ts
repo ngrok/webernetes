@@ -65,6 +65,7 @@ import type {
 	CoreV1ApiReplaceNodeRequest,
 } from "../types/CoreV1Api";
 import { rethrowApiErrors } from "./errors";
+import { listResourceVersionOptions, validateDeletePreconditions } from "./resource-version";
 
 export class CoreV1Api implements CoreV1ApiInterface {
 	private readonly cluster: Cluster;
@@ -111,6 +112,7 @@ export class CoreV1Api implements CoreV1ApiInterface {
 					if (!namespace) {
 						throw new NotFound(`namespaces "${request.name}" not found`);
 					}
+					validateDeletePreconditions("Namespace", request.name, request.body, namespace);
 
 					const finalizers = namespace.spec?.finalizers ?? [];
 					if (namespace.metadata?.deletionTimestamp && finalizers.length === 0) {
@@ -159,7 +161,9 @@ export class CoreV1Api implements CoreV1ApiInterface {
 		return await rethrowApiErrors(async () => {
 			const selector = parseLabelSelector(request.labelSelector);
 			const fieldSelector = parseFieldSelector(request.fieldSelector);
-			const list = await this.pods.listWithResourceVersion(request.namespace);
+			const list = await this.pods.listWithResourceVersion(request.namespace, {
+				...listResourceVersionOptions(request),
+			});
 			return {
 				metadata: {
 					resourceVersion: list.resourceVersion,
@@ -174,7 +178,10 @@ export class CoreV1Api implements CoreV1ApiInterface {
 	): Promise<CoreV1EventList> {
 		return await rethrowApiErrors(async () => {
 			const selector = parseLabelSelector(request.labelSelector);
-			const list = await this.events.listWithResourceVersion(request.namespace);
+			const list = await this.events.listWithResourceVersion(
+				request.namespace,
+				listResourceVersionOptions(request),
+			);
 			return {
 				metadata: {
 					resourceVersion: list.resourceVersion,
@@ -189,7 +196,10 @@ export class CoreV1Api implements CoreV1ApiInterface {
 	): Promise<V1ServiceList> {
 		return await rethrowApiErrors(async () => {
 			const selector = parseLabelSelector(request.labelSelector);
-			const list = await this.services.listWithResourceVersion(request.namespace);
+			const list = await this.services.listWithResourceVersion(
+				request.namespace,
+				listResourceVersionOptions(request),
+			);
 			return {
 				metadata: {
 					resourceVersion: list.resourceVersion,
@@ -205,7 +215,10 @@ export class CoreV1Api implements CoreV1ApiInterface {
 		return await rethrowApiErrors(async () => {
 			const selector = parseLabelSelector(request.labelSelector);
 			const fieldSelector = parseFieldSelector(request.fieldSelector);
-			const list = await this.pods.listWithResourceVersion();
+			const list = await this.pods.listWithResourceVersion(
+				undefined,
+				listResourceVersionOptions(request),
+			);
 			return {
 				metadata: {
 					resourceVersion: list.resourceVersion,
@@ -220,7 +233,10 @@ export class CoreV1Api implements CoreV1ApiInterface {
 	): Promise<CoreV1EventList> {
 		return await rethrowApiErrors(async () => {
 			const selector = parseLabelSelector(request.labelSelector);
-			const list = await this.events.listWithResourceVersion();
+			const list = await this.events.listWithResourceVersion(
+				undefined,
+				listResourceVersionOptions(request),
+			);
 			return {
 				metadata: {
 					resourceVersion: list.resourceVersion,
@@ -235,7 +251,10 @@ export class CoreV1Api implements CoreV1ApiInterface {
 	): Promise<V1ServiceList> {
 		return await rethrowApiErrors(async () => {
 			const selector = parseLabelSelector(request.labelSelector);
-			const list = await this.services.listWithResourceVersion();
+			const list = await this.services.listWithResourceVersion(
+				undefined,
+				listResourceVersionOptions(request),
+			);
 			return {
 				metadata: {
 					resourceVersion: list.resourceVersion,
@@ -251,7 +270,10 @@ export class CoreV1Api implements CoreV1ApiInterface {
 		return await rethrowApiErrors(async () => {
 			const selector = parseLabelSelector(request.labelSelector);
 			const fieldSelector = parseFieldSelector(request.fieldSelector);
-			const list = await this.namespaces.listWithResourceVersion();
+			const list = await this.namespaces.listWithResourceVersion(
+				undefined,
+				listResourceVersionOptions(request),
+			);
 			return {
 				metadata: {
 					resourceVersion: list.resourceVersion,
@@ -265,7 +287,10 @@ export class CoreV1Api implements CoreV1ApiInterface {
 		return await rethrowApiErrors(async () => {
 			const selector = parseLabelSelector(request.labelSelector);
 			const fieldSelector = parseFieldSelector(request.fieldSelector);
-			const list = await this.nodes.listWithResourceVersion();
+			const list = await this.nodes.listWithResourceVersion(
+				undefined,
+				listResourceVersionOptions(request),
+			);
 			return {
 				metadata: {
 					resourceVersion: list.resourceVersion,
@@ -287,6 +312,7 @@ export class CoreV1Api implements CoreV1ApiInterface {
 			if (!node) {
 				throw new NotFound(`Node "${request.name}" not found`);
 			}
+			validateDeletePreconditions("Node", request.name, request.body, node);
 
 			await this.nodes.delete(request.name);
 			return {
@@ -377,6 +403,7 @@ export class CoreV1Api implements CoreV1ApiInterface {
 					if (!pod) {
 						throw new NotFound(`Pod "${request.name}" not found`);
 					}
+					validateDeletePreconditions("Pod", request.name, request.body, pod);
 
 					const gracePeriodSeconds = podDeletionGracePeriodSeconds(request, pod);
 					if (gracePeriodSeconds === 0) {
@@ -416,6 +443,7 @@ export class CoreV1Api implements CoreV1ApiInterface {
 			if (!service) {
 				throw new NotFound(`Service "${request.name}" not found`);
 			}
+			validateDeletePreconditions("Service", request.name, request.body, service);
 
 			await this.services.delete(request.name, request.namespace);
 			return service;
@@ -430,6 +458,7 @@ export class CoreV1Api implements CoreV1ApiInterface {
 			if (!event) {
 				throw new NotFound(`Event "${request.name}" not found`);
 			}
+			validateDeletePreconditions("Event", request.name, request.body, event);
 
 			await this.events.delete(request.name, request.namespace);
 			return {

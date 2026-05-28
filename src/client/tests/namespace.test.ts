@@ -59,6 +59,214 @@ kubernetes.describe("Namespaces", ({ core, discovery, k8s, helpers }) => {
 		expect(apiStatusMessage(deleteError)).toBe(`namespaces "missing-namespace" not found`);
 	});
 
+	it("should list namespaces from an exact resourceVersion snapshot", async () => {
+		const before = await core.createNamespace({
+			body: {
+				metadata: {
+					generateName: "exact-list-before-",
+				},
+			},
+		});
+		const beforeName = before.metadata?.name;
+		if (!beforeName) {
+			throw new Error("Expected namespace name");
+		}
+		const firstList = await core.listNamespace();
+		const snapshotResourceVersion = firstList.metadata?.resourceVersion ?? "";
+		expect(Number(snapshotResourceVersion)).toBeGreaterThan(0);
+
+		const after = await core.createNamespace({
+			body: {
+				metadata: {
+					generateName: "exact-list-after-",
+				},
+			},
+		});
+		const afterName = after.metadata?.name;
+		if (!afterName) {
+			throw new Error("Expected namespace name");
+		}
+
+		try {
+			const exactList = await core.listNamespace({
+				resourceVersion: snapshotResourceVersion,
+				resourceVersionMatch: "Exact",
+			});
+
+			expect(exactList.metadata?.resourceVersion).toBe(snapshotResourceVersion);
+			expect(exactList.items.map((namespace) => namespace.metadata?.name)).toContain(beforeName);
+			expect(exactList.items.map((namespace) => namespace.metadata?.name)).not.toContain(afterName);
+		} finally {
+			await core.deleteNamespace({ name: beforeName });
+			await core.deleteNamespace({ name: afterName });
+		}
+	});
+
+	it("should list namespaces not older than a resourceVersion", async () => {
+		const firstList = await core.listNamespace();
+		const snapshotResourceVersion = firstList.metadata?.resourceVersion ?? "";
+		expect(Number(snapshotResourceVersion)).toBeGreaterThan(0);
+
+		const namespace = await core.createNamespace({
+			body: {
+				metadata: {
+					generateName: "not-older-than-after-",
+				},
+			},
+		});
+		const name = namespace.metadata?.name;
+		if (!name) {
+			throw new Error("Expected namespace name");
+		}
+
+		try {
+			const notOlderThanList = await core.listNamespace({
+				resourceVersion: snapshotResourceVersion,
+				resourceVersionMatch: "NotOlderThan",
+			});
+
+			expect(Number(notOlderThanList.metadata?.resourceVersion)).toBeGreaterThanOrEqual(
+				Number(snapshotResourceVersion),
+			);
+			expect(notOlderThanList.items.map((namespace) => namespace.metadata?.name)).toContain(name);
+		} finally {
+			await core.deleteNamespace({ name });
+		}
+	});
+
+	it("should reject replacing a namespace with a stale resourceVersion", async () => {
+		const namespace = await core.createNamespace({
+			body: {
+				metadata: {
+					generateName: "replace-resource-version-conflict-",
+					labels: { revision: "created" },
+				},
+			},
+		});
+		const name = namespace.metadata?.name;
+		if (!name) {
+			throw new Error("Expected namespace name");
+		}
+
+		try {
+			await core.replaceNamespace({
+				name,
+				body: {
+					...namespace,
+					metadata: {
+						...namespace.metadata,
+						labels: { revision: "fresh" },
+					},
+				},
+			});
+
+			let replaceError: unknown;
+			try {
+				await core.replaceNamespace({
+					name,
+					body: {
+						...namespace,
+						metadata: {
+							...namespace.metadata,
+							labels: { revision: "stale" },
+						},
+					},
+				});
+			} catch (error) {
+				replaceError = error;
+			}
+
+			expect(apiErrorCode(replaceError)).toBe(409);
+			const current = await core.readNamespace({ name });
+			expect(current.metadata?.labels?.revision).toBe("fresh");
+		} finally {
+			await core.deleteNamespace({ name });
+		}
+	});
+
+	it("should allow replacing a namespace without a resourceVersion", async () => {
+		const namespace = await core.createNamespace({
+			body: {
+				metadata: {
+					generateName: "replace-without-resource-version-",
+				},
+			},
+		});
+		const name = namespace.metadata?.name;
+		if (!name) {
+			throw new Error("Expected namespace name");
+		}
+		const { resourceVersion: _resourceVersion, ...metadata } = namespace.metadata ?? {};
+
+		try {
+			const replaced = await core.replaceNamespace({
+				name,
+				body: {
+					...namespace,
+					metadata: {
+						...metadata,
+						labels: { revision: "unconditional" },
+					},
+				},
+			});
+
+			expect(replaced.metadata?.labels?.revision).toBe("unconditional");
+		} finally {
+			await core.deleteNamespace({ name });
+		}
+	});
+
+	it("should reject deleting a namespace with a stale resourceVersion precondition", async () => {
+		const namespace = await core.createNamespace({
+			body: {
+				metadata: {
+					generateName: "delete-resource-version-precondition-",
+					labels: { revision: "created" },
+				},
+			},
+		});
+		const name = namespace.metadata?.name;
+		const staleResourceVersion = namespace.metadata?.resourceVersion ?? "";
+		expect(Number(staleResourceVersion)).toBeGreaterThan(0);
+		if (!name) {
+			throw new Error("Expected namespace name");
+		}
+
+		try {
+			await core.replaceNamespace({
+				name,
+				body: {
+					...namespace,
+					metadata: {
+						...namespace.metadata,
+						labels: { revision: "updated" },
+					},
+				},
+			});
+
+			let deleteError: unknown;
+			try {
+				await core.deleteNamespace({
+					name,
+					body: {
+						preconditions: {
+							resourceVersion: staleResourceVersion,
+						},
+					},
+				});
+			} catch (error) {
+				deleteError = error;
+			}
+
+			expect(apiErrorCode(deleteError)).toBe(409);
+			const current = await core.readNamespace({ name });
+			expect(current.metadata?.labels?.revision).toBe("updated");
+			expect(current.metadata?.deletionTimestamp).toBeUndefined();
+		} finally {
+			await core.deleteNamespace({ name });
+		}
+	});
+
 	it("should delete namespaced resources when a namespace is deleted", async () => {
 		const namespace = await core.createNamespace({
 			body: {
