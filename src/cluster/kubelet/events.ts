@@ -4,3 +4,5 @@ export const sandboxChanged = "SandboxChanged";
 export const failedCreatePodSandBox = "FailedCreatePodSandBox";
 // Models kubernetes/pkg/kubelet/events/event.go FailedStatusPodSandBox.
 export const failedStatusPodSandBox = "FailedPodSandBoxStatus";
+// Models kubernetes/pkg/kubelet/events/event.go FailedValidation.
+export const failedValidation = "FailedValidation";

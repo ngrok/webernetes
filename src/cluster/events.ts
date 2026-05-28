@@ -91,5 +91,11 @@ function objectReference(object: EventObject): V1ObjectReference {
 
 function sprintf(messageFmt: string, args: unknown[]): string {
 	let index = 0;
-	return messageFmt.replace(/%[sdv]/g, () => String(args[index++] ?? ""));
+	return messageFmt.replace(/%[sdvq]/g, (verb) => {
+		const value = args[index++] ?? "";
+		if (verb === "%q") {
+			return JSON.stringify(String(value));
+		}
+		return String(value);
+	});
 }

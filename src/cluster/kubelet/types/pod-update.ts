@@ -19,6 +19,7 @@ export type PodOperation = "ADD" | "DELETE" | "REMOVE" | "UPDATE" | "RECONCILE";
 export interface PodUpdate {
 	pods: V1Pod[];
 	op: PodOperation;
+	source: string;
 }
 
 // Models kubernetes/pkg/kubelet/types/pod_update.go SyncPodType.
