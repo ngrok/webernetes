@@ -196,6 +196,10 @@ kubernetes.describe("Nodes", ({ core, k8s }) => {
 				metadata: {
 					generateName: "replace-without-resource-version-",
 				},
+				spec: {
+					podCIDR: "10.244.250.0/24",
+					podCIDRs: ["10.244.250.0/24"],
+				},
 			},
 		});
 		const name = node.metadata?.name;

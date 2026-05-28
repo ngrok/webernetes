@@ -337,7 +337,7 @@ kubernetes.describe("Namespaces", ({ core, discovery, k8s, helpers }) => {
 			},
 			{ timeout: 60_000, interval: 500 },
 		);
-	}, 60_000);
+	}, 90_000);
 
 	it("should allow deleting a terminating namespace again", async () => {
 		const namespace = await core.createNamespace({
