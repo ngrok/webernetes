@@ -4,6 +4,9 @@ export interface ListOptions {
 	fieldSelector?: string;
 	watch?: boolean;
 	resourceVersion?: string;
+	resourceVersionMatch?: string;
+	limit?: number;
 	timeoutSeconds?: number;
 	allowWatchBookmarks?: boolean;
+	sendInitialEvents?: boolean;
 }

@@ -227,3 +227,18 @@ export function toListWatcherWithWatchListSemantics<T extends KubernetesObject>(
 		doesClientNotSupportWatchListSemantics(client),
 	);
 }
+
+// Models staging/src/k8s.io/client-go/tools/cache/listwatch.go ToListerWatcherWithContext.
+export function toListerWatcherWithContext<T extends KubernetesObject>(
+	lw: ListerWatcher<T>,
+): ListerWatcherWithContext<T> {
+	if ("listWithContext" in lw && "watchWithContext" in lw) {
+		return lw as ListerWatcherWithContext<T>;
+	}
+	return {
+		list: (options) => lw.list(options),
+		watch: (options) => lw.watch(options),
+		listWithContext: (_ctx, options) => lw.list(options),
+		watchWithContext: (_ctx, options) => lw.watch(options),
+	};
+}
