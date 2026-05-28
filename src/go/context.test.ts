@@ -9,8 +9,8 @@ import { browser } from "../test/describe";
 // https://github.com/golang/go/blob/go1.26.0/src/context/context_test.go
 //
 // Not mirrored yet:
-// - TODO contexts, string formatting, deadlines, timeouts, values, causes,
-//   AfterFunc, goroutine allocation tests, and benchmarks.
+// - TODO contexts, string formatting, deadlines, timeouts, values, WithoutCancel,
+//   custom contexts, AfterFunc, goroutine allocation tests, and benchmarks.
 // - Tests that inspect Go's unexported child maps directly. We verify the
 //   observable behavior instead.
 browser.describe("Context", () => {
@@ -172,6 +172,154 @@ browser.describe("Context", () => {
 		await expect(doneIsReady(child)).resolves.toBe(true);
 		expect(parent.err()).toBe(context.Canceled);
 		expect(child.err()).toBe(context.Canceled);
+	});
+
+	// Mirrors Go TestWithCancelCanceledParent, lines 501-518:
+	// https://github.com/golang/go/blob/go1.26.0/src/context/x_test.go#L501-L518
+	it("inherits the cause from an already-canceled parent", async () => {
+		const [parent, cancelParent] = context.withCancelCause(context.background());
+		const expectedCause = new Error("Because!");
+		cancelParent(expectedCause);
+
+		const [child] = context.withCancel(parent);
+
+		await expect(doneIsReady(child)).resolves.toBe(true);
+		expect(child.err()).toBe(context.Canceled);
+		expect(context.cause(child)).toBe(expectedCause);
+	});
+
+	// Mirrors the cancel-only cases from Go TestCause, lines 581-712:
+	// https://github.com/golang/go/blob/go1.26.0/src/context/x_test.go#L581-L712
+	it("reports cancellation causes", () => {
+		const parentCause = new Error("parentCause");
+		const childCause = new Error("childCause");
+		const tests: Array<{
+			name: string;
+			ctx: () => context.Context;
+			err: Error | undefined;
+			cause: Error | undefined;
+		}> = [
+			{
+				name: "Background",
+				ctx: context.background,
+				err: undefined,
+				cause: undefined,
+			},
+			{
+				name: "WithCancel",
+				ctx: () => {
+					const [ctx, cancel] = context.withCancel(context.background());
+					cancel();
+					return ctx;
+				},
+				err: context.Canceled,
+				cause: context.Canceled,
+			},
+			{
+				name: "WithCancelCause",
+				ctx: () => {
+					const [ctx, cancel] = context.withCancelCause(context.background());
+					cancel(parentCause);
+					return ctx;
+				},
+				err: context.Canceled,
+				cause: parentCause,
+			},
+			{
+				name: "WithCancelCause nil",
+				ctx: () => {
+					const [ctx, cancel] = context.withCancelCause(context.background());
+					cancel(undefined);
+					return ctx;
+				},
+				err: context.Canceled,
+				cause: context.Canceled,
+			},
+			{
+				name: "WithCancelCause: parent cause before child",
+				ctx: () => {
+					let [ctx, cancelParent] = context.withCancelCause(context.background());
+					const [child, cancelChild] = context.withCancelCause(ctx);
+					ctx = child;
+					cancelParent(parentCause);
+					cancelChild(childCause);
+					return ctx;
+				},
+				err: context.Canceled,
+				cause: parentCause,
+			},
+			{
+				name: "WithCancelCause: parent cause after child",
+				ctx: () => {
+					let [ctx, cancelParent] = context.withCancelCause(context.background());
+					const [child, cancelChild] = context.withCancelCause(ctx);
+					ctx = child;
+					cancelChild(childCause);
+					cancelParent(parentCause);
+					return ctx;
+				},
+				err: context.Canceled,
+				cause: childCause,
+			},
+			{
+				name: "WithCancelCause: parent cause before nil",
+				ctx: () => {
+					let [ctx, cancelParent] = context.withCancelCause(context.background());
+					const [child, cancelChild] = context.withCancel(ctx);
+					ctx = child;
+					cancelParent(parentCause);
+					cancelChild();
+					return ctx;
+				},
+				err: context.Canceled,
+				cause: parentCause,
+			},
+			{
+				name: "WithCancelCause: parent cause after nil",
+				ctx: () => {
+					let [ctx, cancelParent] = context.withCancelCause(context.background());
+					const [child, cancelChild] = context.withCancel(ctx);
+					ctx = child;
+					cancelChild();
+					cancelParent(parentCause);
+					return ctx;
+				},
+				err: context.Canceled,
+				cause: context.Canceled,
+			},
+			{
+				name: "WithCancelCause: child cause after nil",
+				ctx: () => {
+					let [ctx, cancelParent] = context.withCancel(context.background());
+					const [child, cancelChild] = context.withCancelCause(ctx);
+					ctx = child;
+					cancelParent();
+					cancelChild(childCause);
+					return ctx;
+				},
+				err: context.Canceled,
+				cause: context.Canceled,
+			},
+			{
+				name: "WithCancelCause: child cause before nil",
+				ctx: () => {
+					let [ctx, cancelParent] = context.withCancel(context.background());
+					const [child, cancelChild] = context.withCancelCause(ctx);
+					ctx = child;
+					cancelChild(childCause);
+					cancelParent();
+					return ctx;
+				},
+				err: context.Canceled,
+				cause: childCause,
+			},
+		];
+
+		for (const test of tests) {
+			const ctx = test.ctx();
+			expect(ctx.err()).toBe(test.err);
+			expect(context.cause(ctx)).toBe(test.cause);
+		}
 	});
 });
 
