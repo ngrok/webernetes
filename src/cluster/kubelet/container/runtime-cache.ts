@@ -1,6 +1,6 @@
 import type { Clock } from "../../../clock";
 import type * as context from "../../../go/context";
-import { Mutex } from "../../../mutex";
+import { Mutex } from "../../../go/sync/mutex";
 import type { Pod } from "./runtime";
 
 // Models kubernetes/pkg/kubelet/container/runtime_cache.go podsGetter.

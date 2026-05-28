@@ -2,7 +2,7 @@ import type { Clock } from "../../../clock";
 import { Channel, select, type ReadOnlyChannel } from "../../../go/channel";
 import type * as context from "../../../go/context";
 import * as time from "../../../go/time";
-import { Mutex } from "../../../mutex";
+import { Mutex } from "../../../go/sync/mutex";
 import { findContainerByID, findSandboxByID } from "../container";
 import type {
 	Cache,
