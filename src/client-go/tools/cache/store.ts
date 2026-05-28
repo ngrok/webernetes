@@ -69,7 +69,7 @@ class Cache<T extends KubernetesObject> implements Store<T> {
 			}
 			obj = transformedObj;
 		}
-		this.cacheStorage.set(key, obj);
+		this.cacheStorage.set(key, structuredClone(obj));
 		return undefined;
 	}
 
@@ -86,7 +86,7 @@ class Cache<T extends KubernetesObject> implements Store<T> {
 			}
 			obj = transformedObj;
 		}
-		this.cacheStorage.set(key, obj);
+		this.cacheStorage.set(key, structuredClone(obj));
 		return undefined;
 	}
 
@@ -102,7 +102,7 @@ class Cache<T extends KubernetesObject> implements Store<T> {
 
 	// Models staging/src/k8s.io/client-go/tools/cache/store.go cache.List.
 	list(): T[] {
-		return [...this.cacheStorage.values()];
+		return [...this.cacheStorage.values()].map((item) => structuredClone(item));
 	}
 
 	// Models staging/src/k8s.io/client-go/tools/cache/store.go cache.ListKeys.
@@ -134,7 +134,7 @@ class Cache<T extends KubernetesObject> implements Store<T> {
 	// Models staging/src/k8s.io/client-go/tools/cache/store.go cache.GetByKey.
 	getByKey(key: string): [item: T | undefined, exists: boolean, err: Error | undefined] {
 		const item = this.cacheStorage.get(key);
-		return [item, item !== undefined, undefined];
+		return [item === undefined ? undefined : structuredClone(item), item !== undefined, undefined];
 	}
 
 	// Models staging/src/k8s.io/client-go/tools/cache/store.go cache.Replace.
@@ -154,7 +154,7 @@ class Cache<T extends KubernetesObject> implements Store<T> {
 				}
 				obj = transformedItem;
 			}
-			items.set(key, obj);
+			items.set(key, structuredClone(obj));
 		}
 		this.cacheStorage = items;
 		this.storeSyncResourceVersion = resourceVersion;

@@ -8,6 +8,9 @@ import { newUndeltaStore } from "./undelta_store";
 interface TestUndeltaObject extends KubernetesObject {
 	name: string;
 	val: string | number;
+	nested?: {
+		val: string;
+	};
 }
 
 browser.describe("UndeltaStore", () => {
@@ -77,6 +80,36 @@ browser.describe("UndeltaStore", () => {
 
 		expect(callcount).toBe(1);
 		expect(got).toEqual([mkObj("a", 1)]);
+	});
+
+	it("does not expose stored object references through reads or pushes", async () => {
+		let got: TestUndeltaObject[] = [];
+		const push = (m: TestUndeltaObject[]) => {
+			got = m;
+		};
+		const u = newUndeltaStore(push, testUndeltaKeyFunc);
+
+		await u.add({ name: "a", val: 1, nested: { val: "stored" } });
+
+		const [pushed] = got;
+		if (!pushed?.nested) {
+			throw new Error("expected pushed object with nested value");
+		}
+		pushed.val = "pushed mutation";
+		pushed.nested.val = "pushed mutation";
+
+		const [afterPush] = await u.getByKey("a");
+		expect(afterPush).toEqual({ name: "a", val: 1, nested: { val: "stored" } });
+
+		const [listed] = u.list();
+		if (!listed?.nested) {
+			throw new Error("expected listed object with nested value");
+		}
+		listed.val = "listed mutation";
+		listed.nested.val = "listed mutation";
+
+		const [afterList] = await u.getByKey("a");
+		expect(afterList).toEqual({ name: "a", val: 1, nested: { val: "stored" } });
 	});
 });
 
