@@ -4,7 +4,7 @@ import { newCond } from "../../../go/sync/cond";
 import { Mutex } from "../../../go/sync/mutex";
 import type { MaybePromise } from "../../../promise";
 import type { ReflectorStore } from "./reflector";
-import { ExplicitKey, type KeyFunc } from "./store";
+import { ExplicitKey, KeyError, type KeyFunc, type Store } from "./store";
 
 // Models staging/src/k8s.io/client-go/tools/cache/fifo.go PopProcessFunc.
 export type PopProcessFunc<T extends KubernetesObject> = (
@@ -30,7 +30,7 @@ export interface DoneChecker {
 }
 
 // Models staging/src/k8s.io/client-go/tools/cache/fifo.go FIFO.
-export class FIFO<T extends KubernetesObject> implements Queue<T> {
+export class FIFO<T extends KubernetesObject> implements Queue<T>, Store<T> {
 	private items = new Map<string, T>();
 	private queue: string[] = [];
 	private readonly synced = new Channel<void>();
@@ -244,14 +244,4 @@ export class FIFO<T extends KubernetesObject> implements Queue<T> {
 // Models staging/src/k8s.io/client-go/tools/cache/fifo.go NewFIFO.
 export function newFIFO<T extends KubernetesObject>(keyFunc: KeyFunc<T>): FIFO<T> {
 	return new FIFO(keyFunc);
-}
-
-// Models staging/src/k8s.io/client-go/tools/cache/store.go KeyError.
-class KeyError<T extends KubernetesObject> extends Error {
-	constructor(
-		readonly obj: T | ExplicitKey,
-		readonly err: Error,
-	) {
-		super(`couldn't get key for object ${JSON.stringify(obj)}: ${err.message}`);
-	}
 }
