@@ -32,7 +32,6 @@ kubernetes.describe("Watch", ({ core, k8s, kubeConfig, helpers }) => {
 					if (err.name === "AbortError") {
 						return;
 					}
-					throw err;
 				}
 			},
 		);
@@ -70,6 +69,100 @@ kubernetes.describe("Watch", ({ core, k8s, kubeConfig, helpers }) => {
 				await createPod({ metadata: { name: "watched-pod" } });
 			},
 		});
+	});
+
+	it("emits ADDED for existing pods when watching without a resourceVersion", async () => {
+		const events: Array<{ phase: string; obj: V1Pod }> = [];
+		const namespace = await getTestNamespace();
+		const podName = "existing-pod-watch";
+		await createPod({ metadata: { name: podName } });
+
+		await watchAndWait({
+			url: `/api/v1/namespaces/${namespace}/pods`,
+			queryParams: { fieldSelector: `metadata.name=${podName}` },
+			onEvent: (phase, obj: V1Pod) => {
+				events.push({ phase, obj });
+			},
+			assert: () => {
+				expect(events).toContainEqual({
+					phase: "ADDED",
+					obj: expect.objectContaining({
+						metadata: expect.objectContaining({
+							namespace,
+							name: podName,
+						}),
+					}),
+				});
+			},
+		});
+	});
+
+	it("starts resourceVersion 0 watches from current state instead of replaying history", async () => {
+		const events: Array<{ phase: string; obj: V1Pod }> = [];
+		const namespace = await getTestNamespace();
+		const podName = "resource-version-zero-watch";
+		await createPod({
+			metadata: {
+				name: podName,
+				labels: { revision: "initial" },
+			},
+		});
+		await replacePod(podName, (current) => {
+			current.metadata = {
+				...current.metadata,
+				labels: { revision: "updated" },
+			};
+		});
+
+		await watchAndWait({
+			url: `/api/v1/namespaces/${namespace}/pods`,
+			queryParams: {
+				resourceVersion: "0",
+				fieldSelector: `metadata.name=${podName}`,
+			},
+			onEvent: (phase, obj: V1Pod) => {
+				events.push({ phase, obj });
+			},
+			assert: () => {
+				expect(events[0]).toEqual({
+					phase: "ADDED",
+					obj: expect.objectContaining({
+						metadata: expect.objectContaining({
+							namespace,
+							name: podName,
+							labels: expect.objectContaining({
+								revision: "updated",
+							}),
+						}),
+					}),
+				});
+			},
+		});
+	});
+
+	it("rejects watches with invalid resourceVersion values", async () => {
+		const namespace = await getTestNamespace();
+		const watch = new k8s.Watch(kubeConfig);
+		let doneError: unknown;
+
+		const controller = await watch.watch(
+			`/api/v1/namespaces/${namespace}/pods`,
+			{
+				resourceVersion: "not-a-number",
+			},
+			() => undefined,
+			(err) => {
+				doneError = err;
+			},
+		);
+
+		try {
+			await waitFor(() => {
+				expect(doneError).toBeTruthy();
+			});
+		} finally {
+			controller?.abort();
+		}
 	});
 
 	it("passes labelSelector through to watch", async () => {

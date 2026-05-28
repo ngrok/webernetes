@@ -128,6 +128,40 @@ browser.describe("ListWatch resourceVersion", () => {
 			expect(watch.calls.at(-1)?.queryParams).toEqual({ resourceVersion: "20" });
 		});
 	});
+
+	it("clears resourceVersion and relists after compacted watch history", async () => {
+		const connected = vi.fn<(err?: unknown) => void>();
+		let currentList = list;
+		const informer = new ListWatch<TestPod>(
+			"/api/v1/namespaces/default/pods",
+			watch,
+			async () => currentList,
+			false,
+		);
+		informer.on("connect", connected);
+
+		await informer.start();
+		currentList = {
+			metadata: { resourceVersion: "30" },
+			items: [
+				pod({
+					name: "after-compaction",
+					namespace: "default",
+					resourceVersion: "30",
+					labels: { state: "fresh" },
+				}),
+			],
+		};
+		watch.fail(new Error("etcdserver: mvcc: required revision has been compacted"));
+
+		await vi.waitFor(() => {
+			expect(connected).toHaveBeenCalledTimes(2);
+			expect(informer.get("cached", "default")).toBeUndefined();
+			expect(informer.get("after-compaction", "default")?.metadata.labels?.state).toBe("fresh");
+			expect(informer.latestResourceVersion()).toBe("30");
+			expect(watch.calls.at(-1)?.queryParams).toEqual({ resourceVersion: "30" });
+		});
+	});
 });
 
 function pod(metadata: TestPod["metadata"]): TestPod {

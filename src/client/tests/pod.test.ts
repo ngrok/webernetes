@@ -34,6 +34,33 @@ kubernetes.describe("Pods", (context) => {
 		expect(pod.metadata?.name).toBe("create-test");
 	});
 
+	it("should reject pods created with a resourceVersion", async () => {
+		const namespace = await getTestNamespace();
+		let createError: unknown;
+
+		try {
+			await core.createNamespacedPod({
+				namespace,
+				body: {
+					metadata: {
+						name: "create-resource-version-test",
+						resourceVersion: "123",
+					},
+					spec: {
+						containers: [{ name: "test", image: podImage }],
+					},
+				},
+			});
+		} catch (error) {
+			createError = error;
+		}
+
+		expect(apiErrorCode(createError)).toBe(500);
+		expect(apiStatusMessage(createError)).toBe(
+			`resourceVersion should not be set on objects to be created`,
+		);
+	});
+
 	it("should not be able to create a pod in a namespace that does not exist", async () => {
 		await expect(
 			core.createNamespacedPod({
@@ -708,6 +735,121 @@ kubernetes.describe("Pods", (context) => {
 			namespace,
 		});
 		expect(current.metadata?.labels?.app).toBe("fresh");
+	});
+
+	it("should list pods from an exact resourceVersion snapshot", async () => {
+		const namespace = await getTestNamespace();
+		await createPod({
+			metadata: {
+				name: "exact-list-before",
+			},
+		});
+
+		const firstList = await core.listNamespacedPod({ namespace });
+		const snapshotResourceVersion = firstList.metadata?.resourceVersion;
+		expect(snapshotResourceVersion).toBeTruthy();
+		if (!snapshotResourceVersion) {
+			throw new Error("Expected list to have metadata.resourceVersion");
+		}
+
+		await createPod({
+			metadata: {
+				name: "exact-list-after",
+			},
+		});
+
+		const exactList = await core.listNamespacedPod({
+			namespace,
+			resourceVersion: snapshotResourceVersion,
+			resourceVersionMatch: "Exact",
+		});
+
+		expect(exactList.metadata?.resourceVersion).toBe(snapshotResourceVersion);
+		expect(exactList.items.map((pod) => pod.metadata?.name)).toContain("exact-list-before");
+		expect(exactList.items.map((pod) => pod.metadata?.name)).not.toContain("exact-list-after");
+	});
+
+	it("should apply field selectors to exact resourceVersion snapshots", async () => {
+		const namespace = await getTestNamespace();
+		const firstList = await core.listNamespacedPod({ namespace });
+		const snapshotResourceVersion = firstList.metadata?.resourceVersion;
+		expect(snapshotResourceVersion).toBeTruthy();
+		if (!snapshotResourceVersion) {
+			throw new Error("Expected list to have metadata.resourceVersion");
+		}
+
+		await createPod({
+			metadata: {
+				name: "exact-selected-after",
+			},
+		});
+
+		const exactList = await core.listNamespacedPod({
+			namespace,
+			fieldSelector: "metadata.name=exact-selected-after",
+			resourceVersion: snapshotResourceVersion,
+			resourceVersionMatch: "Exact",
+		});
+
+		expect(exactList.metadata?.resourceVersion).toBe(snapshotResourceVersion);
+		expect(exactList.items).toHaveLength(0);
+	});
+
+	it("should reject deletes with a stale resourceVersion precondition", async () => {
+		const pod = await createPod({
+			metadata: {
+				name: "delete-resource-version-precondition-test",
+				labels: { revision: "initial" },
+			},
+			spec: {
+				nodeName: "missing-resource-version-precondition-node",
+			},
+		});
+		const namespace = await getTestNamespace();
+		const staleResourceVersion = pod.metadata?.resourceVersion;
+		expect(staleResourceVersion).toBeTruthy();
+		if (!staleResourceVersion) {
+			throw new Error("Expected created pod to have metadata.resourceVersion");
+		}
+
+		const updated = await replacePod("delete-resource-version-precondition-test", (current) => {
+			current.metadata = {
+				...current.metadata,
+				labels: { revision: "updated" },
+			};
+		});
+		const currentResourceVersion = updated.metadata?.resourceVersion;
+		expect(currentResourceVersion).toBeTruthy();
+		if (!currentResourceVersion) {
+			throw new Error("Expected updated pod to have metadata.resourceVersion");
+		}
+
+		let deleteError: unknown;
+		try {
+			await core.deleteNamespacedPod({
+				name: "delete-resource-version-precondition-test",
+				namespace,
+				gracePeriodSeconds: 0,
+				body: {
+					gracePeriodSeconds: 0,
+					preconditions: {
+						resourceVersion: staleResourceVersion,
+					},
+				},
+			});
+		} catch (error) {
+			deleteError = error;
+		}
+
+		expect(apiErrorCode(deleteError)).toBe(409);
+		expect(apiStatusMessage(deleteError)).toBe(
+			`Operation cannot be fulfilled on Pod "delete-resource-version-precondition-test": the ResourceVersion in the precondition (${staleResourceVersion}) does not match the ResourceVersion in record (${currentResourceVersion}). The object might have been modified`,
+		);
+		const current = await core.readNamespacedPod({
+			name: "delete-resource-version-precondition-test",
+			namespace,
+		});
+		expect(current.metadata?.labels?.revision).toBe("updated");
 	});
 
 	it("should default pods without metadata.namespace to the default namespace", async () => {
