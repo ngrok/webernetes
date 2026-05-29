@@ -3,7 +3,8 @@ import { expect, it } from "vitest";
 import * as context from "../../../go/context";
 import { browser } from "../../../test/describe";
 import type { ListOptions } from "../../../apimachinery/pkg/apis/meta/v1/types";
-import type { Selector } from "../../../apimachinery/pkg/fields/selector";
+import type { Selector, TransformFunc } from "../../../apimachinery/pkg/fields/selector";
+import type { Requirements } from "../../../apimachinery/pkg/fields/requirements";
 import type { Interface } from "../../../apimachinery/pkg/watch/watch";
 import type { KubeList, KubernetesObject } from "../../../client/types";
 import { doesClientNotSupportWatchListSemantics } from "../../util/watchlist/watch_list";
@@ -165,8 +166,32 @@ browser.describe("ListWatch", () => {
 class FakeSelector implements Selector {
 	constructor(private readonly value: string) {}
 
+	matches(): boolean {
+		return true;
+	}
+
+	empty(): boolean {
+		return this.value === "";
+	}
+
+	requiresExactMatch(_field: string): [value: string, found: boolean] {
+		return ["", false];
+	}
+
+	transform(_fn: TransformFunc): [selector: Selector | undefined, err: Error | undefined] {
+		return [this, undefined];
+	}
+
+	requirements(): Requirements {
+		return [];
+	}
+
 	string(): string {
 		return this.value;
+	}
+
+	deepCopySelector(): Selector {
+		return new FakeSelector(this.value);
 	}
 }
 
