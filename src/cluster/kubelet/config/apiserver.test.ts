@@ -1,17 +1,26 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 
 import type { ListOptions } from "../../../apimachinery/pkg/apis/meta/v1/types";
 import type { Interface } from "../../../apimachinery/pkg/watch/watch";
 import { newFake } from "../../../apimachinery/pkg/watch/watch";
 import type { V1Pod } from "../../../client";
 import type { KubeList } from "../../../client/types";
+import { Clock } from "../../../clock";
 import { Channel } from "../../../go/channel";
 import * as context from "../../../go/context";
 import { deepEqual } from "../../../deep-equal";
 import { browser } from "../../../test/describe";
-import type { ListResult, WatchResult } from "../../../client-go/tools/cache/listwatch";
+import type {
+	ListResult,
+	ListWatchClient,
+	WatchResult,
+} from "../../../client-go/tools/cache/listwatch";
 import type { SourceUpdate } from "./config";
-import { newSourceApiserverFromLW } from "./apiserver";
+import {
+	newSourceApiserver,
+	newSourceApiserverFromLW,
+	waitForAPIServerSyncPeriodMs,
+} from "./apiserver";
 
 browser.describe("apiserver source", () => {
 	// Models kubernetes/pkg/kubelet/config/apiserver_test.go TestNewSourceApiserver_UpdatesAndMultiplePods.
@@ -111,6 +120,98 @@ browser.describe("apiserver source", () => {
 			cancel();
 		}
 	});
+
+	it("waits for node sync before watching apiserver pods", async () => {
+		vi.useFakeTimers();
+		const clock = new Clock();
+		const [ctx, cancel] = context.withCancel(context.background());
+		try {
+			let synced = false;
+			const fakeWatch = newFake<V1Pod>();
+			const lw = new FakePodListWatchClient({
+				listResp: podList(pod("p", "", "image/one")),
+				watchResp: fakeWatch,
+			});
+			const ch = new Channel<SourceUpdate>(10);
+
+			newSourceApiserver(ctx, lw, "node-1", () => synced, ch.writeOnly(), clock);
+
+			await Promise.resolve();
+			expect(lw.listOptions).toEqual([]);
+			expect(lw.watchOptions).toEqual([]);
+
+			synced = true;
+			await vi.advanceTimersByTimeAsync(waitForAPIServerSyncPeriodMs);
+
+			const update = await receiveSourceUpdate(ch);
+			await Promise.resolve();
+			expect(update.pods).toHaveLength(1);
+			expect(lw.listOptions).toHaveLength(1);
+			expect(lw.watchOptions).toHaveLength(1);
+		} finally {
+			cancel();
+			vi.useRealTimers();
+		}
+	});
+
+	it("sets a field selector for the node name", async () => {
+		const [ctx, cancel] = context.withCancel(context.background());
+		try {
+			const fakeWatch = newFake<V1Pod>();
+			const lw = new FakePodListWatchClient({
+				listResp: podList(pod("p", "", "image/one")),
+				watchResp: fakeWatch,
+			});
+			const ch = new Channel<SourceUpdate>(10);
+
+			newSourceApiserver(ctx, lw, "node-1", () => true, ch.writeOnly());
+
+			await receiveSourceUpdate(ch);
+			await Promise.resolve();
+			expect(lw.listOptions).toHaveLength(1);
+			expect(lw.listOptions[0]).toMatchObject({
+				resourceVersion: "0",
+				fieldSelector: "spec.nodeName=node-1",
+			});
+			await vi.waitFor(() => {
+				expect(lw.watchOptions).toHaveLength(1);
+			});
+			expect(lw.watchOptions[0]).toMatchObject({
+				resourceVersion: lw.listResp.metadata?.resourceVersion,
+				allowWatchBookmarks: true,
+				timeoutSeconds: 300,
+				watch: true,
+				fieldSelector: "spec.nodeName=node-1",
+			});
+		} finally {
+			cancel();
+		}
+	});
+
+	it("stops waiting for node sync when the context is canceled", async () => {
+		vi.useFakeTimers();
+		const clock = new Clock();
+		const [ctx, cancel] = context.withCancel(context.background());
+		try {
+			const fakeWatch = newFake<V1Pod>();
+			const lw = new FakePodListWatchClient({
+				listResp: podList(pod("p", "", "image/one")),
+				watchResp: fakeWatch,
+			});
+			const ch = new Channel<SourceUpdate>(10);
+
+			newSourceApiserver(ctx, lw, "node-1", () => false, ch.writeOnly(), clock);
+			cancel();
+			await vi.advanceTimersByTimeAsync(waitForAPIServerSyncPeriodMs);
+			await Promise.resolve();
+
+			expect(lw.listOptions).toEqual([]);
+			expect(lw.watchOptions).toEqual([]);
+		} finally {
+			cancel();
+			vi.useRealTimers();
+		}
+	});
 });
 
 // Models kubernetes/pkg/kubelet/config/apiserver_test.go fakePodLW.
@@ -135,6 +236,39 @@ class FakePodLW {
 	// Models kubernetes/pkg/kubelet/config/apiserver_test.go fakePodLW.IsWatchListSemanticsUnSupported.
 	isWatchListSemanticsUnsupported(): boolean {
 		return true;
+	}
+}
+
+class FakePodListWatchClient implements ListWatchClient<V1Pod> {
+	readonly listOptions: ListOptions[] = [];
+	readonly watchOptions: ListOptions[] = [];
+	readonly listResp: KubeList<V1Pod>;
+
+	constructor(
+		private readonly options: {
+			listResp: KubeList<V1Pod>;
+			watchResp: Interface<V1Pod>;
+		},
+	) {
+		this.listResp = options.listResp;
+	}
+
+	async list(
+		_resource: string,
+		_namespace: string,
+		options: ListOptions,
+	): Promise<ListResult<V1Pod>> {
+		this.listOptions.push(options);
+		return [this.options.listResp, undefined];
+	}
+
+	async watch(
+		_resource: string,
+		_namespace: string,
+		options: ListOptions,
+	): Promise<WatchResult<V1Pod>> {
+		this.watchOptions.push(options);
+		return [this.options.watchResp, undefined];
 	}
 }
 
