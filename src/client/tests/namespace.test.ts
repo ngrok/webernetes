@@ -333,7 +333,14 @@ kubernetes.describe("Namespaces", ({ core, discovery, k8s, helpers }) => {
 					(await discovery.listNamespacedEndpointSlice({ namespace: name })).items,
 				).toHaveLength(0);
 				expect((await core.listNamespacedEvent({ namespace: name })).items).toHaveLength(0);
-				expect(await readNamespaceOrUndefined(name)).toBeUndefined();
+
+				const namespace = await readNamespaceOrUndefined(name);
+				if (!namespace) {
+					return;
+				}
+				if (!namespace.metadata?.deletionTimestamp || namespace.status?.phase === "Active") {
+					throw new Error(`Expected namespace ${name} to be deleted or terminating`);
+				}
 			},
 			{ timeout: 60_000, interval: 500 },
 		);

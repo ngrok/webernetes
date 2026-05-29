@@ -3,7 +3,7 @@ import type { V1Pod, V1Service } from "../gen/models";
 import { kubernetes } from "../../test/harnesses/kubernetes";
 import { apiErrorCode, apiStatusMessage } from "../../test/harnesses/helpers";
 
-kubernetes.describe("Services", ({ core, k8s, helpers, target }) => {
+kubernetes.describe("Services", ({ core, discovery, k8s, helpers, target }) => {
 	const { getSuiteNamespace, fetchNodePort, waitFor } = helpers;
 	const mergePatchOptions = k8s.setHeaderOptions("Content-Type", k8s.PatchStrategy.MergePatch);
 
@@ -564,9 +564,25 @@ kubernetes.describe("Services", ({ core, k8s, helpers, target }) => {
 			);
 		});
 
+		await waitFor(async () => {
+			const slices = await discovery.listNamespacedEndpointSlice({
+				namespace: await getSuiteNamespace(),
+				labelSelector: "kubernetes.io/service-name=http-echo-lb",
+			});
+			const readyEndpoints = slices.items.flatMap((slice) =>
+				slice.endpoints.filter((endpoint) => endpoint.conditions?.ready !== false),
+			);
+			expect(readyEndpoints).toHaveLength(2);
+			expect(slices.items[0]?.ports?.[0]).toMatchObject({
+				name: "http",
+				port: 5678,
+				protocol: "TCP",
+			});
+		});
+
 		const bodies = new Set<string>();
 		await waitFor(async () => {
-			for (let attempt = 0; attempt < 2; attempt++) {
+			for (let attempt = 0; attempt < 8; attempt++) {
 				const response = await fetchNodePort(nodePort, { path: "/" });
 				expect(response.status).toBe(200);
 				if (response.body) {

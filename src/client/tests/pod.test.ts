@@ -744,10 +744,7 @@ kubernetes.describe("Pods", (context) => {
 			},
 		});
 		const namespace = await getTestNamespace();
-		const current = await core.readNamespacedPod({
-			name: "replace-without-resource-version",
-			namespace,
-		});
+		const current = await waitForPodReady("replace-without-resource-version", namespace);
 		const { resourceVersion: _resourceVersion, ...metadata } = current.metadata ?? {};
 
 		const replaced = await core.replaceNamespacedPod({

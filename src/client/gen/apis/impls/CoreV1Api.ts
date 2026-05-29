@@ -469,10 +469,18 @@ export class CoreV1Api implements CoreV1ApiInterface {
 
 	public async replaceNamespacedPod(request: CoreV1ApiReplaceNamespacedPodRequest): Promise<V1Pod> {
 		return await rethrowApiErrors(async () => {
-			request.body.metadata ??= {};
-			request.body.metadata.name = request.name;
-			request.body.metadata.namespace ??= request.namespace;
-			return await this.pods.update(request.name, request.body);
+			const replace = async () => {
+				request.body.metadata ??= {};
+				request.body.metadata.name = request.name;
+				request.body.metadata.namespace ??= request.namespace;
+				return await this.pods.update(request.name, request.body);
+			};
+
+			if (request.body.metadata?.resourceVersion) {
+				return await replace();
+			}
+
+			return await retryConflicts(replace, { clock: this.cluster.clock });
 		});
 	}
 
