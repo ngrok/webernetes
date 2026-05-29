@@ -23,7 +23,7 @@ export class Exec implements ExecInterface {
 			throw new Error("TTY exec sessions are not supported by the simulator");
 		}
 		const argv = Array.isArray(command) ? command : [command];
-		const result = await this.config.cluster.exec(namespace, podName, containerName, argv);
+		const result = await this.config.exec(namespace, podName, containerName, argv);
 		if (result.stdout) {
 			stdout?.write(result.stdout);
 		}

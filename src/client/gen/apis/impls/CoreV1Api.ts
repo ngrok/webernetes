@@ -1,4 +1,4 @@
-import { Cluster } from "../../../../cluster";
+import type { Clock } from "../../../../clock";
 import { retryConflicts } from "../../../../retry";
 import {
 	EventStore,
@@ -7,6 +7,8 @@ import {
 	PodStore,
 	ServiceStore,
 } from "../../../../cluster/storage";
+import type { NodePortRange } from "../../../../cluster/storage";
+import type { Etcd } from "../../../../cluster/etcd";
 import { Store } from "../../../../cluster/storage/store";
 import { BadRequest, Invalid, NotFound, UnsupportedMediaType } from "../../../errors";
 import { filterByFields, parseFieldSelector } from "../../../fields";
@@ -67,23 +69,30 @@ import type {
 import { rethrowApiErrors } from "./errors";
 import { listResourceVersionOptions, validateDeletePreconditions } from "./resource-version";
 
+export interface CoreV1ApiOptions {
+	clock: Clock;
+	etcd: Etcd;
+	serviceCIDR?: string;
+	nodePortRange: NodePortRange;
+}
+
 export class CoreV1Api implements CoreV1ApiInterface {
-	private readonly cluster: Cluster;
+	private readonly clock: Clock;
 	private readonly namespaces: Store<V1Namespace>;
 	private readonly nodes: Store<V1Node>;
 	private readonly events: Store<CoreV1Event>;
 	private readonly pods: PodStore;
 	private readonly services: Store<V1Service>;
 
-	public constructor(cluster: Cluster) {
-		this.cluster = cluster;
-		this.namespaces = new NamespaceStore(cluster.etcd);
-		this.nodes = new NodeStore(cluster.etcd);
-		this.events = new EventStore(cluster.etcd);
-		this.pods = new PodStore(cluster.etcd);
-		this.services = new ServiceStore(cluster.etcd, {
-			serviceCIDR: cluster.serviceCIDR,
-			nodePortRange: cluster.nodePortRange,
+	public constructor(options: CoreV1ApiOptions) {
+		this.clock = options.clock;
+		this.namespaces = new NamespaceStore(options.etcd);
+		this.nodes = new NodeStore(options.etcd);
+		this.events = new EventStore(options.etcd);
+		this.pods = new PodStore(options.etcd);
+		this.services = new ServiceStore(options.etcd, {
+			serviceCIDR: options.serviceCIDR,
+			nodePortRange: options.nodePortRange,
 		});
 	}
 
@@ -122,13 +131,13 @@ export class CoreV1Api implements CoreV1ApiInterface {
 
 					if (!namespace.metadata?.deletionTimestamp) {
 						namespace.metadata ??= {};
-						namespace.metadata.deletionTimestamp = this.cluster.clock.now();
+						namespace.metadata.deletionTimestamp = this.clock.now();
 						namespace.status ??= {};
 						namespace.status.phase = "Terminating";
 						await this.namespaces.update(request.name, namespace, { skipValidateUpdate: true });
 					}
 				},
-				{ clock: this.cluster.clock },
+				{ clock: this.clock },
 			);
 			return {
 				status: "Success",
@@ -423,13 +432,13 @@ export class CoreV1Api implements CoreV1ApiInterface {
 						return pod;
 					}
 
-					pod.metadata.deletionTimestamp = this.cluster.clock.now();
+					pod.metadata.deletionTimestamp = this.clock.now();
 					pod.metadata.deletionGracePeriodSeconds = gracePeriodSeconds;
 					await this.pods.update(request.name, pod);
 					return pod;
 				},
 				{
-					clock: this.cluster.clock,
+					clock: this.clock,
 				},
 			);
 		});
@@ -480,7 +489,7 @@ export class CoreV1Api implements CoreV1ApiInterface {
 				return await replace();
 			}
 
-			return await retryConflicts(replace, { clock: this.cluster.clock });
+			return await retryConflicts(replace, { clock: this.clock });
 		});
 	}
 
@@ -504,7 +513,7 @@ export class CoreV1Api implements CoreV1ApiInterface {
 					patched.metadata.namespace ??= request.namespace;
 					return await this.pods.update(request.name, patched);
 				},
-				{ clock: this.cluster.clock },
+				{ clock: this.clock },
 			);
 		});
 	}
@@ -530,7 +539,7 @@ export class CoreV1Api implements CoreV1ApiInterface {
 					patched.metadata.namespace ??= request.namespace;
 					return await this.pods.update(request.name, patched);
 				},
-				{ clock: this.cluster.clock },
+				{ clock: this.clock },
 			);
 		});
 	}
@@ -591,7 +600,7 @@ export class CoreV1Api implements CoreV1ApiInterface {
 					patched.metadata.namespace ??= request.namespace;
 					return await this.services.update(request.name, patched);
 				},
-				{ clock: this.cluster.clock },
+				{ clock: this.clock },
 			);
 		});
 	}
@@ -623,7 +632,7 @@ export class CoreV1Api implements CoreV1ApiInterface {
 					patched.metadata.name = request.name;
 					return await this.namespaces.update(request.name, patched);
 				},
-				{ clock: this.cluster.clock },
+				{ clock: this.clock },
 			);
 		});
 	}
@@ -652,7 +661,7 @@ export class CoreV1Api implements CoreV1ApiInterface {
 					patched.metadata.name = request.name;
 					return await this.nodes.update(request.name, patched);
 				},
-				{ clock: this.cluster.clock },
+				{ clock: this.clock },
 			);
 		});
 	}

@@ -45,14 +45,14 @@ function parsePath(path: string): { kind: string; namespace?: string } | undefin
 }
 
 function storeFromKind(kind: string, config: KubeConfig): Store<Storable> {
-	const etcd = config.cluster.etcd;
+	const etcd = config.etcd;
 	switch (kind) {
 		case "pods":
 			return new PodStore(etcd);
 		case "services":
 			return new ServiceStore(etcd, {
-				serviceCIDR: config.cluster.serviceCIDR,
-				nodePortRange: config.cluster.nodePortRange,
+				serviceCIDR: config.serviceCIDR,
+				nodePortRange: config.nodePortRange,
 			});
 		case "endpointslices":
 			return new EndpointSliceStore(etcd);

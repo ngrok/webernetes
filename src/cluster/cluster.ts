@@ -31,8 +31,10 @@ export interface ClusterOptions {
 
 export class KubeClient {
 	readonly corev1: k8s.CoreV1Api;
+	readonly discoveryv1: k8s.DiscoveryV1Api;
 	constructor(private readonly kubeConfig: k8s.KubeConfig) {
 		this.corev1 = this.kubeConfig.makeApiClient(k8s.CoreV1Api);
+		this.discoveryv1 = this.kubeConfig.makeApiClient(k8s.DiscoveryV1Api);
 	}
 }
 
@@ -57,7 +59,14 @@ export class Cluster {
 		this.etcd = new Etcd(this.clock);
 		this.serviceCIDR = options.serviceCIDR;
 		this.nodePortRange = options.nodePortRange ?? DEFAULT_NODE_PORT_RANGE;
-		this.kubeConfig = new k8s.KubeConfig(this);
+		this.kubeConfig = new k8s.KubeConfig({
+			clock: this.clock,
+			etcd: this.etcd,
+			serviceCIDR: this.serviceCIDR,
+			nodePortRange: this.nodePortRange,
+			exec: (namespace, podName, containerName, argv) =>
+				this.exec(namespace, podName, containerName, argv),
+		});
 		this.api = new KubeClient(this.kubeConfig);
 		this.network = new ClusterNetwork();
 

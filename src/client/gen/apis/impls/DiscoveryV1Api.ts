@@ -1,5 +1,5 @@
-import { Cluster } from "../../../../cluster";
 import { EndpointSliceStore } from "../../../../cluster/storage";
+import type { Etcd } from "../../../../cluster/etcd";
 import { NotFound } from "../../../errors";
 import { filterByLabels, parseLabelSelector } from "../../../labels";
 import { V1EndpointSlice, V1EndpointSliceList, V1Status } from "../../models";
@@ -15,11 +15,15 @@ import type {
 import { rethrowApiErrors } from "./errors";
 import { listResourceVersionOptions, validateDeletePreconditions } from "./resource-version";
 
+export interface DiscoveryV1ApiOptions {
+	etcd: Etcd;
+}
+
 export class DiscoveryV1Api implements DiscoveryV1ApiInterface {
 	private readonly endpointSlices: EndpointSliceStore;
 
-	public constructor(cluster: Cluster) {
-		this.endpointSlices = new EndpointSliceStore(cluster.etcd);
+	public constructor(options: DiscoveryV1ApiOptions) {
+		this.endpointSlices = new EndpointSliceStore(options.etcd);
 	}
 
 	public async createNamespacedEndpointSlice(
