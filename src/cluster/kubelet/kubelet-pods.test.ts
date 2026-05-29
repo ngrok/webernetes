@@ -1,7 +1,6 @@
 import { expect, it } from "vitest";
 import type { V1Container, V1ContainerStatus, V1Pod } from "../../client";
 import * as context from "../../go/context";
-import { Cluster } from "../cluster";
 import { browser } from "../../test/describe";
 import {
 	buildContainerID,
@@ -9,6 +8,7 @@ import {
 	type PodStatus as PodRuntimeStatus,
 	type Status as ContainerRuntimeStatus,
 } from "./container";
+import { newTestKubelet } from "./kubelet-test-helpers";
 
 interface ConvertToAPIContainerStatusesUpstreamTestCase {
 	name: string;
@@ -250,7 +250,7 @@ browser.describe("generatePodHostNameAndDomain", () => {
 		},
 	])(
 		"$name",
-		({
+		async ({
 			podName,
 			podHostname,
 			podSubdomain,
@@ -259,7 +259,7 @@ browser.describe("generatePodHostNameAndDomain", () => {
 			expectedDomain,
 			errorContains,
 		}) => {
-			const cluster = new Cluster();
+			const testKubelet = newTestKubelet();
 			const pod: V1Pod = {
 				metadata: {
 					name: podName,
@@ -273,12 +273,16 @@ browser.describe("generatePodHostNameAndDomain", () => {
 				},
 			};
 
-			const [hostname, domain, err] = cluster.servers[0].kubelet.generatePodHostNameAndDomain(pod);
+			try {
+				const [hostname, domain, err] = testKubelet.kubelet.generatePodHostNameAndDomain(pod);
 
-			expect(err?.message ?? "").toContain(errorContains ?? "");
-			expect(err === undefined).toBe(errorContains === undefined);
-			expect(hostname).toBe(expectedHostname);
-			expect(domain).toBe(expectedDomain);
+				expect(err?.message ?? "").toContain(errorContains ?? "");
+				expect(err === undefined).toBe(errorContains === undefined);
+				expect(hostname).toBe(expectedHostname);
+				expect(domain).toBe(expectedDomain);
+			} finally {
+				await testKubelet.cleanup();
+			}
 		},
 	);
 });
@@ -577,9 +581,9 @@ browser.describe("convertToAPIContainerStatuses", () => {
 
 	it.each(upstreamTestCases)("$name", async (tc) => {
 		const tCtx = context.background();
-		const cluster = new Cluster();
+		const testKubelet = newTestKubelet();
 		try {
-			const containerStatuses = cluster.servers[0].kubelet.convertToAPIContainerStatuses(
+			const containerStatuses = testKubelet.kubelet.convertToAPIContainerStatuses(
 				tCtx,
 				tc.pod,
 				tc.currentStatus,
@@ -600,16 +604,16 @@ browser.describe("convertToAPIContainerStatuses", () => {
 
 			expect(containerStatuses).toEqual(tc.expected);
 		} finally {
-			await cluster.close();
+			await testKubelet.cleanup();
 		}
 	});
 
 	it("throws when image volume status conversion is requested", async () => {
 		const tCtx = context.background();
-		const cluster = new Cluster();
+		const testKubelet = newTestKubelet();
 		try {
 			expect(() =>
-				cluster.servers[0].kubelet.convertToAPIContainerStatuses(
+				testKubelet.kubelet.convertToAPIContainerStatuses(
 					tCtx,
 					{ spec: desiredState },
 					{
@@ -630,7 +634,7 @@ browser.describe("convertToAPIContainerStatuses", () => {
 				),
 			).toThrow("image volume status conversion is not implemented");
 		} finally {
-			await cluster.close();
+			await testKubelet.cleanup();
 		}
 	});
 });
@@ -789,11 +793,10 @@ browser.describe("convertToAPIContainerStatusesForResources", () => {
 
 	it.each(testCases)("$tdesc", async ({ state, oldStatus, expected }) => {
 		const tCtx = context.background();
-		const cluster = new Cluster();
-		const kubelet = cluster.servers[0].kubelet;
+		const testKubelet = newTestKubelet();
 
 		try {
-			const cStatuses = kubelet.convertToAPIContainerStatuses(
+			const cStatuses = testKubelet.kubelet.convertToAPIContainerStatuses(
 				tCtx,
 				testPod,
 				testPodStatus(state ?? "Running"),
@@ -807,7 +810,7 @@ browser.describe("convertToAPIContainerStatusesForResources", () => {
 
 			expect(cStatuses[0]).toEqual(expected);
 		} finally {
-			await cluster.close();
+			await testKubelet.cleanup();
 		}
 	});
 });
