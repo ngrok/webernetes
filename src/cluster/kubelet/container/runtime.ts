@@ -186,6 +186,7 @@ export class ContainerID {
 		return this.type === "" && this.id === "";
 	}
 
+	// Models kubernetes/pkg/kubelet/container/runtime.go ContainerID.String.
 	toString(): string {
 		return `${this.type}://${this.id}`;
 	}
