@@ -37,7 +37,17 @@ browser.describe("generatePodHostNameAndDomain", () => {
 			errorContains: undefined,
 		},
 		{
-			name: "HostnameOverride - overrides all",
+			name: "Custom Hostname and Subdomain - uses both",
+			podName: "test-pod",
+			podHostname: "custom-hostname",
+			podSubdomain: "my-subdomain",
+			podHostnameOverride: undefined,
+			expectedHostname: "custom-hostname",
+			expectedDomain: "my-subdomain.default.svc.cluster.local",
+			errorContains: undefined,
+		},
+		{
+			name: "HostnameOverride - enabled - overrides all",
 			podName: "test-pod",
 			podHostname: "custom-hostname",
 			podSubdomain: "my-subdomain",
