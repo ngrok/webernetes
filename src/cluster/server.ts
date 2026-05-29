@@ -6,9 +6,11 @@ import {
 	type RuntimeDiagnostics,
 	type RuntimeService,
 } from "./cri";
-import { Kubelet } from "./kubelet";
+import { EventRecorder } from "./events";
+import { Kubelet, newMainKubelet, NoopPodStartupSLIObserver } from "./kubelet";
 import type { Runtime as KubeletRuntime } from "./kubelet/container";
 import type { KubeletConfiguration } from "./kubelet/apis/config";
+import { PodListWatchClient } from "./kubelet/config";
 import * as context from "../go/context";
 
 export interface ServerOptions {
@@ -49,7 +51,28 @@ export class Server {
 		this.imageService = this.runtime;
 		this.runtimeDiagnostics = this.runtime;
 		this.network = cluster.network;
-		this.kubelet = new Kubelet(this, options.kubeletConfiguration);
+		this.kubelet = newMainKubelet(
+			cluster.ctx,
+			options.kubeletConfiguration,
+			{
+				kubeClient: cluster.api,
+				podListWatchClient: new PodListWatchClient(cluster.kubeConfig),
+				recorder: new EventRecorder({
+					api: cluster.api.corev1,
+					clock: cluster.clock,
+					component: "kubelet",
+					host: this.name,
+				}),
+				podStartupLatencyTracker: new NoopPodStartupSLIObserver(),
+				remoteRuntimeService: this.runtimeService,
+				remoteImageService: this.imageService,
+				network: this.network,
+				clock: cluster.clock,
+			},
+			this.name,
+			this.name,
+		);
+		this.containerRuntime = this.kubelet.containerRuntime;
 	}
 
 	async boot(ctx: context.Context) {
