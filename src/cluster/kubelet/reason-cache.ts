@@ -24,7 +24,7 @@ export class ReasonCache {
 	}
 
 	// Models kubernetes/pkg/kubelet/reason_cache.go ReasonCache.add.
-	private add(uid: string, name: string, reason: Error, message: string): void {
+	add(uid: string, name: string, reason: Error, message: string): void {
 		this.cache.add(this.composeKey(uid, name), { err: reason, message });
 	}
 

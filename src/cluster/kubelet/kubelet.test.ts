@@ -1,0 +1,304 @@
+import { expect, it } from "vitest";
+import type { V1Container, V1ContainerStatus, V1Pod } from "../../client";
+import * as context from "../../go/context";
+import { browser } from "../../test/describe";
+import {
+	ContainerID,
+	type PodStatus as PodRuntimeStatus,
+	type Status as ContainerRuntimeStatus,
+} from "./container";
+import { newTestKubelet } from "./kubelet-test-helpers";
+import { newReasonCache } from "./reason-cache";
+
+function containerStatusZero(cName: string): V1ContainerStatus {
+	return {
+		name: cName,
+		image: "",
+		imageID: "",
+		ready: false,
+		restartCount: 0,
+	};
+}
+
+function runtimeStatus(
+	name: string,
+	options: Partial<ContainerRuntimeStatus> = {},
+): ContainerRuntimeStatus {
+	return {
+		name,
+		id: options.id ?? new ContainerID("", ""),
+		image: options.image ?? "",
+		imageID: options.imageID ?? "",
+		imageRef: options.imageRef ?? "",
+		imageRuntimeHandler: options.imageRuntimeHandler ?? "",
+		state: options.state ?? "Running",
+		createdAt: options.createdAt ?? 0,
+		startedAt: options.startedAt,
+		finishedAt: options.finishedAt,
+		exitCode: options.exitCode,
+		hash: options.hash ?? 0,
+		restartCount: options.restartCount ?? 0,
+		reason: options.reason,
+		message: options.message,
+	};
+}
+
+function verifyContainerStatuses(
+	statuses: V1ContainerStatus[] | undefined,
+	expectedState: Record<string, NonNullable<V1ContainerStatus["state"]>>,
+	expectedLastTerminationState: Record<string, NonNullable<V1ContainerStatus["lastState"]>>,
+): void {
+	for (const status of statuses ?? []) {
+		expect(status.state).toEqual(expectedState[status.name]);
+		expect(status.lastState).toEqual(expectedLastTerminationState[status.name]);
+	}
+}
+
+// Models kubernetes/pkg/kubelet/kubelet_test.go podWithUIDNameNs.
+function podWithUIDNameNs(uid: string, name: string, namespace: string): V1Pod {
+	return {
+		metadata: {
+			uid,
+			name,
+			namespace,
+			annotations: {},
+		},
+	};
+}
+
+// Models kubernetes/pkg/kubelet/kubelet_test.go TestGenerateAPIPodStatusWithReasonCache.
+browser.describe("generateAPIPodStatusWithReasonCache", () => {
+	const testTimestamp = new Date(123456789000 + 987);
+	const testErrorReason = new Error("test-error");
+	const emptyContainerID = new ContainerID("", "").toString();
+	const pod = podWithUIDNameNs("12345678", "foo", "new");
+	pod.spec = { restartPolicy: "OnFailure", containers: [] };
+	const podStatus: PodRuntimeStatus = {
+		id: pod.metadata?.uid ?? "",
+		name: pod.metadata?.name ?? "",
+		namespace: pod.metadata?.namespace ?? "",
+		timestamp: new Date(0),
+		containerStatuses: [],
+		sandboxStatuses: [],
+		ips: [],
+	};
+
+	const tests: Array<{
+		containers: V1Container[];
+		statuses: ContainerRuntimeStatus[];
+		reasons: Record<string, Error>;
+		oldStatuses: V1ContainerStatus[];
+		expectedState: Record<string, NonNullable<V1ContainerStatus["state"]>>;
+		expectedLastTerminationState: Record<string, NonNullable<V1ContainerStatus["lastState"]>>;
+	}> = [
+		{
+			containers: [{ name: "without-old-record" }, { name: "with-old-record" }],
+			statuses: [],
+			reasons: {},
+			oldStatuses: [
+				{
+					...containerStatusZero("with-old-record"),
+					lastState: { terminated: { exitCode: 0 } },
+				},
+			],
+			expectedState: {
+				"without-old-record": { waiting: { reason: "ContainerCreating" } },
+				"with-old-record": { waiting: { reason: "ContainerCreating" } },
+			},
+			expectedLastTerminationState: {
+				"with-old-record": { terminated: { exitCode: 0 } },
+			},
+		},
+		{
+			containers: [{ name: "running" }],
+			statuses: [
+				runtimeStatus("running", {
+					state: "Running",
+					startedAt: testTimestamp.getTime(),
+				}),
+				runtimeStatus("running", {
+					state: "Exited",
+					exitCode: 1,
+				}),
+			],
+			reasons: {},
+			oldStatuses: [],
+			expectedState: {
+				running: { running: { startedAt: testTimestamp } },
+			},
+			expectedLastTerminationState: {
+				running: { terminated: { exitCode: 1, containerID: emptyContainerID } },
+			},
+		},
+		{
+			containers: [{ name: "without-reason" }, { name: "with-reason" }, { name: "succeed" }],
+			statuses: [
+				runtimeStatus("without-reason", { state: "Exited", exitCode: 1 }),
+				runtimeStatus("with-reason", { state: "Exited", exitCode: 2 }),
+				runtimeStatus("without-reason", { state: "Exited", exitCode: 3 }),
+				runtimeStatus("with-reason", { state: "Exited", exitCode: 4 }),
+				runtimeStatus("succeed", { state: "Exited", exitCode: 0 }),
+				runtimeStatus("succeed", { state: "Exited", exitCode: 5 }),
+			],
+			reasons: { "with-reason": testErrorReason, succeed: testErrorReason },
+			oldStatuses: [],
+			expectedState: {
+				"without-reason": { terminated: { exitCode: 1, containerID: emptyContainerID } },
+				"with-reason": { waiting: { reason: testErrorReason.message, message: "" } },
+				succeed: { terminated: { exitCode: 0, containerID: emptyContainerID } },
+			},
+			expectedLastTerminationState: {
+				"without-reason": { terminated: { exitCode: 3, containerID: emptyContainerID } },
+				"with-reason": { terminated: { exitCode: 2, containerID: emptyContainerID } },
+				succeed: { terminated: { exitCode: 5, containerID: emptyContainerID } },
+			},
+		},
+		{
+			containers: [{ name: "unknown" }],
+			statuses: [
+				runtimeStatus("unknown", { state: "Unknown" }),
+				runtimeStatus("unknown", { state: "Running" }),
+			],
+			reasons: {},
+			oldStatuses: [
+				{
+					...containerStatusZero("unknown"),
+					state: { running: {} },
+				},
+			],
+			expectedState: {
+				unknown: {
+					terminated: {
+						exitCode: 137,
+						message: "The container could not be located when the pod was terminated",
+						reason: "ContainerStatusUnknown",
+					},
+				},
+			},
+			expectedLastTerminationState: {
+				unknown: { running: {} },
+			},
+		},
+	];
+
+	it("generates api pod status with reason cache", async () => {
+		expect.hasAssertions();
+		const tCtx = context.background();
+		const testKubelet = newTestKubelet();
+		const kubelet = testKubelet.kubelet;
+		try {
+			for (const test of tests) {
+				kubelet.reasonCache = newReasonCache();
+				for (const [name, reason] of Object.entries(test.reasons)) {
+					kubelet.reasonCache.add(pod.metadata?.uid ?? "", name, reason, "");
+				}
+				pod.spec = { ...pod.spec, containers: test.containers };
+				pod.status = { containerStatuses: test.oldStatuses };
+				podStatus.containerStatuses = test.statuses;
+				const apiStatus = kubelet.generateAPIPodStatus(tCtx, pod, podStatus, false);
+
+				verifyContainerStatuses(
+					apiStatus.containerStatuses,
+					test.expectedState,
+					test.expectedLastTerminationState,
+				);
+			}
+
+			// The upstream test repeats the same table for init containers. The
+			// simulator does not currently support init containers, so that loop is
+			// intentionally not copied here.
+		} finally {
+			await testKubelet.cleanup();
+		}
+	});
+});
+
+// Models kubernetes/pkg/kubelet/kubelet_test.go TestGenerateAPIPodStatusWithDifferentRestartPolicies.
+browser.describe("generateAPIPodStatusWithDifferentRestartPolicies", () => {
+	const testErrorReason = new Error("test-error");
+	const emptyContainerID = new ContainerID("", "").toString();
+	const containers: V1Container[] = [{ name: "succeed" }, { name: "failed" }];
+	const pod = podWithUIDNameNs("12345678", "foo", "new");
+	const podStatus: PodRuntimeStatus = {
+		id: pod.metadata?.uid ?? "",
+		name: pod.metadata?.name ?? "",
+		namespace: pod.metadata?.namespace ?? "",
+		timestamp: new Date(0),
+		containerStatuses: [
+			runtimeStatus("succeed", { state: "Exited", exitCode: 0 }),
+			runtimeStatus("failed", { state: "Exited", exitCode: 1 }),
+			runtimeStatus("succeed", { state: "Exited", exitCode: 2 }),
+			runtimeStatus("failed", { state: "Exited", exitCode: 3 }),
+		],
+		sandboxStatuses: [],
+		ips: [],
+	};
+
+	const tests: Array<{
+		restartPolicy: NonNullable<V1Pod["spec"]>["restartPolicy"];
+		expectedState: Record<string, NonNullable<V1ContainerStatus["state"]>>;
+		expectedLastTerminationState: Record<string, NonNullable<V1ContainerStatus["lastState"]>>;
+	}> = [
+		{
+			restartPolicy: "Never" as const,
+			expectedState: {
+				succeed: { terminated: { exitCode: 0, containerID: emptyContainerID } },
+				failed: { terminated: { exitCode: 1, containerID: emptyContainerID } },
+			},
+			expectedLastTerminationState: {
+				succeed: { terminated: { exitCode: 2, containerID: emptyContainerID } },
+				failed: { terminated: { exitCode: 3, containerID: emptyContainerID } },
+			},
+		},
+		{
+			restartPolicy: "OnFailure" as const,
+			expectedState: {
+				succeed: { terminated: { exitCode: 0, containerID: emptyContainerID } },
+				failed: { waiting: { reason: testErrorReason.message, message: "" } },
+			},
+			expectedLastTerminationState: {
+				succeed: { terminated: { exitCode: 2, containerID: emptyContainerID } },
+				failed: { terminated: { exitCode: 1, containerID: emptyContainerID } },
+			},
+		},
+		{
+			restartPolicy: "Always" as const,
+			expectedState: {
+				succeed: { waiting: { reason: testErrorReason.message, message: "" } },
+				failed: { waiting: { reason: testErrorReason.message, message: "" } },
+			},
+			expectedLastTerminationState: {
+				succeed: { terminated: { exitCode: 0, containerID: emptyContainerID } },
+				failed: { terminated: { exitCode: 1, containerID: emptyContainerID } },
+			},
+		},
+	];
+
+	it("generates api pod status with different restart policies", async () => {
+		expect.hasAssertions();
+		const tCtx = context.background();
+		const testKubelet = newTestKubelet();
+		const kubelet = testKubelet.kubelet;
+		try {
+			kubelet.reasonCache.add(pod.metadata?.uid ?? "", "succeed", testErrorReason, "");
+			kubelet.reasonCache.add(pod.metadata?.uid ?? "", "failed", testErrorReason, "");
+			for (const test of tests) {
+				pod.spec = { containers, restartPolicy: test.restartPolicy };
+				const apiStatus = kubelet.generateAPIPodStatus(tCtx, pod, podStatus, false);
+
+				verifyContainerStatuses(
+					apiStatus.containerStatuses,
+					test.expectedState,
+					test.expectedLastTerminationState,
+				);
+				pod.spec = { containers: [] };
+
+				// The upstream test repeats each case for init containers. The simulator
+				// does not currently support init containers, so that half is
+				// intentionally not copied here.
+			}
+		} finally {
+			await testKubelet.cleanup();
+		}
+	});
+});
