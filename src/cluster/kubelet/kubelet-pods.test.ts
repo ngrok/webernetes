@@ -1,5 +1,11 @@
 import { expect, it } from "vitest";
-import type { V1Container, V1ContainerStatus, V1Pod } from "../../client";
+import type {
+	V1Container,
+	V1ContainerStatus,
+	V1Pod,
+	V1PodCondition,
+	V1PodStatus,
+} from "../../client";
 import * as context from "../../go/context";
 import { browser } from "../../test/describe";
 import {
@@ -95,6 +101,13 @@ function waitingWithLastTerminationUnknown(cName: string, restartCount: number):
 	};
 }
 
+function ready(status: V1ContainerStatus): V1ContainerStatus {
+	return {
+		...status,
+		ready: true,
+	};
+}
+
 function withRestartCount(status: V1ContainerStatus, restartCount: number): V1ContainerStatus {
 	return {
 		...status,
@@ -133,6 +146,45 @@ function runtimeStatus(
 		reason: options.reason,
 		message: options.message,
 	};
+}
+
+function stripUndefined<T>(value: T): T {
+	if (Array.isArray(value)) {
+		return value.map((item) => stripUndefined(item)) as T;
+	}
+	if (value instanceof Date || value === null || typeof value !== "object") {
+		return value;
+	}
+	const result: Record<string, unknown> = {};
+	for (const [key, child] of Object.entries(value)) {
+		if (child !== undefined) {
+			result[key] = stripUndefined(child);
+		}
+	}
+	return result as T;
+}
+
+// Models kubernetes/pkg/kubelet/kubelet_pods_test.go findContainerStatusByName.
+function findAPIContainerStatusByName(
+	status: V1PodStatus,
+	name: string,
+): V1ContainerStatus | undefined {
+	for (const containerStatus of status.initContainerStatuses ?? []) {
+		if (containerStatus.name === name) {
+			return containerStatus;
+		}
+	}
+	for (const containerStatus of status.containerStatuses ?? []) {
+		if (containerStatus.name === name) {
+			return containerStatus;
+		}
+	}
+	for (const containerStatus of status.ephemeralContainerStatuses ?? []) {
+		if (containerStatus.name === name) {
+			return containerStatus;
+		}
+	}
+	return undefined;
 }
 
 // Models kubernetes/pkg/kubelet/kubelet_pods_test.go TestGeneratePodHostNameAndDomain.
@@ -809,6 +861,424 @@ browser.describe("convertToAPIContainerStatusesForResources", () => {
 			);
 
 			expect(cStatuses[0]).toEqual(expected);
+		} finally {
+			await testKubelet.cleanup();
+		}
+	});
+});
+
+// Models kubernetes/pkg/kubelet/kubelet_pods_test.go Test_generateAPIPodStatus.
+browser.describe("generateAPIPodStatus", () => {
+	const now = new Date("2026-01-02T03:04:05.000Z");
+	const desiredState = {
+		nodeName: "machine",
+		containers: [{ name: "containerA" }, { name: "containerB" }],
+		restartPolicy: "Always" as const,
+	};
+	const sandboxReadyStatus: PodRuntimeStatus = {
+		id: "",
+		name: "",
+		namespace: "",
+		ips: [],
+		containerStatuses: [],
+		sandboxStatuses: [
+			{
+				network: { ip: "10.0.0.10" },
+				metadata: {
+					name: "",
+					namespace: "",
+					uid: "",
+					attempt: 0,
+				},
+				state: "Ready",
+				id: "",
+				createdAt: 0,
+				labels: {},
+				annotations: {},
+			},
+		],
+		timestamp: new Date(0),
+	};
+	const tests: Array<{
+		name: string;
+		pod: V1Pod;
+		currentStatus: PodRuntimeStatus;
+		unreadyContainer?: string[];
+		previousStatus: V1PodStatus;
+		isPodTerminal?: boolean;
+		expected: V1PodStatus;
+		expectedPodDisruptionCondition?: V1PodCondition;
+		expectedPodReadyToStartContainersCondition: V1PodCondition;
+	}> = [
+		{
+			name: "pod disruption condition is copied over and the phase is set to failed when deleted",
+			pod: {
+				metadata: { uid: "123456", name: "my-pod", deletionTimestamp: now },
+				spec: desiredState,
+				status: {
+					containerStatuses: [runningState("containerA"), runningState("containerB")],
+					conditions: [
+						{
+							type: "DisruptionTarget",
+							status: "True",
+							lastTransitionTime: now,
+						},
+					],
+				},
+			},
+			currentStatus: sandboxReadyStatus,
+			previousStatus: {
+				containerStatuses: [runningState("containerA"), runningState("containerB")],
+				conditions: [
+					{
+						type: "DisruptionTarget",
+						status: "True",
+						lastTransitionTime: now,
+					},
+				],
+			},
+			isPodTerminal: true,
+			expected: {
+				phase: "Failed",
+				hostIP: "127.0.0.1",
+				hostIPs: [{ ip: "127.0.0.1" }, { ip: "::1" }],
+				qosClass: "BestEffort",
+				conditions: [
+					{ type: "Initialized", observedGeneration: 0, status: "True" },
+					{ type: "Ready", observedGeneration: 0, status: "False", reason: "PodFailed" },
+					{
+						type: "ContainersReady",
+						observedGeneration: 0,
+						status: "False",
+						reason: "PodFailed",
+					},
+					{ type: "PodScheduled", observedGeneration: 0, status: "True" },
+				],
+				containerStatuses: [
+					ready(waitingWithLastTerminationUnknown("containerA", 0)),
+					ready(waitingWithLastTerminationUnknown("containerB", 0)),
+				],
+			},
+			expectedPodDisruptionCondition: {
+				type: "DisruptionTarget",
+				status: "True",
+				lastTransitionTime: now,
+			},
+			expectedPodReadyToStartContainersCondition: {
+				type: "PodReadyToStartContainers",
+				observedGeneration: 0,
+				status: "True",
+			},
+		},
+		{
+			name: "current status ready, with previous statuses and deletion",
+			pod: {
+				metadata: { uid: "123456", name: "my-pod", deletionTimestamp: now },
+				spec: desiredState,
+				status: {
+					containerStatuses: [runningState("containerA"), runningState("containerB")],
+				},
+			},
+			currentStatus: sandboxReadyStatus,
+			previousStatus: {
+				containerStatuses: [runningState("containerA"), runningState("containerB")],
+			},
+			expected: {
+				phase: "Running",
+				hostIP: "127.0.0.1",
+				hostIPs: [{ ip: "127.0.0.1" }, { ip: "::1" }],
+				qosClass: "BestEffort",
+				conditions: [
+					{ type: "Initialized", observedGeneration: 0, status: "True" },
+					{ type: "Ready", observedGeneration: 0, status: "True" },
+					{ type: "ContainersReady", observedGeneration: 0, status: "True" },
+					{ type: "PodScheduled", observedGeneration: 0, status: "True" },
+				],
+				containerStatuses: [
+					ready(waitingWithLastTerminationUnknown("containerA", 0)),
+					ready(waitingWithLastTerminationUnknown("containerB", 0)),
+				],
+			},
+			expectedPodReadyToStartContainersCondition: {
+				type: "PodReadyToStartContainers",
+				observedGeneration: 0,
+				status: "True",
+			},
+		},
+		{
+			name: "current status ready, with previous statuses and no deletion",
+			pod: {
+				metadata: { uid: "123456", name: "my-pod" },
+				spec: desiredState,
+				status: {
+					containerStatuses: [runningState("containerA"), runningState("containerB")],
+				},
+			},
+			currentStatus: sandboxReadyStatus,
+			previousStatus: {
+				containerStatuses: [runningState("containerA"), runningState("containerB")],
+			},
+			expected: {
+				phase: "Running",
+				hostIP: "127.0.0.1",
+				hostIPs: [{ ip: "127.0.0.1" }, { ip: "::1" }],
+				qosClass: "BestEffort",
+				conditions: [
+					{ type: "Initialized", observedGeneration: 0, status: "True" },
+					{ type: "Ready", observedGeneration: 0, status: "True" },
+					{ type: "ContainersReady", observedGeneration: 0, status: "True" },
+					{ type: "PodScheduled", observedGeneration: 0, status: "True" },
+				],
+				containerStatuses: [
+					ready(waitingWithLastTerminationUnknown("containerA", 1)),
+					ready(waitingWithLastTerminationUnknown("containerB", 1)),
+				],
+			},
+			expectedPodReadyToStartContainersCondition: {
+				type: "PodReadyToStartContainers",
+				observedGeneration: 0,
+				status: "True",
+			},
+		},
+		{
+			name: "terminal phase cannot be changed (apiserver previous is succeeded)",
+			pod: {
+				metadata: { uid: "123456", name: "my-pod" },
+				spec: desiredState,
+				status: {
+					phase: "Succeeded",
+					containerStatuses: [runningState("containerA"), runningState("containerB")],
+				},
+			},
+			currentStatus: {
+				id: "",
+				name: "",
+				namespace: "",
+				ips: [],
+				containerStatuses: [],
+				sandboxStatuses: [],
+				timestamp: new Date(0),
+			},
+			previousStatus: {
+				containerStatuses: [runningState("containerA"), runningState("containerB")],
+			},
+			expected: {
+				phase: "Succeeded",
+				hostIP: "127.0.0.1",
+				hostIPs: [{ ip: "127.0.0.1" }, { ip: "::1" }],
+				qosClass: "BestEffort",
+				conditions: [
+					{
+						type: "Initialized",
+						observedGeneration: 0,
+						status: "True",
+						reason: "PodCompleted",
+					},
+					{
+						type: "Ready",
+						observedGeneration: 0,
+						status: "False",
+						reason: "PodCompleted",
+					},
+					{
+						type: "ContainersReady",
+						observedGeneration: 0,
+						status: "False",
+						reason: "PodCompleted",
+					},
+					{ type: "PodScheduled", observedGeneration: 0, status: "True" },
+				],
+				containerStatuses: [
+					ready(waitingWithLastTerminationUnknown("containerA", 1)),
+					ready(waitingWithLastTerminationUnknown("containerB", 1)),
+				],
+			},
+			expectedPodReadyToStartContainersCondition: {
+				type: "PodReadyToStartContainers",
+				observedGeneration: 0,
+				status: "False",
+			},
+		},
+		{
+			name: "terminal phase from previous status must remain terminal, restartAlways",
+			pod: {
+				metadata: { uid: "123456", name: "my-pod" },
+				spec: desiredState,
+				status: {
+					phase: "Running",
+					containerStatuses: [runningState("containerA"), runningState("containerB")],
+				},
+			},
+			currentStatus: {
+				id: "",
+				name: "",
+				namespace: "",
+				ips: [],
+				containerStatuses: [],
+				sandboxStatuses: [],
+				timestamp: new Date(0),
+			},
+			previousStatus: {
+				phase: "Succeeded",
+				containerStatuses: [runningState("containerA"), runningState("containerB")],
+				// Reason and message should be preserved
+				reason: "Test",
+				message: "test",
+			},
+			expected: {
+				phase: "Succeeded",
+				reason: "Test",
+				message: "test",
+				hostIP: "127.0.0.1",
+				hostIPs: [{ ip: "127.0.0.1" }, { ip: "::1" }],
+				qosClass: "BestEffort",
+				conditions: [
+					{
+						type: "Initialized",
+						observedGeneration: 0,
+						status: "True",
+						reason: "PodCompleted",
+					},
+					{
+						type: "Ready",
+						observedGeneration: 0,
+						status: "False",
+						reason: "PodCompleted",
+					},
+					{
+						type: "ContainersReady",
+						observedGeneration: 0,
+						status: "False",
+						reason: "PodCompleted",
+					},
+					{ type: "PodScheduled", observedGeneration: 0, status: "True" },
+				],
+				containerStatuses: [
+					ready(waitingWithLastTerminationUnknown("containerA", 1)),
+					ready(waitingWithLastTerminationUnknown("containerB", 1)),
+				],
+			},
+			expectedPodReadyToStartContainersCondition: {
+				type: "PodReadyToStartContainers",
+				observedGeneration: 0,
+				status: "False",
+			},
+		},
+		{
+			name: "terminal phase from previous status must remain terminal, restartNever",
+			pod: {
+				metadata: { uid: "123456", name: "my-pod" },
+				spec: {
+					nodeName: "machine",
+					containers: [{ name: "containerA" }, { name: "containerB" }],
+					restartPolicy: "Never",
+				},
+				status: {
+					phase: "Running",
+					containerStatuses: [runningState("containerA"), runningState("containerB")],
+				},
+			},
+			currentStatus: {
+				id: "",
+				name: "",
+				namespace: "",
+				ips: [],
+				containerStatuses: [],
+				sandboxStatuses: [],
+				timestamp: new Date(0),
+			},
+			previousStatus: {
+				phase: "Succeeded",
+				containerStatuses: [succeededState("containerA"), succeededState("containerB")],
+				// Reason and message should be preserved
+				reason: "Test",
+				message: "test",
+			},
+			expected: {
+				phase: "Succeeded",
+				reason: "Test",
+				message: "test",
+				hostIP: "127.0.0.1",
+				hostIPs: [{ ip: "127.0.0.1" }, { ip: "::1" }],
+				qosClass: "BestEffort",
+				conditions: [
+					{
+						type: "Initialized",
+						observedGeneration: 0,
+						status: "True",
+						reason: "PodCompleted",
+					},
+					{
+						type: "Ready",
+						observedGeneration: 0,
+						status: "False",
+						reason: "PodCompleted",
+					},
+					{
+						type: "ContainersReady",
+						observedGeneration: 0,
+						status: "False",
+						reason: "PodCompleted",
+					},
+					{ type: "PodScheduled", observedGeneration: 0, status: "True" },
+				],
+				containerStatuses: [
+					ready(succeededState("containerA")),
+					ready(succeededState("containerB")),
+				],
+			},
+			expectedPodReadyToStartContainersCondition: {
+				type: "PodReadyToStartContainers",
+				observedGeneration: 0,
+				status: "False",
+			},
+		},
+	];
+
+	it.each(tests)("$name", async (test) => {
+		const tCtx = context.background();
+		const testKubelet = newTestKubelet(false);
+		try {
+			const kl = testKubelet.kubelet;
+			await kl.statusManager.setPodStatus(test.pod, test.previousStatus);
+			for (const name of test.unreadyContainer ?? []) {
+				const containerStatus = findAPIContainerStatusByName(test.expected, name);
+				if (!containerStatus) {
+					throw new Error(`container status ${name} not found`);
+				}
+				await kl.readinessManager.set(
+					buildContainerID("", containerStatus.containerID ?? ""),
+					"failure",
+					test.pod,
+				);
+			}
+			const actual = kl.generateAPIPodStatus(
+				tCtx,
+				test.pod,
+				test.currentStatus,
+				test.isPodTerminal ?? false,
+			);
+			const expected = structuredClone(test.expected);
+			expected.conditions = [
+				test.expectedPodReadyToStartContainersCondition,
+				...(expected.conditions ?? []),
+			];
+			if (test.expectedPodDisruptionCondition) {
+				expected.conditions = [test.expectedPodDisruptionCondition, ...expected.conditions];
+			}
+
+			expect(
+				stripUndefined({
+					phase: actual.phase,
+					reason: actual.reason,
+					message: actual.message,
+					hostIP: actual.hostIP,
+					hostIPs: actual.hostIPs,
+					qosClass: actual.qosClass,
+					conditions: actual.conditions,
+					containerStatuses: actual.containerStatuses,
+				}),
+			).toEqual(expected);
 		} finally {
 			await testKubelet.cleanup();
 		}
