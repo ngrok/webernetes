@@ -303,6 +303,7 @@ export function newTestKubeletWithImageList(
 	);
 	const fakePodWorkers = new FakePodWorkers(kubelet.podCache, kubelet.syncPod.bind(kubelet));
 	kubelet.podWorkers = fakePodWorkers;
+	kubelet.runtimeState.setNetworkState(undefined);
 
 	// The simulator does not model the upstream test kubelet's host filesystem,
 	// volume/CSI/DRA, cadvisor/stats, allocation/resizing, eviction/shutdown,

@@ -1,3 +1,5 @@
+import { newAggregate } from "../../../apimachinery/pkg/util/errors/errors";
+
 // Models kubernetes/pkg/kubelet/container/sync_result.go BackoffError.
 export class BackoffError extends Error {
 	constructor(
@@ -118,9 +120,6 @@ export class PodSyncResult {
 				),
 			);
 		}
-		if (errlist.length === 0) {
-			return undefined;
-		}
-		return new AggregateError(errlist);
+		return newAggregate(errlist);
 	}
 }

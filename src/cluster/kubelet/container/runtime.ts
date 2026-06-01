@@ -69,6 +69,10 @@ export class RuntimeHandler {
 		this.supportsUserNamespaces = options.supportsUserNamespaces ?? false;
 	}
 
+	clone(): RuntimeHandler {
+		return new RuntimeHandler(structuredClone(this));
+	}
+
 	toString(): string {
 		return `Name=${this.name} SupportsRecursiveReadOnlyMounts: ${this.supportsRecursiveReadOnlyMounts} SupportsUserNamespaces: ${this.supportsUserNamespaces}`;
 	}
