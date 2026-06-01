@@ -4,9 +4,11 @@ import * as context from "../../go/context";
 import { browser } from "../../test/describe";
 import {
 	ContainerID,
+	type Pod as RuntimePod,
 	type PodStatus as PodRuntimeStatus,
 	type Status as ContainerRuntimeStatus,
 } from "./container";
+import type { FakePod } from "./container/testing";
 import { newTestKubelet } from "./kubelet-test-helpers";
 import { newReasonCache } from "./reason-cache";
 
@@ -65,6 +67,64 @@ function podWithUIDNameNs(uid: string, name: string, namespace: string): V1Pod {
 		},
 	};
 }
+
+function runtimePodWithContainer(uid: string, name: string, namespace: string): RuntimePod {
+	return {
+		id: uid,
+		name,
+		namespace,
+		createdAt: 0,
+		timestamp: new Date(0),
+		containers: [
+			{
+				id: new ContainerID("test", "bar"),
+				name: "bar",
+				image: "",
+				imageID: "",
+				imageRef: "",
+				imageRuntimeHandler: "",
+				hash: 0,
+				state: "Running",
+				podSandboxID: "sandbox",
+				createdAt: 0,
+			},
+		],
+		sandboxes: [],
+	};
+}
+
+// Models kubernetes/pkg/kubelet/kubelet_test.go TestHandlePodRemovesWhenSourcesAreReady.
+browser.describe("handlePodRemovesWhenSourcesAreReady", () => {
+	it("gates pod worker deletion on source readiness", async () => {
+		expect.hasAssertions();
+		const tCtx = context.background();
+		let ready = false;
+		const testKubelet = newTestKubelet(false);
+		const kubelet = testKubelet.kubelet;
+		try {
+			const fakePod: FakePod = {
+				pod: runtimePodWithContainer("1", "foo", "new"),
+				netnsPath: "",
+			};
+			testKubelet.fakeRuntime.podList = [fakePod];
+			const pods = [podWithUIDNameNs("1", "foo", "new")];
+			kubelet.sourcesReady = { addSource: () => {}, allReady: () => ready };
+
+			await kubelet.handlePodRemoves(tCtx, pods);
+			await Promise.resolve();
+
+			expect(testKubelet.fakePodWorkers.triggeredDeletion).toEqual([]);
+
+			ready = true;
+			await kubelet.handlePodRemoves(tCtx, pods);
+			await Promise.resolve();
+
+			expect(testKubelet.fakePodWorkers.triggeredDeletion).toEqual(["1"]);
+		} finally {
+			await testKubelet.cleanup();
+		}
+	});
+});
 
 // Models kubernetes/pkg/kubelet/kubelet_test.go TestGenerateAPIPodStatusWithReasonCache.
 browser.describe("generateAPIPodStatusWithReasonCache", () => {
@@ -184,7 +244,7 @@ browser.describe("generateAPIPodStatusWithReasonCache", () => {
 	it("generates api pod status with reason cache", async () => {
 		expect.hasAssertions();
 		const tCtx = context.background();
-		const testKubelet = newTestKubelet();
+		const testKubelet = newTestKubelet(false);
 		const kubelet = testKubelet.kubelet;
 		try {
 			for (const test of tests) {
@@ -277,7 +337,7 @@ browser.describe("generateAPIPodStatusWithDifferentRestartPolicies", () => {
 	it("generates api pod status with different restart policies", async () => {
 		expect.hasAssertions();
 		const tCtx = context.background();
-		const testKubelet = newTestKubelet();
+		const testKubelet = newTestKubelet(false);
 		const kubelet = testKubelet.kubelet;
 		try {
 			kubelet.reasonCache.add(pod.metadata?.uid ?? "", "succeed", testErrorReason, "");
