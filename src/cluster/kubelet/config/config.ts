@@ -22,6 +22,35 @@ export interface PodStartupSLIObserver {
 	observedPodOnWatch(pod: V1Pod, when: Date): void;
 }
 
+// Models kubernetes/pkg/kubelet/config/sources.go SourcesReadyFn.
+export type SourcesReadyFn = (sourcesSeen: Set<string>) => boolean;
+
+// Models kubernetes/pkg/kubelet/config/sources.go SourcesReady.
+export interface SourcesReady {
+	addSource(source: string): void;
+	allReady(): boolean;
+}
+
+// Models kubernetes/pkg/kubelet/config/sources.go NewSourcesReady.
+export function newSourcesReady(sourcesReadyFn: SourcesReadyFn): SourcesReady {
+	return new SourcesImpl(sourcesReadyFn);
+}
+
+// Models kubernetes/pkg/kubelet/config/sources.go sourcesImpl.
+class SourcesImpl implements SourcesReady {
+	private readonly sourcesSeen = new Set<string>();
+
+	constructor(private readonly sourcesReadyFn: SourcesReadyFn) {}
+
+	addSource(source: string): void {
+		this.sourcesSeen.add(source);
+	}
+
+	allReady(): boolean {
+		return this.sourcesReadyFn(new Set(this.sourcesSeen));
+	}
+}
+
 // Models kubernetes/pkg/kubelet/config/config.go sourceUpdate.
 export interface SourceUpdate {
 	pods: V1Pod[];
