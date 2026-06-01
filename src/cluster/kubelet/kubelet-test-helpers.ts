@@ -195,6 +195,7 @@ export class FakeQueue implements WorkQueue {
 export interface TestKubelet {
 	kubelet: Kubelet;
 	fakeRuntime: FakeRuntime;
+	fakePodWorkers: FakePodWorkers;
 	fakeKubeClient: KubeClient;
 	fakeClock: Clock;
 	cleanup(): Promise<void>;
@@ -300,6 +301,8 @@ export function newTestKubeletWithImageList(
 		testKubeletHostname,
 		testKubeletHostname,
 	);
+	const fakePodWorkers = new FakePodWorkers(kubelet.podCache, kubelet.syncPod.bind(kubelet));
+	kubelet.podWorkers = fakePodWorkers;
 
 	// The simulator does not model the upstream test kubelet's host filesystem,
 	// volume/CSI/DRA, cadvisor/stats, allocation/resizing, eviction/shutdown,
@@ -307,6 +310,7 @@ export function newTestKubeletWithImageList(
 	return {
 		kubelet,
 		fakeRuntime,
+		fakePodWorkers,
 		fakeKubeClient,
 		fakeClock,
 		async cleanup() {

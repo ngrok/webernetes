@@ -86,7 +86,7 @@ interface PodSyncer {
 	syncPod(
 		ctx: context.Context,
 		updateType: SyncPodType,
-		pod: V1Pod,
+		pod: V1Pod | undefined,
 		mirrorPod: V1Pod | undefined,
 		podStatus: PodRuntimeStatus,
 	): Promise<SyncPodResult>;

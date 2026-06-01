@@ -75,6 +75,9 @@ function createPodWorkers(): [
 		1000,
 		{
 			async syncPod(_ctx, updateType, pod) {
+				if (!pod) {
+					throw new Error("syncPod requires a pod");
+				}
 				const uid = pod.metadata?.uid ?? "";
 				record(uid, { name: pod.metadata?.name ?? "", updateType });
 				return [false, undefined, undefined];
