@@ -1,4 +1,4 @@
-import type { V1Pod } from "../../client";
+import type { V1Pod, V1PodSpec } from "../../client";
 import { KubeConfig } from "../../client";
 import { Clock } from "../../clock";
 import * as context from "../../go/context";
@@ -36,6 +36,30 @@ export type SyncPodFnType = (
 	mirrorPod: V1Pod | undefined,
 	podStatus: PodRuntimeStatus,
 ) => Promise<SyncPodResult>;
+
+// Models kubernetes/pkg/kubelet/kubelet_test.go podWithUIDNameNs.
+export function podWithUIDNameNs(uid: string, name: string, namespace: string): V1Pod {
+	return {
+		metadata: {
+			uid,
+			name,
+			namespace,
+			annotations: {},
+		},
+	};
+}
+
+// Models kubernetes/pkg/kubelet/kubelet_test.go podWithUIDNameNsSpec.
+export function podWithUIDNameNsSpec(
+	uid: string,
+	name: string,
+	namespace: string,
+	spec: V1PodSpec,
+): V1Pod {
+	const pod = podWithUIDNameNs(uid, name, namespace);
+	pod.spec = spec;
+	return pod;
+}
 
 // Models kubernetes/pkg/kubelet/pod_workers_test.go fakePodWorkers.
 export class FakePodWorkers implements PodWorkers {

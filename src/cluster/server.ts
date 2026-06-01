@@ -16,12 +16,14 @@ import * as context from "../go/context";
 export interface ServerOptions {
 	name: string;
 	podCIDR: string;
+	ipAddresses: string[];
 	kubeletConfiguration: KubeletConfiguration;
 }
 
 export class Server {
 	name: string;
 	podCIDR: string;
+	ipAddresses: string[];
 	cluster: Cluster;
 	kubelet: Kubelet;
 	runtime: InProcessRuntimeService;
@@ -37,6 +39,7 @@ export class Server {
 	public constructor(cluster: Cluster, options: ServerOptions) {
 		this.name = options.name;
 		this.podCIDR = options.podCIDR;
+		this.ipAddresses = [...options.ipAddresses];
 		this.cluster = cluster;
 		this.runtime = new InProcessRuntimeService({
 			ctx: cluster.ctx,
@@ -68,6 +71,7 @@ export class Server {
 				remoteImageService: this.imageService,
 				network: this.network,
 				clock: cluster.clock,
+				nodeIPs: this.ipAddresses,
 			},
 			this.name,
 			this.name,

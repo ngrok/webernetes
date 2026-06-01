@@ -4,6 +4,25 @@ import { browser } from "../test/describe";
 import { waitFor } from "../test/wait";
 import { Cluster } from "./cluster";
 
+browser.describe("Cluster nodes", () => {
+	it("publishes server IP addresses on node status", async () => {
+		const cluster = new Cluster();
+		await cluster.init();
+		try {
+			const nodes = await cluster.api.corev1.listNode();
+			for (const server of cluster.servers) {
+				const node = nodes.items.find((candidate) => candidate.metadata?.name === server.name);
+				expect(node?.status?.addresses).toEqual([
+					...server.ipAddresses.map((address) => ({ type: "InternalIP", address })),
+					{ type: "Hostname", address: server.name },
+				]);
+			}
+		} finally {
+			await cluster.close();
+		}
+	});
+});
+
 browser.describe("Cluster shutdown", () => {
 	it("canceling cluster context exits kubelet loops without closing probe result channels", async () => {
 		const cluster = new Cluster();

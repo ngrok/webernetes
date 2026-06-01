@@ -92,16 +92,19 @@ export class Cluster {
 			new Server(this, {
 				name: "node-1",
 				podCIDR: "10.0.0.0/24",
+				ipAddresses: ["192.168.1.1"],
 				kubeletConfiguration,
 			}),
 			new Server(this, {
 				name: "node-2",
 				podCIDR: "10.0.1.0/24",
+				ipAddresses: ["192.168.1.2"],
 				kubeletConfiguration,
 			}),
 			new Server(this, {
 				name: "node-3",
 				podCIDR: "10.0.2.0/24",
+				ipAddresses: ["192.168.1.3"],
 				kubeletConfiguration,
 			}),
 		];
@@ -171,6 +174,12 @@ export class Cluster {
 					metadata: { name: server.name },
 					spec: {
 						podCIDR: server.podCIDR,
+					},
+					status: {
+						addresses: [
+							...server.ipAddresses.map((address) => ({ type: "InternalIP", address })),
+							{ type: "Hostname", address: server.name },
+						],
 					},
 				},
 			});
