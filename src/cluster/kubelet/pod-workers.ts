@@ -52,16 +52,17 @@ interface PodWork {
 	options: UpdatePodOptions;
 }
 
-interface SyncPodResult {
-	isTerminal: boolean;
-	postSync?: () => void;
-	syncError?: Error;
-}
+// Models kubernetes/pkg/kubelet/pod_workers.go syncPodFnType return values.
+export type SyncPodResult = [
+	isTerminal: boolean,
+	postSync: (() => void) | undefined,
+	syncError: Error | undefined,
+];
 
 // Internal zero-value shape used by podSyncStatus.activeUpdate. Go can allocate
 // &UpdatePodOptions{} with zero-valued fields; external simulator callers still
 // provide the required UpdatePodOptions fields enforced by TypeScript.
-type ActiveUpdatePodOptions = Omit<UpdatePodOptions, "updateType" | "startTime"> & {
+export type ActiveUpdatePodOptions = Omit<UpdatePodOptions, "updateType" | "startTime"> & {
 	updateType: SyncPodType;
 	startTime: Date;
 };
@@ -87,7 +88,7 @@ interface PodSyncer {
 }
 
 // Models kubernetes/pkg/kubelet/pod_workers.go podSyncStatus.
-interface PodSyncStatus {
+export interface PodSyncStatus {
 	cancelFn?: context.CancelFunc;
 	fullname: string;
 	working: boolean;
@@ -121,6 +122,21 @@ function isTerminated(status: PodSyncStatus): boolean {
 // Models kubernetes/pkg/kubelet/pod_workers.go podSyncStatus.IsFinished.
 function isFinished(status: PodSyncStatus): boolean {
 	return status.finished;
+}
+
+// Models kubernetes/pkg/kubelet/pod_workers.go podSyncStatus.IsTerminationStarted.
+function isTerminationStarted(status: PodSyncStatus): boolean {
+	return status.startedTerminating;
+}
+
+// Models kubernetes/pkg/kubelet/pod_workers.go podSyncStatus.IsDeleted.
+function isDeleted(status: PodSyncStatus): boolean {
+	return status.deleted;
+}
+
+// Models kubernetes/pkg/kubelet/pod_workers.go podSyncStatus.IsEvicted.
+function isEvicted(status: PodSyncStatus): boolean {
+	return status.evicted;
 }
 
 // Models kubernetes/pkg/kubelet/pod_workers.go podSyncStatus.IsStarted.
@@ -160,7 +176,7 @@ export class PodWorkers {
 	// Simulator-only bookkeeping: Kubernetes starts pod workers as goroutines
 	// and does not retain handles, but async close() needs promises it can await.
 	private readonly workerRuns = new Map<string, Promise<void>>();
-	private readonly podSyncStatuses = new Map<string, PodSyncStatus>();
+	readonly podSyncStatuses = new Map<string, PodSyncStatus>();
 	private podsSynced = false;
 	private stopped = false;
 
@@ -174,7 +190,7 @@ export class PodWorkers {
 	) {}
 
 	// Models kubernetes/pkg/kubelet/pod_workers.go UpdatePod.
-	updatePod(ctx: context.Context, options: UpdatePodOptions): void {
+	async updatePod(ctx: context.Context, options: UpdatePodOptions): Promise<void> {
 		if (this.stopped || ctx.err()) {
 			return;
 		}
@@ -235,8 +251,8 @@ export class PodWorkers {
 				options.pod &&
 				(options.pod.status?.phase === "Failed" || options.pod.status?.phase === "Succeeded")
 			) {
-				const statusCache = this.podCache.get(uid);
-				if (!statusCache.error && isPodStatusCacheTerminal(statusCache.status)) {
+				const [cachedPodStatus, statusCacheErr] = await this.podCache.get(uid);
+				if (!statusCacheErr && isPodStatusCacheTerminal(cachedPodStatus)) {
 					status = {
 						terminatingAt: now,
 						terminatedAt: now,
@@ -478,15 +494,15 @@ export class PodWorkers {
 						if (!update.options.pod) {
 							throw new Error("pod status requested without pod");
 						}
-						const result = await this.podCache.getNewerThanWithContext(
+						const [podStatusResult, podStatusErr] = await this.podCache.getNewerThan(
 							ctx,
 							podUIDFromPod(update.options.pod),
 							lastSyncTime,
 						);
-						if (result.error) {
-							throw result.error;
+						if (podStatusErr) {
+							throw podStatusErr;
 						}
-						status = result.status;
+						status = podStatusResult;
 						break;
 				}
 
@@ -534,18 +550,18 @@ export class PodWorkers {
 						{
 							const pod = requiredPod(update);
 							const podStatus = requiredStatus(status);
-							const result = await this.podSyncer.syncPod(
+							const [terminal, syncPostSync, syncErr] = await this.podSyncer.syncPod(
 								ctx,
 								update.options.updateType,
 								pod,
 								update.options.mirrorPod,
 								podStatus,
 							);
-							isTerminal = result.isTerminal;
-							if (result.syncError) {
-								err = result.syncError;
+							isTerminal = terminal;
+							if (syncErr) {
+								err = syncErr;
 							} else {
-								postSync = result.postSync;
+								postSync = syncPostSync;
 							}
 						}
 						break;
@@ -733,6 +749,42 @@ export class PodWorkers {
 			workers.set(uid, sync);
 		}
 		return workers;
+	}
+
+	// Models kubernetes/pkg/kubelet/pod_workers.go IsPodTerminationRequested.
+	isPodTerminationRequested(uid: string): boolean {
+		const status = this.podSyncStatuses.get(uid);
+		if (status) {
+			return isTerminationRequested(status);
+		}
+		return false;
+	}
+
+	// Models kubernetes/pkg/kubelet/pod_workers.go ShouldPodContainersBeTerminating.
+	shouldPodContainersBeTerminating(uid: string): boolean {
+		const status = this.podSyncStatuses.get(uid);
+		if (status) {
+			return isTerminationStarted(status);
+		}
+		return this.podsSynced;
+	}
+
+	// Models kubernetes/pkg/kubelet/pod_workers.go CouldHaveRunningContainers.
+	couldHaveRunningContainers(uid: string): boolean {
+		const status = this.podSyncStatuses.get(uid);
+		if (status) {
+			return !isTerminated(status);
+		}
+		return !this.podsSynced;
+	}
+
+	// Models kubernetes/pkg/kubelet/pod_workers.go ShouldPodContentBeRemoved.
+	shouldPodContentBeRemoved(uid: string): boolean {
+		const status = this.podSyncStatuses.get(uid);
+		if (status) {
+			return isEvicted(status) || (isDeleted(status) && isTerminated(status));
+		}
+		return this.podsSynced;
 	}
 
 	// Models kubernetes/pkg/kubelet/pod_workers.go removeTerminatedWorker.
