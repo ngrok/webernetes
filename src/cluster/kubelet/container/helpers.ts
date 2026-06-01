@@ -1,4 +1,10 @@
-import type { V1Container, V1LifecycleHandler, V1Pod, V1PodStatus } from "../../../client";
+import type {
+	V1Container,
+	V1LifecycleHandler,
+	V1Pod,
+	V1PodSpec,
+	V1PodStatus,
+} from "../../../client";
 import type * as context from "../../../go/context";
 import * as fnv from "../../../fnv";
 import * as hashutil from "../../../hashutil";
@@ -227,6 +233,28 @@ export function makePortMappings(container: V1Container): PortMapping[] {
 		names.add(name);
 	}
 	return ports;
+}
+
+// Models kubernetes/pkg/kubelet/container/helpers.go HasAnyRegularContainerStarted.
+export function hasAnyRegularContainerStarted(
+	spec: V1PodSpec | undefined,
+	statuses: NonNullable<V1PodStatus["containerStatuses"]> | undefined,
+): boolean {
+	if ((statuses?.length ?? 0) === 0) {
+		return false;
+	}
+
+	const containerNames = new Set((spec?.containers ?? []).map((container) => container.name));
+	for (const status of statuses ?? []) {
+		if (!containerNames.has(status.name)) {
+			continue;
+		}
+		if (status.state?.running !== undefined || status.state?.terminated !== undefined) {
+			return true;
+		}
+	}
+
+	return false;
 }
 
 function isIPv6String(value: string): boolean {

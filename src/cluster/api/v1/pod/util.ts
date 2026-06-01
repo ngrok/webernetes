@@ -88,6 +88,14 @@ export function getContainersReadyCondition(status: V1PodStatus): V1PodCondition
 	return getPodCondition(status, "ContainersReady");
 }
 
+// Models kubernetes/pkg/api/v1/pod/util.go IsRestartableInitContainer.
+export function isRestartableInitContainer(initContainer: V1Container | undefined): boolean {
+	if (initContainer?.restartPolicy === undefined) {
+		return false;
+	}
+	return initContainer.restartPolicy === "Always";
+}
+
 // Models kubernetes/pkg/api/v1/pod/util.go UpdatePodCondition.
 export function updatePodCondition(
 	clock: Clock,

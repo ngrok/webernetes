@@ -1,7 +1,15 @@
-import type { V1ContainerStatus, V1Pod, V1PodCondition, V1PodStatus } from "../../../client";
+import type {
+	V1Container,
+	V1ContainerStatus,
+	V1Pod,
+	V1PodCondition,
+	V1PodStatus,
+} from "../../../client";
 import * as podutil from "../../api/v1/pod/util";
 import type { PodStatus as PodRuntimeStatus } from "../container";
 import { allContainersRestartCleanedUp, shouldAllContainersRestart } from "../container";
+import { hasAnyRegularContainerStarted } from "../container/helpers";
+import { podSandboxChanged } from "../kuberuntime/util/util";
 
 // Models kubernetes/pkg/kubelet/status/generate.go GenerateContainersReadyCondition.
 export function generateContainersReadyCondition(
@@ -25,6 +33,21 @@ export function generateContainersReadyCondition(
 
 	const unknownContainers: string[] = [];
 	const unreadyContainers: string[] = [];
+
+	for (const container of pod.spec?.initContainers ?? []) {
+		if (!podutil.isRestartableInitContainer(container)) {
+			continue;
+		}
+
+		const containerStatus = podutil.getContainerStatus(containerStatuses, container.name);
+		if (containerStatus) {
+			if (!containerStatus.ready) {
+				unreadyContainers.push(container.name);
+			}
+		} else {
+			unknownContainers.push(container.name);
+		}
+	}
 
 	for (const container of pod.spec?.containers ?? []) {
 		const containerStatus = podutil.getContainerStatus(containerStatuses, container.name);
@@ -147,6 +170,147 @@ export function generatePodReadyCondition(
 			"Ready",
 		),
 		status: "True",
+	};
+}
+
+// Models kubernetes/pkg/kubelet/status/generate.go isInitContainerInitialized.
+function isInitContainerInitialized(
+	initContainer: V1Container,
+	containerStatus: V1ContainerStatus,
+): boolean {
+	if (podutil.isRestartableInitContainer(initContainer)) {
+		if (!containerStatus.started) {
+			return false;
+		}
+	} else if (!containerStatus.ready) {
+		return false;
+	}
+	return true;
+}
+
+// Models kubernetes/pkg/kubelet/status/generate.go GeneratePodInitializedCondition.
+export function generatePodInitializedCondition(
+	pod: V1Pod,
+	oldPodStatus: V1PodStatus,
+	containerStatuses: V1ContainerStatus[] | undefined,
+	podPhase: V1PodStatus["phase"],
+): V1PodCondition {
+	if (containerStatuses === undefined && (pod.spec?.initContainers?.length ?? 0) > 0) {
+		return {
+			type: "Initialized",
+			observedGeneration: podutil.calculatePodConditionObservedGeneration(
+				oldPodStatus,
+				pod.metadata?.generation ?? 0,
+				"Initialized",
+			),
+			status: "False",
+			reason: "UnknownContainerStatuses",
+		};
+	}
+
+	const unknownContainers: string[] = [];
+	const incompleteContainers: string[] = [];
+	for (const container of pod.spec?.initContainers ?? []) {
+		const containerStatus = podutil.getContainerStatus(containerStatuses, container.name);
+		if (!containerStatus) {
+			unknownContainers.push(container.name);
+			continue;
+		}
+		if (!isInitContainerInitialized(container, containerStatus)) {
+			incompleteContainers.push(container.name);
+		}
+	}
+
+	if (podPhase === "Succeeded" && unknownContainers.length === 0) {
+		return {
+			type: "Initialized",
+			observedGeneration: podutil.calculatePodConditionObservedGeneration(
+				oldPodStatus,
+				pod.metadata?.generation ?? 0,
+				"Initialized",
+			),
+			status: "True",
+			reason: "PodCompleted",
+		};
+	}
+
+	if (hasAnyRegularContainerStarted(pod.spec, containerStatuses)) {
+		return {
+			type: "Initialized",
+			observedGeneration: podutil.calculatePodConditionObservedGeneration(
+				oldPodStatus,
+				pod.metadata?.generation ?? 0,
+				"Initialized",
+			),
+			status: "True",
+		};
+	}
+
+	const unreadyMessages: string[] = [];
+	if (unknownContainers.length > 0) {
+		unreadyMessages.push(
+			`containers with unknown status: ${formatContainerNames(unknownContainers)}`,
+		);
+	}
+	if (incompleteContainers.length > 0) {
+		unreadyMessages.push(
+			`containers with incomplete status: ${formatContainerNames(incompleteContainers)}`,
+		);
+	}
+	const unreadyMessage = unreadyMessages.join(", ");
+	if (unreadyMessage !== "") {
+		for (const cond of oldPodStatus.conditions ?? []) {
+			if (cond.type === "Initialized" && cond.status === "True") {
+				return {
+					type: "Initialized",
+					observedGeneration: podutil.calculatePodConditionObservedGeneration(
+						oldPodStatus,
+						pod.metadata?.generation ?? 0,
+						"Initialized",
+					),
+					status: "True",
+				};
+			}
+		}
+		return {
+			type: "Initialized",
+			observedGeneration: podutil.calculatePodConditionObservedGeneration(
+				oldPodStatus,
+				pod.metadata?.generation ?? 0,
+				"Initialized",
+			),
+			status: "False",
+			reason: "ContainersNotInitialized",
+			message: unreadyMessage,
+		};
+	}
+
+	return {
+		type: "Initialized",
+		observedGeneration: podutil.calculatePodConditionObservedGeneration(
+			oldPodStatus,
+			pod.metadata?.generation ?? 0,
+			"Initialized",
+		),
+		status: "True",
+	};
+}
+
+// Models kubernetes/pkg/kubelet/status/generate.go GeneratePodReadyToStartContainersCondition.
+export function generatePodReadyToStartContainersCondition(
+	pod: V1Pod,
+	oldPodStatus: V1PodStatus,
+	podStatus: PodRuntimeStatus,
+): V1PodCondition {
+	const [newSandboxNeeded] = podSandboxChanged(pod, podStatus);
+	return {
+		type: "PodReadyToStartContainers",
+		observedGeneration: podutil.calculatePodConditionObservedGeneration(
+			oldPodStatus,
+			pod.metadata?.generation ?? 0,
+			"PodReadyToStartContainers",
+		),
+		status: newSandboxNeeded ? "False" : "True",
 	};
 }
 
