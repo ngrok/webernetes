@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import type { V1Container, V1ContainerStatus, V1Pod, V1PodSpec } from "../../client";
+import type { V1Container, V1ContainerStatus, V1Pod } from "../../client";
 import * as context from "../../go/context";
 import { browser } from "../../test/describe";
 import {
@@ -11,7 +11,12 @@ import {
 	newSyncResult,
 } from "./container";
 import type { FakePod } from "./container/testing";
-import { FakePodWorkers, newTestKubelet } from "./kubelet-test-helpers";
+import {
+	FakePodWorkers,
+	newTestKubelet,
+	podWithUIDNameNs,
+	podWithUIDNameNsSpec,
+} from "./kubelet-test-helpers";
 import { newReasonCache } from "./reason-cache";
 import { configSourceAnnotationKey } from "./types";
 
@@ -59,30 +64,6 @@ function verifyContainerStatuses(
 	}
 }
 
-// Models kubernetes/pkg/kubelet/kubelet_test.go podWithUIDNameNs.
-function podWithUIDNameNs(uid: string, name: string, namespace: string): V1Pod {
-	return {
-		metadata: {
-			uid,
-			name,
-			namespace,
-			annotations: {},
-		},
-	};
-}
-
-// Models kubernetes/pkg/kubelet/kubelet_test.go podWithUIDNameNsSpec.
-function podWithUIDNameNsSpec(
-	uid: string,
-	name: string,
-	namespace: string,
-	spec: V1PodSpec,
-): V1Pod {
-	const pod = podWithUIDNameNs(uid, name, namespace);
-	pod.spec = spec;
-	return pod;
-}
-
 function runtimePodWithContainer(uid: string, name: string, namespace: string): RuntimePod {
 	return {
 		id: uid,
@@ -107,6 +88,56 @@ function runtimePodWithContainer(uid: string, name: string, namespace: string): 
 		sandboxes: [],
 	};
 }
+
+// Models kubernetes/pkg/kubelet/kubelet_test.go TestGenerateAPIPodStatusWithSortedContainers.
+browser.describe("generateAPIPodStatusWithSortedContainers", () => {
+	it("sorts container statuses by pod spec container order", async () => {
+		const tCtx = context.background();
+		const testKubelet = newTestKubelet(false);
+		try {
+			const kubelet = testKubelet.kubelet;
+			const numContainers = 10;
+			const expectedOrder: string[] = [];
+			const cStatuses: ContainerRuntimeStatus[] = [];
+			const specContainerList: V1Container[] = [];
+			for (let i = 0; i < numContainers; i++) {
+				const id = `${i}`;
+				const containerName = `${id}container`;
+				expectedOrder.push(containerName);
+				const cStatus = runtimeStatus(containerName, {
+					id: new ContainerID("test", id),
+				});
+				if (i % 2 === 0) {
+					cStatuses.push(cStatus);
+				} else {
+					cStatuses.unshift(cStatus);
+				}
+				specContainerList.push({ name: containerName });
+			}
+			const pod = podWithUIDNameNsSpec("uid1", "foo", "test", {
+				containers: specContainerList,
+			});
+			const status: PodRuntimeStatus = {
+				id: pod.metadata?.uid ?? "",
+				name: pod.metadata?.name ?? "",
+				namespace: pod.metadata?.namespace ?? "",
+				containerStatuses: cStatuses,
+				sandboxStatuses: [],
+				ips: [],
+				timestamp: new Date(0),
+			};
+
+			for (let i = 0; i < 5; i++) {
+				const apiStatus = kubelet.generateAPIPodStatus(tCtx, pod, status, false);
+				expect(apiStatus.containerStatuses?.map((container) => container.name)).toEqual(
+					expectedOrder,
+				);
+			}
+		} finally {
+			await testKubelet.cleanup();
+		}
+	});
+});
 
 // Models kubernetes/pkg/kubelet/kubelet_test.go TestHandlePodRemovesWhenSourcesAreReady.
 browser.describe("handlePodRemovesWhenSourcesAreReady", () => {
