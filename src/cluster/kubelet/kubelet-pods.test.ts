@@ -14,7 +14,7 @@ import {
 	type PodStatus as PodRuntimeStatus,
 	type Status as ContainerRuntimeStatus,
 } from "./container";
-import { newTestKubelet } from "./kubelet-test-helpers";
+import { newTestKubelet, podWithUIDNameNs } from "./kubelet-test-helpers";
 
 interface ConvertToAPIContainerStatusesUpstreamTestCase {
 	name: string;
@@ -1460,6 +1460,148 @@ browser.describe("generateAPIPodStatus", () => {
 					containerStatuses: actual.containerStatuses,
 				}),
 			).toEqual(expected);
+		} finally {
+			await testKubelet.cleanup();
+		}
+	});
+
+	// Simulator only test
+	it("does not copy unrelated fields from the old pod status", async () => {
+		const tCtx = context.background();
+		const testKubelet = newTestKubelet(false);
+		try {
+			const pod: V1Pod = {
+				metadata: { uid: "123456", name: "my-pod" },
+				spec: { containers: [{ name: "containerA" }] },
+			};
+			await testKubelet.kubelet.statusManager.setPodStatus(pod, {
+				containerStatuses: [runningState("containerA")],
+				startTime: now,
+				nominatedNodeName: "old-node",
+			});
+
+			const actual = testKubelet.kubelet.generateAPIPodStatus(
+				tCtx,
+				pod,
+				{
+					...sandboxReadyStatus,
+					ips: ["10.0.0.1"],
+				},
+				false,
+			);
+
+			expect(actual.podIP).toBe("10.0.0.1");
+			expect(actual.podIPs).toEqual([{ ip: "10.0.0.1" }]);
+			expect(actual.startTime).toBeUndefined();
+			expect(actual.nominatedNodeName).toBeUndefined();
+		} finally {
+			await testKubelet.cleanup();
+		}
+	});
+});
+
+// Models kubernetes/pkg/kubelet/kubelet_pods_test.go TestGenerateAPIPodStatusPodIPs.
+browser.describe("generateAPIPodStatusPodIPs", () => {
+	const tests: Array<{
+		name: string;
+		nodeIP: string;
+		criPodIPs: string[];
+		podIPs: Array<{ ip: string }>;
+	}> = [
+		{
+			name: "Simple",
+			nodeIP: "",
+			criPodIPs: ["10.0.0.1"],
+			podIPs: [{ ip: "10.0.0.1" }],
+		},
+		{
+			name: "Dual-stack",
+			nodeIP: "",
+			criPodIPs: ["10.0.0.1", "fd01::1234"],
+			podIPs: [{ ip: "10.0.0.1" }, { ip: "fd01::1234" }],
+		},
+		{
+			name: "Dual-stack with explicit node IP",
+			nodeIP: "192.168.1.1",
+			criPodIPs: ["10.0.0.1", "fd01::1234"],
+			podIPs: [{ ip: "10.0.0.1" }, { ip: "fd01::1234" }],
+		},
+		{
+			name: "Dual-stack with CRI returning wrong family first",
+			nodeIP: "",
+			criPodIPs: ["fd01::1234", "10.0.0.1"],
+			podIPs: [{ ip: "10.0.0.1" }, { ip: "fd01::1234" }],
+		},
+		{
+			name: "Dual-stack with explicit node IP with CRI returning wrong family first",
+			nodeIP: "192.168.1.1",
+			criPodIPs: ["fd01::1234", "10.0.0.1"],
+			podIPs: [{ ip: "10.0.0.1" }, { ip: "fd01::1234" }],
+		},
+		{
+			name: "Dual-stack with IPv6 node IP",
+			nodeIP: "fd00::5678",
+			criPodIPs: ["10.0.0.1", "fd01::1234"],
+			podIPs: [{ ip: "fd01::1234" }, { ip: "10.0.0.1" }],
+		},
+		{
+			name: "Dual-stack with IPv6 node IP, other CRI order",
+			nodeIP: "fd00::5678",
+			criPodIPs: ["fd01::1234", "10.0.0.1"],
+			podIPs: [{ ip: "fd01::1234" }, { ip: "10.0.0.1" }],
+		},
+		{
+			name: "No Pod IP matching Node IP",
+			nodeIP: "fd00::5678",
+			criPodIPs: ["10.0.0.1"],
+			podIPs: [{ ip: "10.0.0.1" }],
+		},
+		{
+			name: "No Pod IP matching (unspecified) Node IP",
+			nodeIP: "",
+			criPodIPs: ["fd01::1234"],
+			podIPs: [{ ip: "fd01::1234" }],
+		},
+		{
+			name: "Multiple IPv4 IPs",
+			nodeIP: "",
+			criPodIPs: ["10.0.0.1", "10.0.0.2", "10.0.0.3"],
+			podIPs: [{ ip: "10.0.0.1" }],
+		},
+		{
+			name: "Multiple Dual-Stack IPs",
+			nodeIP: "",
+			criPodIPs: ["10.0.0.1", "10.0.0.2", "fd01::1234", "10.0.0.3", "fd01::5678"],
+			podIPs: [{ ip: "10.0.0.1" }, { ip: "fd01::1234" }],
+		},
+	];
+
+	it.each(tests)("$name", async (test) => {
+		const tCtx = context.background();
+		const testKubelet = newTestKubelet(false);
+		try {
+			const kl = testKubelet.kubelet;
+			if (test.nodeIP !== "") {
+				kl.nodeIPs = [test.nodeIP];
+			}
+			const pod = podWithUIDNameNs("12345", "test-pod", "test-namespace");
+			const status = kl.generateAPIPodStatus(
+				tCtx,
+				pod,
+				{
+					id: pod.metadata?.uid ?? "",
+					name: pod.metadata?.name ?? "",
+					namespace: pod.metadata?.namespace ?? "",
+					ips: test.criPodIPs,
+					containerStatuses: [],
+					sandboxStatuses: [],
+					timestamp: new Date(0),
+				},
+				false,
+			);
+
+			expect(status.podIPs).toEqual(test.podIPs);
+			expect(status.podIP).toBe(status.podIPs?.[0]?.ip);
 		} finally {
 			await testKubelet.cleanup();
 		}
