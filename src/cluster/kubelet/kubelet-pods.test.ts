@@ -101,10 +101,42 @@ function waitingWithLastTerminationUnknown(cName: string, restartCount: number):
 	};
 }
 
+function waitingState(cName: string): V1ContainerStatus {
+	return waitingStateWithReason(cName, "");
+}
+
+function waitingStateWithReason(cName: string, reason: string): V1ContainerStatus {
+	return {
+		...containerStatusZero(cName),
+		state: { waiting: { reason } },
+	};
+}
+
+function runningStateWithStartedAt(cName: string, startedAt: Date): V1ContainerStatus {
+	return {
+		...containerStatusZero(cName),
+		state: { running: { startedAt } },
+	};
+}
+
 function ready(status: V1ContainerStatus): V1ContainerStatus {
 	return {
 		...status,
 		ready: true,
+	};
+}
+
+function withID(status: V1ContainerStatus, id: string): V1ContainerStatus {
+	return {
+		...status,
+		containerID: id,
+	};
+}
+
+function withResources(status: V1ContainerStatus): V1ContainerStatus {
+	return {
+		...status,
+		resources: {},
 	};
 }
 
@@ -747,10 +779,10 @@ browser.describe("convertToAPIContainerStatusesForResources", () => {
 		oldStatus: V1ContainerStatus;
 		expected: V1ContainerStatus;
 	}> = [
-		// Upstream also asserts AllocatedResources and Resources in this table. The
-		// simulator does not model kubelet container resource allocation, so these
-		// cases preserve the upstream status-transition and ImageID/ImageRef shape
-		// while omitting resource/allocation expectations.
+		// Upstream also asserts AllocatedResources in this table. The simulator
+		// does not model kubelet container resource allocation, so these cases
+		// preserve the upstream status-transition, ImageID/ImageRef, and zero-value
+		// Resources shape while omitting allocation expectations.
 		{
 			tdesc: "BestEffortQoSPod",
 			oldStatus: {
@@ -769,6 +801,7 @@ browser.describe("convertToAPIContainerStatusesForResources", () => {
 				imageID: "img1234",
 				ready: false,
 				restartCount: 0,
+				resources: {},
 				state: { running: { startedAt: nowTime } },
 			},
 		},
@@ -789,6 +822,7 @@ browser.describe("convertToAPIContainerStatusesForResources", () => {
 				imageID: "img1234",
 				ready: false,
 				restartCount: 0,
+				resources: {},
 				state: { waiting: {} },
 			},
 		},
@@ -809,6 +843,7 @@ browser.describe("convertToAPIContainerStatusesForResources", () => {
 				imageID: "img1234",
 				ready: false,
 				restartCount: 0,
+				resources: {},
 				state: { running: { startedAt: nowTime } },
 			},
 		},
@@ -831,6 +866,7 @@ browser.describe("convertToAPIContainerStatusesForResources", () => {
 				imageID: "img1234",
 				ready: false,
 				restartCount: 0,
+				resources: {},
 				state: {
 					terminated: {
 						containerID: testContainerID.toString(),
@@ -1231,6 +1267,151 @@ browser.describe("generateAPIPodStatus", () => {
 				type: "PodReadyToStartContainers",
 				observedGeneration: 0,
 				status: "False",
+			},
+		},
+		{
+			name: "running can revert to pending",
+			pod: {
+				metadata: { uid: "123456", name: "my-pod" },
+				spec: desiredState,
+				status: {
+					phase: "Running",
+					containerStatuses: [runningState("containerA"), runningState("containerB")],
+				},
+			},
+			currentStatus: sandboxReadyStatus,
+			previousStatus: {
+				containerStatuses: [waitingState("containerA"), waitingState("containerB")],
+			},
+			expected: {
+				phase: "Pending",
+				hostIP: "127.0.0.1",
+				hostIPs: [{ ip: "127.0.0.1" }, { ip: "::1" }],
+				qosClass: "BestEffort",
+				conditions: [
+					{ type: "Initialized", observedGeneration: 0, status: "True" },
+					{ type: "Ready", observedGeneration: 0, status: "True" },
+					{ type: "ContainersReady", observedGeneration: 0, status: "True" },
+					{ type: "PodScheduled", observedGeneration: 0, status: "True" },
+				],
+				containerStatuses: [
+					ready(waitingStateWithReason("containerA", "ContainerCreating")),
+					ready(waitingStateWithReason("containerB", "ContainerCreating")),
+				],
+			},
+			expectedPodReadyToStartContainersCondition: {
+				type: "PodReadyToStartContainers",
+				observedGeneration: 0,
+				status: "True",
+			},
+		},
+		{
+			name: "reason and message are preserved when phase doesn't change",
+			pod: {
+				metadata: { uid: "123456", name: "my-pod" },
+				spec: desiredState,
+				status: {
+					phase: "Running",
+					containerStatuses: [waitingState("containerA"), waitingState("containerB")],
+				},
+			},
+			currentStatus: {
+				...sandboxReadyStatus,
+				containerStatuses: [
+					runtimeStatus("containerB", {
+						id: new ContainerID("", "foo"),
+						startedAt: 1000,
+						state: "Running",
+					}),
+				],
+			},
+			previousStatus: {
+				phase: "Pending",
+				reason: "Test",
+				message: "test",
+				containerStatuses: [waitingState("containerA"), runningState("containerB")],
+			},
+			expected: {
+				phase: "Pending",
+				reason: "Test",
+				message: "test",
+				hostIP: "127.0.0.1",
+				hostIPs: [{ ip: "127.0.0.1" }, { ip: "::1" }],
+				qosClass: "BestEffort",
+				conditions: [
+					{ type: "Initialized", observedGeneration: 0, status: "True" },
+					{ type: "Ready", observedGeneration: 0, status: "True" },
+					{ type: "ContainersReady", observedGeneration: 0, status: "True" },
+					{ type: "PodScheduled", observedGeneration: 0, status: "True" },
+				],
+				containerStatuses: [
+					ready(waitingStateWithReason("containerA", "ContainerCreating")),
+					withResources(
+						ready(withID(runningStateWithStartedAt("containerB", new Date(1000)), "://foo")),
+					),
+				],
+			},
+			expectedPodReadyToStartContainersCondition: {
+				type: "PodReadyToStartContainers",
+				observedGeneration: 0,
+				status: "True",
+			},
+		},
+		{
+			name: "reason and message are cleared when phase changes",
+			pod: {
+				metadata: { uid: "123456", name: "my-pod" },
+				spec: desiredState,
+				status: {
+					phase: "Pending",
+					containerStatuses: [waitingState("containerA"), waitingState("containerB")],
+				},
+			},
+			currentStatus: {
+				...sandboxReadyStatus,
+				containerStatuses: [
+					runtimeStatus("containerA", {
+						id: new ContainerID("", "c1"),
+						startedAt: 1000,
+						state: "Running",
+					}),
+					runtimeStatus("containerB", {
+						id: new ContainerID("", "c2"),
+						startedAt: 2000,
+						state: "Running",
+					}),
+				],
+			},
+			previousStatus: {
+				phase: "Pending",
+				reason: "Test",
+				message: "test",
+				containerStatuses: [runningState("containerA"), runningState("containerB")],
+			},
+			expected: {
+				phase: "Running",
+				hostIP: "127.0.0.1",
+				hostIPs: [{ ip: "127.0.0.1" }, { ip: "::1" }],
+				qosClass: "BestEffort",
+				conditions: [
+					{ type: "Initialized", observedGeneration: 0, status: "True" },
+					{ type: "Ready", observedGeneration: 0, status: "True" },
+					{ type: "ContainersReady", observedGeneration: 0, status: "True" },
+					{ type: "PodScheduled", observedGeneration: 0, status: "True" },
+				],
+				containerStatuses: [
+					withResources(
+						ready(withID(runningStateWithStartedAt("containerA", new Date(1000)), "://c1")),
+					),
+					withResources(
+						ready(withID(runningStateWithStartedAt("containerB", new Date(2000)), "://c2")),
+					),
+				],
+			},
+			expectedPodReadyToStartContainersCondition: {
+				type: "PodReadyToStartContainers",
+				observedGeneration: 0,
+				status: "True",
 			},
 		},
 	];
