@@ -1,16 +1,19 @@
 import { expect, it } from "vitest";
-import type { V1Container, V1ContainerStatus, V1Pod } from "../../client";
+import type { V1Container, V1ContainerStatus, V1Pod, V1PodSpec } from "../../client";
 import * as context from "../../go/context";
 import { browser } from "../../test/describe";
 import {
 	ContainerID,
+	PodSyncResult,
 	type Pod as RuntimePod,
 	type PodStatus as PodRuntimeStatus,
 	type Status as ContainerRuntimeStatus,
+	newSyncResult,
 } from "./container";
 import type { FakePod } from "./container/testing";
-import { newTestKubelet } from "./kubelet-test-helpers";
+import { FakePodWorkers, newTestKubelet } from "./kubelet-test-helpers";
 import { newReasonCache } from "./reason-cache";
+import { configSourceAnnotationKey } from "./types";
 
 function containerStatusZero(cName: string): V1ContainerStatus {
 	return {
@@ -68,6 +71,18 @@ function podWithUIDNameNs(uid: string, name: string, namespace: string): V1Pod {
 	};
 }
 
+// Models kubernetes/pkg/kubelet/kubelet_test.go podWithUIDNameNsSpec.
+function podWithUIDNameNsSpec(
+	uid: string,
+	name: string,
+	namespace: string,
+	spec: V1PodSpec,
+): V1Pod {
+	const pod = podWithUIDNameNs(uid, name, namespace);
+	pod.spec = spec;
+	return pod;
+}
+
 function runtimePodWithContainer(uid: string, name: string, namespace: string): RuntimePod {
 	return {
 		id: uid,
@@ -120,6 +135,131 @@ browser.describe("handlePodRemovesWhenSourcesAreReady", () => {
 			await Promise.resolve();
 
 			expect(testKubelet.fakePodWorkers.triggeredDeletion).toEqual(["1"]);
+		} finally {
+			await testKubelet.cleanup();
+		}
+	});
+});
+
+// Models kubernetes/pkg/kubelet/kubelet_test.go TestNetworkErrorsWithoutHostNetwork.
+browser.describe("networkErrorsWithoutHostNetwork", () => {
+	it("blocks non-host-network pods when runtime network is not ready", async () => {
+		expect.hasAssertions();
+		const tCtx = context.background();
+		const testKubelet = newTestKubelet(false);
+		const kubelet = testKubelet.kubelet;
+		try {
+			kubelet.runtimeState.setNetworkState(new Error("simulated network error"));
+
+			const pod = podWithUIDNameNsSpec("12345678", "hostnetwork", "new", {
+				hostNetwork: false,
+				containers: [{ name: "foo" }],
+			});
+
+			kubelet.podManager.setPods([pod]);
+			const [isTerminal, , err] = await kubelet.syncPod(tCtx, "update", pod, undefined, {
+				id: "",
+				name: "",
+				namespace: "",
+				ips: [],
+				containerStatuses: [],
+				sandboxStatuses: [],
+				timestamp: new Date(0),
+			});
+			expect(err).toBeInstanceOf(Error);
+			expect(err?.message).toContain("network is not ready");
+			expect(isTerminal).toBe(false);
+
+			pod.metadata ??= {};
+			pod.metadata.annotations ??= {};
+			pod.metadata.annotations[configSourceAnnotationKey] = "file";
+			pod.spec = { ...pod.spec, containers: pod.spec?.containers ?? [], hostNetwork: true };
+			const [hostIsTerminal, , hostErr] = await kubelet.syncPod(tCtx, "update", pod, undefined, {
+				id: "",
+				name: "",
+				namespace: "",
+				ips: [],
+				containerStatuses: [],
+				sandboxStatuses: [],
+				timestamp: new Date(0),
+			});
+			expect(hostErr).toBeUndefined();
+			expect(hostIsTerminal).toBe(false);
+		} finally {
+			await testKubelet.cleanup();
+		}
+	});
+});
+
+// Models kubernetes/pkg/kubelet/kubelet_test.go TestSyncPodRestartAllContainersRequeue.
+browser.describe("syncPodRestartAllContainersRequeue", () => {
+	it("requeues immediately after successful restart-all container removal", async () => {
+		expect.hasAssertions();
+		const tCtx = context.background();
+		const testKubelet = newTestKubelet(false);
+		const kubelet = testKubelet.kubelet;
+		try {
+			const pod = podWithUIDNameNsSpec("12345678", "foo", "new", {
+				containers: [
+					{
+						name: "bar",
+						restartPolicyRules: [{ action: "RestartAllContainers" }],
+					},
+				],
+			});
+			kubelet.podManager.setPods([pod]);
+			await kubelet.statusManager.setPodStatus(pod, {
+				phase: "Running",
+				conditions: [
+					{
+						type: "AllContainersRestarting",
+						status: "True",
+					},
+				],
+			});
+
+			const syncResult = new PodSyncResult();
+			syncResult.addSyncResult(newSyncResult("RemoveContainer", pod.metadata?.uid ?? ""));
+			testKubelet.fakeRuntime.syncResults = syncResult;
+
+			let callCount = 0;
+			kubelet.podWorkers = new FakePodWorkers(
+				kubelet.podCache,
+				async (ctx, updateType, pod, mirrorPod, podStatus) => {
+					callCount++;
+					if (callCount > 1) {
+						testKubelet.fakeRuntime.syncResults = new PodSyncResult();
+					}
+					return kubelet.syncPod(ctx, updateType, pod, mirrorPod, podStatus);
+				},
+			);
+
+			const [isTerminal, , err] = await kubelet.syncPod(tCtx, "update", pod, undefined, {
+				id: "",
+				name: "",
+				namespace: "",
+				ips: [],
+				containerStatuses: [
+					{
+						name: "bar",
+						id: new ContainerID("", ""),
+						image: "",
+						imageID: "",
+						imageRef: "",
+						imageRuntimeHandler: "",
+						hash: 0,
+						restartCount: 0,
+						state: "Exited",
+						createdAt: 0,
+					},
+				],
+				sandboxStatuses: [],
+				timestamp: new Date(0),
+			});
+
+			expect(isTerminal).toBe(false);
+			expect(err).toBeUndefined();
+			expect(callCount).toBe(1);
 		} finally {
 			await testKubelet.cleanup();
 		}

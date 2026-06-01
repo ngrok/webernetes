@@ -302,3 +302,13 @@ export function shouldAllContainersRestart(
 	}
 	return false;
 }
+
+// Models kubernetes/pkg/kubelet/container/helpers.go AllContainersRestartCleanedUp.
+export function allContainersRestartCleanedUp(pod: V1Pod, podStatus: PodRuntimeStatus): boolean {
+	for (const c of [...(pod.spec?.initContainers ?? []), ...(pod.spec?.containers ?? [])]) {
+		if (findContainerStatusByName(podStatus, c.name)) {
+			return false;
+		}
+	}
+	return true;
+}

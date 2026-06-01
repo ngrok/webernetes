@@ -1,5 +1,7 @@
 import type { V1ContainerStatus, V1Pod, V1PodCondition, V1PodStatus } from "../../../client";
 import * as podutil from "../../api/v1/pod/util";
+import type { PodStatus as PodRuntimeStatus } from "../container";
+import { allContainersRestartCleanedUp, shouldAllContainersRestart } from "../container";
 
 // Models kubernetes/pkg/kubelet/status/generate.go GenerateContainersReadyCondition.
 export function generateContainersReadyCondition(
@@ -181,6 +183,48 @@ export function generatePodReadyConditionForTerminalPhase(
 		),
 		status: "False",
 		reason: phase === "Failed" ? "PodFailed" : "PodCompleted",
+	};
+}
+
+// Models kubernetes/pkg/kubelet/status/generate.go GenerateAllContainersRestartingCondition.
+export function generateAllContainersRestartingCondition(
+	pod: V1Pod,
+	podStatus: PodRuntimeStatus,
+	oldPodStatus: V1PodStatus,
+	podPhase: V1PodStatus["phase"],
+): V1PodCondition {
+	if (podPhase === "Succeeded") {
+		return {
+			type: "AllContainersRestarting",
+			status: "False",
+			reason: "PodCompleted",
+		};
+	}
+	if (podPhase === "Failed") {
+		return {
+			type: "AllContainersRestarting",
+			status: "False",
+			reason: "PodFailed",
+		};
+	}
+
+	if (!shouldAllContainersRestart(pod, podStatus, oldPodStatus)) {
+		return {
+			type: "AllContainersRestarting",
+			status: "False",
+		};
+	}
+	if (allContainersRestartCleanedUp(pod, podStatus)) {
+		return {
+			type: "AllContainersRestarting",
+			status: "False",
+		};
+	}
+	return {
+		type: "AllContainersRestarting",
+		status: "True",
+		reason: "RestartAllContainersStarted",
+		message: "container exited with restart policy rule",
 	};
 }
 
