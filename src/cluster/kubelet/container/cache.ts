@@ -1,17 +1,19 @@
 import { Channel, select, type ChannelReceive } from "../../../go/channel";
 import * as context from "../../../go/context";
-import type { PodStatus as PodRuntimeStatus } from "./runtime";
+import type { PodStatus } from "./runtime";
 
 export interface ROCache {
-	get(id: string): CacheResult;
-	getNewerThan(id: string, minTime: Date): Promise<CacheResult>;
-	getNewerThanWithContext(ctx: context.Context, id: string, minTime: Date): Promise<CacheResult>;
+	get(id: string): Promise<PodStatusResult>;
+	// Upstream GetNewerThan does not take a context because goroutine cancellation
+	// can interrupt callers. The simulator awaits this method directly, so the
+	// context keeps pod workers cancellable while waiting for a fresher status.
+	getNewerThan(ctx: context.Context, id: string, minTime: Date): Promise<PodStatusResult>;
 }
 
 export interface Cache extends ROCache {
 	set(
 		id: string,
-		status: PodRuntimeStatus | undefined,
+		status: PodStatus | undefined,
 		error: Error | undefined,
 		timestamp: Date,
 	): boolean;
@@ -20,13 +22,10 @@ export interface Cache extends ROCache {
 	updateTime(timestamp: Date): void;
 }
 
-export interface CacheResult {
-	status: PodRuntimeStatus;
-	error: Error | undefined;
-}
+export type PodStatusResult = [status: PodStatus, err: Error | undefined];
 
 interface Data {
-	status: PodRuntimeStatus;
+	status: PodStatus;
 	error: Error | undefined;
 	modified: Date;
 	observedTime: Date;
@@ -44,22 +43,13 @@ export class PodStatusCache implements Cache {
 	private timestamp: Date | undefined;
 
 	// Models kubernetes/pkg/kubelet/container/cache.go Get.
-	get(id: string): CacheResult {
+	async get(id: string): Promise<PodStatusResult> {
 		const data = this.getData(id);
-		return { status: data.status, error: data.error };
+		return [data.status, data.error];
 	}
 
 	// Models kubernetes/pkg/kubelet/container/cache.go GetNewerThan.
-	async getNewerThan(id: string, minTime: Date): Promise<CacheResult> {
-		const { ch } = this.subscribe(id, minTime);
-		return cacheResultFromReceive(id, await ch.receive());
-	}
-
-	async getNewerThanWithContext(
-		ctx: context.Context,
-		id: string,
-		minTime: Date,
-	): Promise<CacheResult> {
+	async getNewerThan(ctx: context.Context, id: string, minTime: Date): Promise<PodStatusResult> {
 		const subscription = this.subscribe(id, minTime);
 		try {
 			const selected = await select()
@@ -79,7 +69,7 @@ export class PodStatusCache implements Cache {
 	// Models kubernetes/pkg/kubelet/container/cache.go Set.
 	set(
 		id: string,
-		status: PodRuntimeStatus | undefined,
+		status: PodStatus | undefined,
 		error: Error | undefined,
 		timestamp: Date,
 	): boolean {
@@ -186,11 +176,11 @@ export class PodStatusCache implements Cache {
 	}
 }
 
-function cacheResultFromReceive(id: string, result: ChannelReceive<Data>): CacheResult {
+function cacheResultFromReceive(id: string, result: ChannelReceive<Data>): PodStatusResult {
 	if (!result.ok) {
-		return { status: makeDefaultStatus(id), error: undefined };
+		return [makeDefaultStatus(id), undefined];
 	}
-	return { status: result.value.status, error: result.value.error };
+	return [result.value.status, result.value.error];
 }
 
 function makeDefaultData(id: string): Data {
@@ -202,7 +192,7 @@ function makeDefaultData(id: string): Data {
 	};
 }
 
-function makeDefaultStatus(id: string): PodRuntimeStatus {
+function makeDefaultStatus(id: string): PodStatus {
 	return {
 		id,
 		name: "",

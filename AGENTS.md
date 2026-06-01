@@ -83,6 +83,11 @@ General rules for this repository:
   expected fields, and distinctions such as literal empty maps versus
   helper-built maps unless an existing repository constraint explicitly prevents
   it.
+- For Kubernetes parity tests that need access to upstream package-private
+  state, prefer making the corresponding TypeScript internal state
+  package-visible/exported over adding helper-only behavior or driving a
+  different public lifecycle. This keeps tests mechanically close to upstream
+  and avoids `any` casts.
 - Passing tests are necessary but not sufficient for upstream parity work. The
   resulting implementation or test should remain reviewable side by side with
   upstream.

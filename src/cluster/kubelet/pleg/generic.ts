@@ -250,7 +250,7 @@ export class GenericPLEG implements PodLifecycleEventGeneratorHandler {
 
 		const [status, err] = await this.runtime.getPodStatus(this.ctx, pod);
 		if (!err && status) {
-			status.ips = this.getPodIPs(pid, status);
+			status.ips = await this.getPodIPs(pid, status);
 		}
 
 		const updated = this.cache.set(pod.id, status, err, pod.timestamp);
@@ -258,13 +258,13 @@ export class GenericPLEG implements PodLifecycleEventGeneratorHandler {
 	}
 
 	// Models kubernetes/pkg/kubelet/pleg/generic.go getPodIPs.
-	private getPodIPs(pid: string, status: PodRuntimeStatus): string[] {
+	private async getPodIPs(pid: string, status: PodRuntimeStatus): Promise<string[]> {
 		if (status.ips.length !== 0) {
 			return status.ips;
 		}
 
-		const oldStatus = this.cache.get(pid);
-		if (oldStatus.error || oldStatus.status.ips.length === 0) {
+		const [oldStatus, oldStatusErr] = await this.cache.get(pid);
+		if (oldStatusErr || oldStatus.ips.length === 0) {
 			return [];
 		}
 
@@ -274,7 +274,7 @@ export class GenericPLEG implements PodLifecycleEventGeneratorHandler {
 			}
 		}
 
-		return oldStatus.status.ips;
+		return oldStatus.ips;
 	}
 
 	// Models kubernetes/pkg/kubelet/pleg/generic.go RequestReinspect.
