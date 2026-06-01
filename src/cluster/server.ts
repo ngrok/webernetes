@@ -72,6 +72,7 @@ export class Server {
 			this.name,
 			this.name,
 		);
+		this.kubelet.runtimeState.setNetworkState(undefined);
 		this.containerRuntime = this.kubelet.containerRuntime;
 	}
 
