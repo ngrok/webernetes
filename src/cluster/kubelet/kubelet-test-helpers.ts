@@ -21,6 +21,7 @@ import type { KubeletConfiguration } from "./apis/config";
 import { newPodConfig } from "./config";
 import { newMainKubelet, NoopPodStartupSLIObserver, type Kubelet } from "./kubelet";
 import type { PodWorkers, PodWorkerSync, SyncPodResult, UpdatePodOptions } from "./pod-workers";
+import { FakeManager } from "./prober/testing/fake-manager";
 import type { SyncPodType } from "./types/pod-update";
 import type { WorkQueue } from "./util/queue/work-queue";
 
@@ -301,6 +302,7 @@ export function newTestKubeletWithImageList(
 		testKubeletHostname,
 		testKubeletHostname,
 	);
+	kubelet.probeManager = new FakeManager();
 	const fakePodWorkers = new FakePodWorkers(kubelet.podCache, kubelet.syncPod.bind(kubelet));
 	kubelet.podWorkers = fakePodWorkers;
 	kubelet.runtimeState.setNetworkState(undefined);
