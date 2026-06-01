@@ -19,13 +19,22 @@ export interface ProbeManagerOptions {
 	startupManager?: ResultsManager;
 }
 
+// Models kubernetes/pkg/kubelet/prober/prober_manager.go Manager.
+export interface ProbeManager {
+	addPod(ctx: Context, pod: V1Pod): void;
+	stopLivenessAndStartup(pod: V1Pod): void;
+	removePod(pod: V1Pod): void;
+	cleanupPods(desiredPods: Set<string>): void;
+	updatePodStatus(ctx: Context, pod: V1Pod, podStatus: V1PodStatus): void;
+}
+
 interface ProbeKey {
 	podUid: string;
 	containerName: string;
 	probeType: ProbeType;
 }
 
-export class ProbeManager {
+export class ProbeManagerImpl implements ProbeManager {
 	readonly livenessManager: ResultsManager;
 	readonly readinessManager: ResultsManager;
 	readonly startupManager: ResultsManager;
@@ -160,7 +169,7 @@ export class ProbeManager {
 	}
 
 	// Models kubernetes/pkg/kubelet/prober/prober_manager.go UpdatePodStatus.
-	updatePodStatus(pod: V1Pod, podStatus: V1PodStatus): void {
+	updatePodStatus(_ctx: Context, pod: V1Pod, podStatus: V1PodStatus): void {
 		for (const c of podStatus.containerStatuses ?? []) {
 			const started = this.isContainerStarted(pod, c);
 			// Upstream writes through podStatus.ContainerStatuses[i] because Go

@@ -4,7 +4,7 @@ import type { Context } from "../../../go/context";
 import * as time from "../../../go/time";
 import * as podutil from "../../api/v1/pod/util";
 import { type ContainerID, parseContainerID } from "../container";
-import type { ProbeManager } from "./prober-manager";
+import type { ProbeManagerImpl } from "./prober-manager";
 import type { ProberResult, ProbeType, ResultsManager } from "./results";
 
 export class ProbeWorker {
@@ -14,7 +14,7 @@ export class ProbeWorker {
 	private readonly probeType: ProbeType;
 	private readonly initialValue: ProberResult;
 	private readonly resultsManager: ResultsManager;
-	private readonly probeManager: ProbeManager;
+	private readonly probeManager: ProbeManagerImpl;
 	private readonly intervalMs: number;
 	private readonly stopCh = new Channel<void>(1);
 	private readonly manualTriggerCh = new Channel<void>(1);
@@ -25,7 +25,7 @@ export class ProbeWorker {
 
 	// Models kubernetes/pkg/kubelet/prober/worker.go newWorker.
 	constructor(
-		probeManager: ProbeManager,
+		probeManager: ProbeManagerImpl,
 		probeType: ProbeType,
 		pod: V1Pod,
 		container: V1Container,
@@ -198,7 +198,7 @@ export class ProbeWorker {
 }
 
 function probeWorkerConfig(
-	probeManager: ProbeManager,
+	probeManager: ProbeManagerImpl,
 	probeType: ProbeType,
 	container: V1Container,
 ): [spec: V1Probe, resultsManager: ResultsManager, initialValue: ProberResult] {
