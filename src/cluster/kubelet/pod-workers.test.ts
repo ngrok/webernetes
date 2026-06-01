@@ -6,8 +6,8 @@ import * as context from "../../go/context";
 import { browser } from "../../test/describe";
 import { ContainerID, type Pod as RuntimePod } from "./container";
 import { FakeRuntime, newFakeCache } from "./container/testing";
-import { PodWorkers, type UpdatePodOptions } from "./pod-workers";
-import { BasicWorkQueue } from "./util/queue/work-queue";
+import { FakeQueue } from "./kubelet-test-helpers";
+import { PodWorkersImpl, type UpdatePodOptions } from "./pod-workers";
 import { wait } from "../../promise";
 
 interface SyncPodRecord {
@@ -57,7 +57,7 @@ function newRuntimePod(uid: string, namespace: string, name: string): RuntimePod
 }
 
 function createPodWorkers(): [
-	podWorkers: PodWorkers,
+	podWorkers: PodWorkersImpl,
 	fakeRuntime: FakeRuntime,
 	processed: Map<string, SyncPodRecord[]>,
 ] {
@@ -68,9 +68,9 @@ function createPodWorkers(): [
 	const record = (uid: string, update: SyncPodRecord) => {
 		processed.set(uid, [...(processed.get(uid) ?? []), update]);
 	};
-	const podWorkers = new PodWorkers(
+	const podWorkers = new PodWorkersImpl(
 		clock,
-		new BasicWorkQueue(clock),
+		new FakeQueue(),
 		60 * 1000,
 		1000,
 		{
@@ -105,7 +105,7 @@ function createPodWorkers(): [
 }
 
 // Models kubernetes/pkg/kubelet/pod_workers_test.go drainWorkers.
-async function drainWorkers(podWorkers: PodWorkers, numPods: number): Promise<void> {
+async function drainWorkers(podWorkers: PodWorkersImpl, numPods: number): Promise<void> {
 	for (;;) {
 		let stillWorking = false;
 		for (let i = 0; i < numPods; i++) {
@@ -123,7 +123,7 @@ async function drainWorkers(podWorkers: PodWorkers, numPods: number): Promise<vo
 }
 
 // Models kubernetes/pkg/kubelet/pod_workers_test.go drainAllWorkers.
-async function drainAllWorkers(podWorkers: PodWorkers): Promise<void> {
+async function drainAllWorkers(podWorkers: PodWorkersImpl): Promise<void> {
 	for (;;) {
 		let stillWorking = false;
 		for (const status of podWorkers.podSyncStatuses.values()) {

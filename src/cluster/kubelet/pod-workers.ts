@@ -46,6 +46,20 @@ export interface PodWorkerSync {
 	static: boolean;
 }
 
+// Models kubernetes/pkg/kubelet/pod_workers.go podWorkers.
+export interface PodWorkers {
+	updatePod(ctx: context.Context, options: UpdatePodOptions): Promise<void>;
+	syncKnownPods(desiredPods: V1Pod[]): Map<string, PodWorkerSync>;
+	isPodKnownTerminated(uid: string): boolean;
+	couldHaveRunningContainers(uid: string): boolean;
+	shouldPodBeFinished(uid: string): boolean;
+	isPodTerminationRequested(uid: string): boolean;
+	shouldPodContainersBeTerminating(uid: string): boolean;
+	shouldPodRuntimeBeRemoved(uid: string): boolean;
+	shouldPodContentBeRemoved(uid: string): boolean;
+	isPodForMirrorPodTerminatingByFullName(podFullname: string): boolean;
+}
+
 // Models kubernetes/pkg/kubelet/pod_workers.go podWork.
 interface PodWork {
 	workType: PodWorkerState;
@@ -171,7 +185,7 @@ function isPodStatusCacheTerminal(status: PodRuntimeStatus): boolean {
 }
 
 // Models kubernetes/pkg/kubelet/pod_workers.go podWorkers.
-export class PodWorkers {
+export class PodWorkersImpl implements PodWorkers {
 	private readonly podUpdates = new Map<string, Channel<void>>();
 	// Simulator-only bookkeeping: Kubernetes starts pod workers as goroutines
 	// and does not retain handles, but async close() needs promises it can await.
@@ -751,6 +765,33 @@ export class PodWorkers {
 		return workers;
 	}
 
+	// Models kubernetes/pkg/kubelet/pod_workers.go IsPodKnownTerminated.
+	isPodKnownTerminated(uid: string): boolean {
+		const status = this.podSyncStatuses.get(uid);
+		if (status) {
+			return isTerminated(status);
+		}
+		return false;
+	}
+
+	// Models kubernetes/pkg/kubelet/pod_workers.go CouldHaveRunningContainers.
+	couldHaveRunningContainers(uid: string): boolean {
+		const status = this.podSyncStatuses.get(uid);
+		if (status) {
+			return !isTerminated(status);
+		}
+		return !this.podsSynced;
+	}
+
+	// Models kubernetes/pkg/kubelet/pod_workers.go ShouldPodBeFinished.
+	shouldPodBeFinished(uid: string): boolean {
+		const status = this.podSyncStatuses.get(uid);
+		if (status) {
+			return isFinished(status);
+		}
+		return this.podsSynced;
+	}
+
 	// Models kubernetes/pkg/kubelet/pod_workers.go IsPodTerminationRequested.
 	isPodTerminationRequested(uid: string): boolean {
 		const status = this.podSyncStatuses.get(uid);
@@ -769,13 +810,13 @@ export class PodWorkers {
 		return this.podsSynced;
 	}
 
-	// Models kubernetes/pkg/kubelet/pod_workers.go CouldHaveRunningContainers.
-	couldHaveRunningContainers(uid: string): boolean {
+	// Models kubernetes/pkg/kubelet/pod_workers.go ShouldPodRuntimeBeRemoved.
+	shouldPodRuntimeBeRemoved(uid: string): boolean {
 		const status = this.podSyncStatuses.get(uid);
 		if (status) {
-			return !isTerminated(status);
+			return isTerminated(status);
 		}
-		return !this.podsSynced;
+		return this.podsSynced;
 	}
 
 	// Models kubernetes/pkg/kubelet/pod_workers.go ShouldPodContentBeRemoved.
@@ -785,6 +826,13 @@ export class PodWorkers {
 			return isEvicted(status) || (isDeleted(status) && isTerminated(status));
 		}
 		return this.podsSynced;
+	}
+
+	// Models kubernetes/pkg/kubelet/pod_workers.go IsPodForMirrorPodTerminatingByFullName.
+	isPodForMirrorPodTerminatingByFullName(_podFullname: string): boolean {
+		// Static pods are not implemented end to end in this simulator, so there is
+		// no local startedStaticPodsByFullname equivalent to consult yet.
+		return false;
 	}
 
 	// Models kubernetes/pkg/kubelet/pod_workers.go removeTerminatedWorker.

@@ -259,7 +259,7 @@ browser.describe("generatePodHostNameAndDomain", () => {
 			expectedDomain,
 			errorContains,
 		}) => {
-			const testKubelet = newTestKubelet();
+			const testKubelet = newTestKubelet(false);
 			const pod: V1Pod = {
 				metadata: {
 					name: podName,
@@ -581,7 +581,7 @@ browser.describe("convertToAPIContainerStatuses", () => {
 
 	it.each(upstreamTestCases)("$name", async (tc) => {
 		const tCtx = context.background();
-		const testKubelet = newTestKubelet();
+		const testKubelet = newTestKubelet(false);
 		try {
 			const containerStatuses = testKubelet.kubelet.convertToAPIContainerStatuses(
 				tCtx,
@@ -610,7 +610,7 @@ browser.describe("convertToAPIContainerStatuses", () => {
 
 	it("throws when image volume status conversion is requested", async () => {
 		const tCtx = context.background();
-		const testKubelet = newTestKubelet();
+		const testKubelet = newTestKubelet(false);
 		try {
 			expect(() =>
 				testKubelet.kubelet.convertToAPIContainerStatuses(
@@ -793,7 +793,7 @@ browser.describe("convertToAPIContainerStatusesForResources", () => {
 
 	it.each(testCases)("$tdesc", async ({ state, oldStatus, expected }) => {
 		const tCtx = context.background();
-		const testKubelet = newTestKubelet();
+		const testKubelet = newTestKubelet(false);
 
 		try {
 			const cStatuses = testKubelet.kubelet.convertToAPIContainerStatuses(
