@@ -811,3 +811,170 @@ browser.describe("generateAPIPodStatusWithDifferentRestartPolicies", () => {
 		}
 	});
 });
+
+// Models kubernetes/pkg/kubelet/kubelet_test.go TestGenerateAPIPodStatusWithContainerRestartPolicies.
+browser.describe("generateAPIPodStatusWithContainerRestartPolicies", () => {
+	const containerRestartPolicyAlways = "Always";
+	const containerRestartPolicyOnFailure = "OnFailure";
+	const containerRestartPolicyNever = "Never";
+	const testErrorReason = new Error("test-error");
+	const emptyContainerID = new ContainerID("", "").toString();
+	const pod = podWithUIDNameNs("12345678", "foo", "new");
+	const podStatus: PodRuntimeStatus = {
+		id: pod.metadata?.uid ?? "",
+		name: pod.metadata?.name ?? "",
+		namespace: pod.metadata?.namespace ?? "",
+		timestamp: new Date(0),
+		containerStatuses: [
+			runtimeStatus("succeed", { state: "Exited", exitCode: 0 }),
+			runtimeStatus("failed", { state: "Exited", exitCode: 1 }),
+			runtimeStatus("succeed", { state: "Exited", exitCode: 2 }),
+			runtimeStatus("failed", { state: "Exited", exitCode: 3 }),
+		],
+		sandboxStatuses: [],
+		ips: [],
+	};
+
+	const tests: Array<{
+		desc: string;
+		containers: V1Container[];
+		expectedState: Record<string, NonNullable<V1ContainerStatus["state"]>>;
+		expectedLastTerminationState: Record<string, NonNullable<V1ContainerStatus["lastState"]>>;
+	}> = [
+		{
+			desc: "container restart policy rules match",
+			containers: [
+				{
+					name: "failed",
+					restartPolicy: containerRestartPolicyNever,
+					restartPolicyRules: [
+						{
+							action: "Restart",
+							exitCodes: {
+								operator: "In",
+								values: [1],
+							},
+						},
+					],
+				},
+			],
+			expectedState: {
+				failed: { waiting: { reason: testErrorReason.message, message: "" } },
+			},
+			expectedLastTerminationState: {
+				failed: { terminated: { exitCode: 1, containerID: emptyContainerID } },
+			},
+		},
+		{
+			desc: "container restart policy rules not match",
+			containers: [
+				{
+					name: "failed",
+					restartPolicy: containerRestartPolicyNever,
+					restartPolicyRules: [
+						{
+							action: "Restart",
+							exitCodes: {
+								operator: "In",
+								values: [2],
+							},
+						},
+					],
+				},
+			],
+			expectedState: {
+				failed: { terminated: { exitCode: 1, containerID: emptyContainerID } },
+			},
+			expectedLastTerminationState: {
+				failed: { terminated: { exitCode: 3, containerID: emptyContainerID } },
+			},
+		},
+		{
+			desc: "container restart policy never",
+			containers: [
+				{
+					name: "succeed",
+					restartPolicy: containerRestartPolicyNever,
+				},
+				{
+					name: "failed",
+					restartPolicy: containerRestartPolicyNever,
+				},
+			],
+			expectedState: {
+				succeed: { terminated: { exitCode: 0, containerID: emptyContainerID } },
+				failed: { terminated: { exitCode: 1, containerID: emptyContainerID } },
+			},
+			expectedLastTerminationState: {
+				succeed: { terminated: { exitCode: 2, containerID: emptyContainerID } },
+				failed: { terminated: { exitCode: 3, containerID: emptyContainerID } },
+			},
+		},
+		{
+			desc: "container restart policy OnFailure",
+			containers: [
+				{
+					name: "succeed",
+					restartPolicy: containerRestartPolicyOnFailure,
+				},
+				{
+					name: "failed",
+					restartPolicy: containerRestartPolicyOnFailure,
+				},
+			],
+			expectedState: {
+				succeed: { terminated: { exitCode: 0, containerID: emptyContainerID } },
+				failed: { waiting: { reason: testErrorReason.message, message: "" } },
+			},
+			expectedLastTerminationState: {
+				succeed: { terminated: { exitCode: 2, containerID: emptyContainerID } },
+				failed: { terminated: { exitCode: 1, containerID: emptyContainerID } },
+			},
+		},
+		{
+			desc: "container restart policy Always",
+			containers: [
+				{
+					name: "succeed",
+					restartPolicy: containerRestartPolicyAlways,
+				},
+				{
+					name: "failed",
+					restartPolicy: containerRestartPolicyAlways,
+				},
+			],
+			expectedState: {
+				succeed: { waiting: { reason: testErrorReason.message, message: "" } },
+				failed: { waiting: { reason: testErrorReason.message, message: "" } },
+			},
+			expectedLastTerminationState: {
+				succeed: { terminated: { exitCode: 0, containerID: emptyContainerID } },
+				failed: { terminated: { exitCode: 1, containerID: emptyContainerID } },
+			},
+		},
+	];
+
+	it("generates api pod status with different container-level restart policies", async () => {
+		expect.hasAssertions();
+		const tCtx = context.background();
+		const testKubelet = newTestKubelet(false);
+		const kubelet = testKubelet.kubelet;
+		try {
+			kubelet.reasonCache.add(pod.metadata?.uid ?? "", "succeed", testErrorReason, "");
+			kubelet.reasonCache.add(pod.metadata?.uid ?? "", "failed", testErrorReason, "");
+			for (const test of tests) {
+				pod.spec = { containers: test.containers, restartPolicy: "Always" };
+				const apiStatus = kubelet.generateAPIPodStatus(tCtx, pod, podStatus, false);
+
+				verifyContainerStatuses(
+					apiStatus.containerStatuses,
+					test.expectedState,
+					test.expectedLastTerminationState,
+				);
+				pod.spec = { containers: [] };
+			}
+		} finally {
+			await testKubelet.cleanup();
+		}
+	});
+});
