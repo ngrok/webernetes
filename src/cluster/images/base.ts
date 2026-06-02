@@ -23,6 +23,10 @@ export class BaseImage implements ImageDefinition {
 				return this.cat(context, argv.slice(1), output);
 			case "false":
 				return 1;
+			case "env":
+				return this.env(context, argv.slice(1), output);
+			case "printenv":
+				return this.printenv(context, argv.slice(1), output);
 			case "rm":
 				return this.rm(context, argv.slice(1));
 			case "sh":
@@ -93,6 +97,43 @@ export class BaseImage implements ImageDefinition {
 			context.fs.delete(path);
 		}
 		return 0;
+	}
+
+	private env(context: ProcessContext, argv: readonly string[], output: CommandOutput): number {
+		if (argv.length > 0) {
+			output.stderr("env: unsupported arguments\n");
+			return 125;
+		}
+		this.writeEnvironment(context, output);
+		return 0;
+	}
+
+	private printenv(
+		context: ProcessContext,
+		argv: readonly string[],
+		output: CommandOutput,
+	): number {
+		if (argv.length === 0) {
+			this.writeEnvironment(context, output);
+			return 0;
+		}
+
+		let missing = false;
+		for (const name of argv) {
+			const value = context.env.get(name);
+			if (value === undefined) {
+				missing = true;
+				continue;
+			}
+			output.stdout(`${value}\n`);
+		}
+		return missing ? 1 : 0;
+	}
+
+	private writeEnvironment(context: ProcessContext, output: CommandOutput): void {
+		for (const [name, value] of context.env) {
+			output.stdout(`${name}=${value}\n`);
+		}
 	}
 
 	private async shell(

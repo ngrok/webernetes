@@ -12,6 +12,7 @@ kubernetes.describe("Pods", (context) => {
 		getTestNamespace,
 		createNamespace,
 		createAgnhostPod,
+		createService,
 		createNodePortFor,
 		fetchNodePort,
 		readPod,
@@ -167,6 +168,138 @@ kubernetes.describe("Pods", (context) => {
 		});
 
 		expect(pod.metadata?.name).toBe("read-test");
+	});
+
+	it("should pass service link and explicit environment variables into pods", async () => {
+		const service = await createService({
+			metadata: { name: "env-link" },
+			spec: {
+				ports: [{ port: 8083 }],
+			},
+		});
+		const serviceIP = service.spec?.clusterIP;
+		if (!serviceIP) {
+			throw new Error("Expected env-link service to have a clusterIP");
+		}
+
+		const podName = "env-links-enabled-test";
+		let pod = await createAgnhostPod({
+			metadata: { name: podName },
+			spec: {
+				enableServiceLinks: true,
+				containers: [
+					{
+						env: [
+							{ name: "MANUAL_ENV", value: "manual-value" },
+							{
+								name: "POD_NAME",
+								valueFrom: {
+									fieldRef: {
+										apiVersion: "v1",
+										fieldPath: "metadata.name",
+									},
+								},
+							},
+							{ name: "POD_NAME_EXPANDED", value: "pod-$(POD_NAME)" },
+							{ name: "EMPTY_VAR" },
+							{ name: "EMPTY_EXPANDED", value: "empty-$(EMPTY_VAR)" },
+							{
+								name: "SERVICE_ADDRESS",
+								value: "$(ENV_LINK_SERVICE_HOST):$(ENV_LINK_SERVICE_PORT)",
+							},
+							{ name: "UNDEFINED_EXPANDED", value: "$(DOES_NOT_EXIST)" },
+						],
+					},
+				],
+			},
+		});
+		pod = await waitForPodReady(pod);
+
+		const result = await exec(pod, "server", ["printenv"]);
+		expect(result.exitCode).toBe(0);
+		const env = parseEnvironment(result.stdout);
+
+		expect(env.get("MANUAL_ENV")).toBe("manual-value");
+		expect(env.get("POD_NAME")).toBe(podName);
+		expect(env.get("POD_NAME_EXPANDED")).toBe(`pod-${podName}`);
+		expect(env.get("EMPTY_VAR")).toBe("");
+		expect(env.get("EMPTY_EXPANDED")).toBe("empty-");
+		expect(env.get("UNDEFINED_EXPANDED")).toBe("$(DOES_NOT_EXIST)");
+		expect(env.get("SERVICE_ADDRESS")).toBe(`${serviceIP}:8083`);
+		expect(env.get("ENV_LINK_SERVICE_HOST")).toBe(serviceIP);
+		expect(env.get("ENV_LINK_SERVICE_PORT")).toBe("8083");
+		expect(env.get("ENV_LINK_PORT")).toBe(`tcp://${serviceIP}:8083`);
+		expect(env.get("ENV_LINK_PORT_8083_TCP")).toBe(`tcp://${serviceIP}:8083`);
+		expect(env.get("ENV_LINK_PORT_8083_TCP_PROTO")).toBe("tcp");
+		expect(env.get("ENV_LINK_PORT_8083_TCP_PORT")).toBe("8083");
+		expect(env.get("ENV_LINK_PORT_8083_TCP_ADDR")).toBe(serviceIP);
+	});
+
+	it("should omit test service link environment variables when service links are disabled", async () => {
+		await createService({
+			metadata: { name: "env-link-disabled" },
+			spec: {
+				ports: [{ port: 8084 }],
+			},
+		});
+
+		const podName = "env-links-disabled-test";
+		let pod = await createAgnhostPod({
+			metadata: { name: podName },
+			spec: {
+				enableServiceLinks: false,
+				containers: [
+					{
+						env: [
+							{ name: "MANUAL_ENV", value: "manual-value" },
+							{
+								name: "POD_NAME",
+								valueFrom: {
+									fieldRef: {
+										apiVersion: "v1",
+										fieldPath: "metadata.name",
+									},
+								},
+							},
+							{ name: "POD_NAME_EXPANDED", value: "pod-$(POD_NAME)" },
+							{ name: "EMPTY_VAR" },
+							{ name: "EMPTY_EXPANDED", value: "empty-$(EMPTY_VAR)" },
+							{
+								name: "SERVICE_ADDRESS",
+								value: "$(ENV_LINK_DISABLED_SERVICE_HOST):$(ENV_LINK_DISABLED_SERVICE_PORT)",
+							},
+							{ name: "UNDEFINED_EXPANDED", value: "$(DOES_NOT_EXIST)" },
+						],
+					},
+				],
+			},
+		});
+		pod = await waitForPodReady(pod);
+
+		const result = await exec(pod, "server", ["printenv"]);
+		expect(result.exitCode).toBe(0);
+		const env = parseEnvironment(result.stdout);
+
+		expect(env.get("MANUAL_ENV")).toBe("manual-value");
+		expect(env.get("POD_NAME")).toBe(podName);
+		expect(env.get("POD_NAME_EXPANDED")).toBe(`pod-${podName}`);
+		expect(env.get("EMPTY_VAR")).toBe("");
+		expect(env.get("EMPTY_EXPANDED")).toBe("empty-");
+		expect(env.get("UNDEFINED_EXPANDED")).toBe("$(DOES_NOT_EXIST)");
+		expect(env.get("SERVICE_ADDRESS")).toBe(
+			"$(ENV_LINK_DISABLED_SERVICE_HOST):$(ENV_LINK_DISABLED_SERVICE_PORT)",
+		);
+		for (const key of [
+			"ENV_LINK_DISABLED_SERVICE_HOST",
+			"ENV_LINK_DISABLED_SERVICE_PORT",
+			"ENV_LINK_DISABLED_PORT",
+			"ENV_LINK_DISABLED_PORT_8084_TCP",
+			"ENV_LINK_DISABLED_PORT_8084_TCP_PROTO",
+			"ENV_LINK_DISABLED_PORT_8084_TCP_PORT",
+			"ENV_LINK_DISABLED_PORT_8084_TCP_ADDR",
+		]) {
+			expect(env.has(key)).toBe(false);
+		}
 	});
 
 	it("should emit scheduler and kubelet lifecycle events for a pod", async () => {
@@ -1362,4 +1495,20 @@ function eventComponentFor(
 
 async function observeFor(ms: number): Promise<void> {
 	await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function parseEnvironment(stdout: string): Map<string, string> {
+	const env = new Map<string, string>();
+	for (const line of stdout.split("\n")) {
+		if (!line) {
+			continue;
+		}
+		const separator = line.indexOf("=");
+		if (separator < 0) {
+			env.set(line, "");
+			continue;
+		}
+		env.set(line.slice(0, separator), line.slice(separator + 1));
+	}
+	return env;
 }
