@@ -1,6 +1,7 @@
 import * as k8s from "../../client";
 import { retryConflicts } from "../../retry";
-import { EventRecorder } from "../events";
+import type { EventRecorder } from "../../client-go/tools/record/event";
+import { EventRecorderImpl } from "../events";
 import type { ProcessContext } from "../cri";
 import { BaseImage } from "./base";
 
@@ -27,7 +28,7 @@ export class Scheduler extends BaseImage {
 	}
 
 	async start(context: ProcessContext, _argv: readonly string[]): Promise<number> {
-		this.events = new EventRecorder({
+		this.events = new EventRecorderImpl({
 			api: this.api,
 			clock: context.clock,
 			component: "default-scheduler",

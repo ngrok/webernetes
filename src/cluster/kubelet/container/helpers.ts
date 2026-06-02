@@ -47,7 +47,7 @@ export interface RuntimeHelper {
 	getPodDNS(
 		ctx: context.Context,
 		pod: V1Pod,
-	): [dnsConfig: DnsConfig | undefined, err: Error | undefined];
+	): Promise<[dnsConfig: DnsConfig | undefined, err: Error | undefined]>;
 	getPodCgroupParent(pod: V1Pod): string;
 	getPodDir(podUid: string): string;
 	generatePodHostNameAndDomain(

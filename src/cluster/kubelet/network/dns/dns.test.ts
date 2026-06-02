@@ -4,6 +4,7 @@
 import { expect, it } from "vitest";
 import type { V1ObjectReference, V1Pod } from "../../../../client";
 import type { DnsConfig } from "../../../cri";
+import type { EventObject } from "../../../../client-go/tools/record/event";
 import * as context from "../../../../go/context";
 import { browser } from "../../../../test/describe";
 import * as validation from "../../../apis/core/validation/validation";
@@ -966,24 +967,36 @@ function fetchEvent(recorder: FakeRecorder): string {
 
 class FakeRecorder {
 	events: Array<{
-		object: V1Pod | V1ObjectReference;
+		object: EventObject;
 		type: string;
 		reason: string;
 		message: string;
 	}> = [];
 
-	event(object: V1Pod | V1ObjectReference, type: string, reason: string, message: string): void {
+	async event(object: EventObject, type: string, reason: string, message: string): Promise<void> {
 		this.events.push({ object, type, reason, message });
 	}
 
-	eventf(
-		object: V1Pod | V1ObjectReference,
+	async eventf(
+		object: EventObject,
 		type: string,
 		reason: string,
 		messageFmt: string,
 		...args: unknown[]
-	): void {
-		this.event(object, type, reason, sprintf(messageFmt, args));
+	): Promise<void> {
+		await this.event(object, type, reason, sprintf(messageFmt, args));
+	}
+
+	async annotatedEventf(
+		object: EventObject,
+		annotations: Record<string, string>,
+		type: string,
+		reason: string,
+		messageFmt: string,
+		...args: unknown[]
+	): Promise<void> {
+		void annotations;
+		await this.eventf(object, type, reason, messageFmt, ...args);
 	}
 }
 

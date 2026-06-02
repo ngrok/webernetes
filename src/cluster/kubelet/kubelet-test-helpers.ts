@@ -7,7 +7,7 @@ import { newFakePassiveClock, type FakePassiveClock } from "../../utils/clock/te
 import { KubeClient } from "../cluster";
 import { ClusterNetwork } from "../cni";
 import { Etcd } from "../etcd";
-import { EventRecorder } from "../events";
+import { EventRecorderImpl } from "../events";
 import {
 	networkReady,
 	RuntimeCondition,
@@ -390,7 +390,7 @@ export function newTestKubeletWithImageList(
 	fakeRuntime.runtimeType = "test";
 	const commandRunner = new FakeContainerCommandRunner();
 	const podStartupLatencyTracker = new NoopPodStartupSLIObserver();
-	const recorder = new EventRecorder({
+	const recorder = new EventRecorderImpl({
 		api: fakeKubeClient.corev1,
 		clock: fakeClock,
 		component: "kubelet",

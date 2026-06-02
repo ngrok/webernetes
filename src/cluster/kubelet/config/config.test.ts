@@ -1,6 +1,7 @@
 import { expect, it } from "vitest";
 
 import type { V1Pod } from "../../../client";
+import type { EventObject } from "../../../client-go/tools/record/event";
 import { Clock } from "../../../clock";
 import { select, type ReadOnlyChannel, type WriteOnlyChannel } from "../../../go/channel";
 import * as context from "../../../go/context";
@@ -382,27 +383,48 @@ class MockPodStartupSLIObserver {
 }
 
 class FakeRecorder {
-	events: Array<{ object: V1Pod; type: string; reason: string; message: string }> = [];
+	events: Array<{ object: EventObject; type: string; reason: string; message: string }> = [];
+
+	async event(object: EventObject, type: string, reason: string, message: string): Promise<void> {
+		this.events.push({
+			object,
+			type,
+			reason,
+			message,
+		});
+	}
 
 	async eventf(
-		object: V1Pod,
+		object: EventObject,
 		type: string,
 		reason: string,
 		messageFmt: string,
 		...args: unknown[]
 	): Promise<void> {
 		let index = 0;
-		this.events.push({
+		await this.event(
 			object,
 			type,
 			reason,
-			message: messageFmt.replace(/%[sdvq]/g, (verb) => {
+			messageFmt.replace(/%[sdvq]/g, (verb) => {
 				const value = args[index++] ?? "";
 				if (verb === "%q") {
 					return JSON.stringify(String(value));
 				}
 				return String(value);
 			}),
-		});
+		);
+	}
+
+	async annotatedEventf(
+		object: EventObject,
+		annotations: Record<string, string>,
+		type: string,
+		reason: string,
+		messageFmt: string,
+		...args: unknown[]
+	): Promise<void> {
+		void annotations;
+		await this.eventf(object, type, reason, messageFmt, ...args);
 	}
 }

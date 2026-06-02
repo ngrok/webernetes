@@ -1,10 +1,8 @@
 import * as k8s from "../client";
 import { isNotFoundError } from "../client/errors";
 import type { V1ObjectReference } from "../client";
-import type { KubernetesObject } from "../client/types";
+import type { EventObject, EventRecorder } from "../client-go/tools/record/event";
 import type { Clock } from "../clock";
-
-type EventObject = KubernetesObject | V1ObjectReference;
 
 export interface EventRecorderOptions {
 	api: k8s.CoreV1Api;
@@ -13,11 +11,11 @@ export interface EventRecorderOptions {
 	host?: string;
 }
 
-export class EventRecorder {
+export class EventRecorderImpl implements EventRecorder {
 	constructor(private readonly options: EventRecorderOptions) {}
 
 	async event(object: EventObject, type: string, reason: string, message: string): Promise<void> {
-		await this.record(object, type, reason, message);
+		await this.record(object, undefined, type, reason, message);
 	}
 
 	async eventf(
@@ -27,11 +25,23 @@ export class EventRecorder {
 		messageFmt: string,
 		...args: unknown[]
 	): Promise<void> {
-		await this.record(object, type, reason, sprintf(messageFmt, args));
+		await this.record(object, undefined, type, reason, sprintf(messageFmt, args));
+	}
+
+	async annotatedEventf(
+		object: EventObject,
+		annotations: Record<string, string>,
+		type: string,
+		reason: string,
+		messageFmt: string,
+		...args: unknown[]
+	): Promise<void> {
+		await this.record(object, annotations, type, reason, sprintf(messageFmt, args));
 	}
 
 	private async record(
 		object: EventObject,
+		annotations: Record<string, string> | undefined,
 		type: string,
 		reason: string,
 		message: string,
@@ -51,6 +61,7 @@ export class EventRecorder {
 					metadata: {
 						generateName: `${name}.`,
 						namespace,
+						annotations,
 					},
 					involvedObject: ref,
 					count: 1,

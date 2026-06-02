@@ -1,5 +1,5 @@
 import type { V1Pod } from "../../../client";
-import type { EventRecorder } from "../../events";
+import type { EventRecorder } from "../../../client-go/tools/record/event";
 import { failedValidation } from "../events";
 import * as kubecontainer from "../container";
 import * as format from "../util/format";
@@ -63,11 +63,7 @@ export class PodConfig {
 	private readonly updateChannel = new Channel<PodUpdate>(50);
 	private readonly sources = new Set<string>();
 
-	constructor(
-		recorder: Pick<EventRecorder, "eventf">,
-		startupSLIObserver: PodStartupSLIObserver,
-		clock: Clock,
-	) {
+	constructor(recorder: EventRecorder, startupSLIObserver: PodStartupSLIObserver, clock: Clock) {
 		this.pods = newPodStorage(this.updateChannel, recorder, startupSLIObserver, clock);
 		this.mux = newMux(this.pods);
 	}
@@ -96,7 +92,7 @@ export class PodConfig {
 
 // Models kubernetes/pkg/kubelet/config/config.go NewPodConfig.
 export function newPodConfig(
-	recorder: Pick<EventRecorder, "eventf">,
+	recorder: EventRecorder,
 	startupSLIObserver: PodStartupSLIObserver,
 	clock: Clock,
 ): PodConfig {
@@ -112,7 +108,7 @@ class PodStorage {
 
 	constructor(
 		private readonly updateChannel: Channel<PodUpdate>,
-		private readonly recorder: Pick<EventRecorder, "eventf">,
+		private readonly recorder: EventRecorder,
 		private readonly startupSLIObserver: PodStartupSLIObserver,
 		private readonly clock: Clock,
 	) {}
@@ -258,7 +254,7 @@ class PodStorage {
 // Models kubernetes/pkg/kubelet/config/config.go newPodStorage.
 function newPodStorage(
 	updates: Channel<PodUpdate>,
-	recorder: Pick<EventRecorder, "eventf">,
+	recorder: EventRecorder,
 	startupSLIObserver: PodStartupSLIObserver,
 	clock: Clock,
 ): PodStorage {
@@ -269,7 +265,7 @@ function newPodStorage(
 async function filterInvalidPods(
 	pods: V1Pod[],
 	source: string,
-	recorder: Pick<EventRecorder, "eventf">,
+	recorder: EventRecorder,
 ): Promise<V1Pod[]> {
 	const names = new Set<string>();
 	const filtered: V1Pod[] = [];

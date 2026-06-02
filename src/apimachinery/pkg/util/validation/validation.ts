@@ -5,7 +5,7 @@ const dns1123LabelErrMsg =
 	"a lowercase RFC 1123 label must consist of lower case alphanumeric characters or '-', and must start and end with an alphanumeric character";
 
 // Models staging/src/k8s.io/apimachinery/pkg/util/validation/validation.go DNS1123LabelMaxLength.
-const dns1123LabelMaxLength = 63;
+export const dns1123LabelMaxLength = 63;
 
 // Models staging/src/k8s.io/apimachinery/pkg/util/validation/validation.go dns1123SubdomainFmt.
 const dns1123SubdomainFmt = `${dns1123LabelFmt}(\\.${dns1123LabelFmt})*`;
@@ -14,7 +14,7 @@ const dns1123SubdomainErrorMsg =
 	"a lowercase RFC 1123 subdomain must consist of lower case alphanumeric characters, '-' or '.', and must start and end with an alphanumeric character";
 
 // Models staging/src/k8s.io/apimachinery/pkg/util/validation/validation.go DNS1123SubdomainMaxLength.
-const dns1123SubdomainMaxLength = 253;
+export const dns1123SubdomainMaxLength = 253;
 
 // Models staging/src/k8s.io/apimachinery/pkg/util/validation/validation.go MaxLenError.
 function maxLenError(length: number): string {

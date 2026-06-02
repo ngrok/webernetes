@@ -6,7 +6,7 @@ import {
 	type RuntimeDiagnostics,
 	type RuntimeService,
 } from "./cri";
-import { EventRecorder } from "./events";
+import { EventRecorderImpl } from "./events";
 import { Kubelet, newMainKubelet, NoopPodStartupSLIObserver } from "./kubelet";
 import type { Runtime as KubeletRuntime } from "./kubelet/container";
 import type { KubeletConfiguration } from "./kubelet/apis/config";
@@ -60,7 +60,7 @@ export class Server {
 			{
 				kubeClient: cluster.api,
 				podListWatchClient: new PodListWatchClient(cluster.kubeConfig),
-				recorder: new EventRecorder({
+				recorder: new EventRecorderImpl({
 					api: cluster.api.corev1,
 					clock: cluster.clock,
 					component: "kubelet",

@@ -4,7 +4,7 @@ import type { Backoff } from "../../../client-go/util/flowcontrol/backoff";
 import { Channel, select } from "../../../go/channel";
 import * as context from "../../../go/context";
 import type { PodSandboxConfig } from "../../cri";
-import type { EventRecorder } from "../../events";
+import type { EventRecorder } from "../../../client-go/tools/record/event";
 import { parseImageName } from "../../../util/parsers/parsers";
 import type { ImageService, ImageSpec } from "../container";
 import { newParallelImagePuller, type ImagePuller, type PullResult } from "./puller";

@@ -4,7 +4,7 @@ import { select } from "../../../go/channel";
 import type * as context from "../../../go/context";
 import * as time from "../../../go/time";
 import type { ClusterNetwork } from "../../cni";
-import type { EventRecorder } from "../../events";
+import type { EventRecorder } from "../../../client-go/tools/record/event";
 import { resolveContainerPort } from "../../probe/util";
 import type { HandlerRunner, Pod as RuntimePod, PodStatus as PodRuntimeStatus } from "../container";
 import type { CommandRunner, ContainerID } from "../container";
