@@ -1,12 +1,15 @@
 // oxlint-disable jest/no-standalone-expect
 // oxlint-disable jest/no-conditional-expect
+// oxlint-disable typescript-eslint/no-non-null-assertion
 import { expect, it } from "vitest";
+import { newFakeRecorder } from "../../client-go/tools/record/fake";
 import type {
 	V1Container,
 	V1ContainerStatus,
 	V1Pod,
 	V1PodCondition,
 	V1PodStatus,
+	V1Service,
 } from "../../client";
 import * as context from "../../go/context";
 import { browser } from "../../test/describe";
@@ -14,6 +17,7 @@ import { ClusterNetwork } from "../cni";
 import {
 	buildContainerID,
 	ContainerID,
+	type EnvVar,
 	newContainer,
 	newContainerID,
 	newPod,
@@ -29,6 +33,7 @@ import {
 	podWithUIDNameNs,
 	type syncPodRecord,
 } from "./kubelet-test-helpers";
+import type { ServiceLister } from "./kubelet";
 import {
 	isDeleted,
 	isFinished,
@@ -235,6 +240,37 @@ function stripUndefined<T>(value: T): T {
 	return result as T;
 }
 
+// Models kubernetes/pkg/kubelet/kubelet_pods_test.go buildService.
+function buildService(
+	name: string,
+	namespace: string,
+	clusterIP: string,
+	protocol: string,
+	port: number,
+): V1Service {
+	return {
+		metadata: { name, namespace },
+		spec: {
+			ports: [
+				{
+					protocol,
+					port,
+				},
+			],
+			clusterIP,
+		},
+	};
+}
+
+// Models kubernetes/pkg/kubelet/kubelet_pods_test.go testServiceLister.
+class testServiceLister implements ServiceLister {
+	constructor(private readonly services: V1Service[] = []) {}
+
+	async list(): Promise<[services: V1Service[], err: Error | undefined]> {
+		return [this.services, undefined];
+	}
+}
+
 // Models kubernetes/pkg/kubelet/kubelet_pods_test.go findContainerStatusByName.
 function findAPIContainerStatusByName(
 	status: V1PodStatus,
@@ -257,6 +293,635 @@ function findAPIContainerStatusByName(
 	}
 	return undefined;
 }
+
+// Models kubernetes/pkg/kubelet/kubelet_pods_test.go TestMakeEnvironmentVariables.
+browser.describe("makeEnvironmentVariables", () => {
+	interface MakeEnvironmentVariablesTestCase {
+		name: string; // the name of the test case
+		ns: string; // the namespace to generate environment for
+		enableServiceLinks?: boolean; // enabling service links
+		container: V1Container; // the container to use
+		nilLister?: boolean; // whether the lister should be nil
+		staticPod?: boolean; // whether the pod should be a static pod (versus an API pod)
+		unsyncedServices?: boolean; // whether the services should NOT be synced
+		podIPs?: string[]; // the pod IPs
+		expectedEnvs?: EnvVar[]; // a set of expected environment vars
+		expectedError?: boolean; // does the test fail
+		expectedEvent?: string; // does the test emit an event
+	}
+
+	const trueValue = true;
+	const falseValue = false;
+	const services: V1Service[] = [
+		buildService("kubernetes", "default", "1.2.3.1", "TCP", 8081),
+		buildService("test", "test1", "1.2.3.3", "TCP", 8083),
+		buildService("kubernetes", "test2", "1.2.3.4", "TCP", 8084),
+		buildService("test", "test2", "1.2.3.5", "TCP", 8085),
+		buildService("test", "test2", "None", "TCP", 8085),
+		buildService("test", "test2", "", "TCP", 8085),
+		buildService("not-special", "default", "1.2.3.8", "TCP", 8088),
+		buildService("not-special", "default", "None", "TCP", 8088),
+		buildService("not-special", "default", "", "TCP", 8088),
+	];
+
+	it.each<MakeEnvironmentVariablesTestCase>([
+		{
+			name: "if services aren't synced, non-static pods should fail",
+			ns: "test1",
+			enableServiceLinks: falseValue,
+			container: { name: "container", env: [] },
+			nilLister: false,
+			staticPod: false,
+			unsyncedServices: true,
+			expectedEnvs: [],
+			expectedError: true,
+		},
+		{
+			name: "if services aren't synced, static pods should succeed",
+			ns: "test1",
+			enableServiceLinks: falseValue,
+			container: { name: "container", env: [] },
+			nilLister: false,
+			staticPod: true,
+			unsyncedServices: true,
+		},
+		{
+			name: "api server = Y, kubelet = Y",
+			ns: "test1",
+			enableServiceLinks: falseValue,
+			container: {
+				name: "container",
+				env: [
+					{ name: "FOO", value: "BAR" },
+					{ name: "TEST_SERVICE_HOST", value: "1.2.3.3" },
+					{ name: "TEST_SERVICE_PORT", value: "8083" },
+					{ name: "TEST_PORT", value: "tcp://1.2.3.3:8083" },
+					{ name: "TEST_PORT_8083_TCP", value: "tcp://1.2.3.3:8083" },
+					{ name: "TEST_PORT_8083_TCP_PROTO", value: "tcp" },
+					{ name: "TEST_PORT_8083_TCP_PORT", value: "8083" },
+					{ name: "TEST_PORT_8083_TCP_ADDR", value: "1.2.3.3" },
+				],
+			},
+			nilLister: false,
+			expectedEnvs: [
+				{ name: "FOO", value: "BAR" },
+				{ name: "TEST_SERVICE_HOST", value: "1.2.3.3" },
+				{ name: "TEST_SERVICE_PORT", value: "8083" },
+				{ name: "TEST_PORT", value: "tcp://1.2.3.3:8083" },
+				{ name: "TEST_PORT_8083_TCP", value: "tcp://1.2.3.3:8083" },
+				{ name: "TEST_PORT_8083_TCP_PROTO", value: "tcp" },
+				{ name: "TEST_PORT_8083_TCP_PORT", value: "8083" },
+				{ name: "TEST_PORT_8083_TCP_ADDR", value: "1.2.3.3" },
+				{ name: "KUBERNETES_SERVICE_PORT", value: "8081" },
+				{ name: "KUBERNETES_SERVICE_HOST", value: "1.2.3.1" },
+				{ name: "KUBERNETES_PORT", value: "tcp://1.2.3.1:8081" },
+				{ name: "KUBERNETES_PORT_8081_TCP", value: "tcp://1.2.3.1:8081" },
+				{ name: "KUBERNETES_PORT_8081_TCP_PROTO", value: "tcp" },
+				{ name: "KUBERNETES_PORT_8081_TCP_PORT", value: "8081" },
+				{ name: "KUBERNETES_PORT_8081_TCP_ADDR", value: "1.2.3.1" },
+			],
+		},
+		{
+			name: "api server = Y, kubelet = N",
+			ns: "test1",
+			enableServiceLinks: falseValue,
+			container: {
+				name: "container",
+				env: [
+					{ name: "FOO", value: "BAR" },
+					{ name: "TEST_SERVICE_HOST", value: "1.2.3.3" },
+					{ name: "TEST_SERVICE_PORT", value: "8083" },
+					{ name: "TEST_PORT", value: "tcp://1.2.3.3:8083" },
+					{ name: "TEST_PORT_8083_TCP", value: "tcp://1.2.3.3:8083" },
+					{ name: "TEST_PORT_8083_TCP_PROTO", value: "tcp" },
+					{ name: "TEST_PORT_8083_TCP_PORT", value: "8083" },
+					{ name: "TEST_PORT_8083_TCP_ADDR", value: "1.2.3.3" },
+				],
+			},
+			nilLister: true,
+			expectedEnvs: [
+				{ name: "FOO", value: "BAR" },
+				{ name: "TEST_SERVICE_HOST", value: "1.2.3.3" },
+				{ name: "TEST_SERVICE_PORT", value: "8083" },
+				{ name: "TEST_PORT", value: "tcp://1.2.3.3:8083" },
+				{ name: "TEST_PORT_8083_TCP", value: "tcp://1.2.3.3:8083" },
+				{ name: "TEST_PORT_8083_TCP_PROTO", value: "tcp" },
+				{ name: "TEST_PORT_8083_TCP_PORT", value: "8083" },
+				{ name: "TEST_PORT_8083_TCP_ADDR", value: "1.2.3.3" },
+			],
+		},
+		{
+			name: "api server = N; kubelet = Y",
+			ns: "test1",
+			enableServiceLinks: falseValue,
+			container: {
+				name: "container",
+				env: [{ name: "FOO", value: "BAZ" }],
+			},
+			nilLister: false,
+			expectedEnvs: [
+				{ name: "FOO", value: "BAZ" },
+				{ name: "KUBERNETES_SERVICE_HOST", value: "1.2.3.1" },
+				{ name: "KUBERNETES_SERVICE_PORT", value: "8081" },
+				{ name: "KUBERNETES_PORT", value: "tcp://1.2.3.1:8081" },
+				{ name: "KUBERNETES_PORT_8081_TCP", value: "tcp://1.2.3.1:8081" },
+				{ name: "KUBERNETES_PORT_8081_TCP_PROTO", value: "tcp" },
+				{ name: "KUBERNETES_PORT_8081_TCP_PORT", value: "8081" },
+				{ name: "KUBERNETES_PORT_8081_TCP_ADDR", value: "1.2.3.1" },
+			],
+		},
+		{
+			name: "api server = N; kubelet = Y; service env vars",
+			ns: "test1",
+			enableServiceLinks: trueValue,
+			container: {
+				name: "container",
+				env: [{ name: "FOO", value: "BAZ" }],
+			},
+			nilLister: false,
+			expectedEnvs: [
+				{ name: "FOO", value: "BAZ" },
+				{ name: "TEST_SERVICE_HOST", value: "1.2.3.3" },
+				{ name: "TEST_SERVICE_PORT", value: "8083" },
+				{ name: "TEST_PORT", value: "tcp://1.2.3.3:8083" },
+				{ name: "TEST_PORT_8083_TCP", value: "tcp://1.2.3.3:8083" },
+				{ name: "TEST_PORT_8083_TCP_PROTO", value: "tcp" },
+				{ name: "TEST_PORT_8083_TCP_PORT", value: "8083" },
+				{ name: "TEST_PORT_8083_TCP_ADDR", value: "1.2.3.3" },
+				{ name: "KUBERNETES_SERVICE_HOST", value: "1.2.3.1" },
+				{ name: "KUBERNETES_SERVICE_PORT", value: "8081" },
+				{ name: "KUBERNETES_PORT", value: "tcp://1.2.3.1:8081" },
+				{ name: "KUBERNETES_PORT_8081_TCP", value: "tcp://1.2.3.1:8081" },
+				{ name: "KUBERNETES_PORT_8081_TCP_PROTO", value: "tcp" },
+				{ name: "KUBERNETES_PORT_8081_TCP_PORT", value: "8081" },
+				{ name: "KUBERNETES_PORT_8081_TCP_ADDR", value: "1.2.3.1" },
+			],
+		},
+		{
+			name: "master service in pod ns",
+			ns: "test2",
+			enableServiceLinks: falseValue,
+			container: {
+				name: "container",
+				env: [{ name: "FOO", value: "ZAP" }],
+			},
+			nilLister: false,
+			expectedEnvs: [
+				{ name: "FOO", value: "ZAP" },
+				{ name: "KUBERNETES_SERVICE_HOST", value: "1.2.3.1" },
+				{ name: "KUBERNETES_SERVICE_PORT", value: "8081" },
+				{ name: "KUBERNETES_PORT", value: "tcp://1.2.3.1:8081" },
+				{ name: "KUBERNETES_PORT_8081_TCP", value: "tcp://1.2.3.1:8081" },
+				{ name: "KUBERNETES_PORT_8081_TCP_PROTO", value: "tcp" },
+				{ name: "KUBERNETES_PORT_8081_TCP_PORT", value: "8081" },
+				{ name: "KUBERNETES_PORT_8081_TCP_ADDR", value: "1.2.3.1" },
+			],
+		},
+		{
+			name: "master service in pod ns, service env vars",
+			ns: "test2",
+			enableServiceLinks: trueValue,
+			container: {
+				name: "container",
+				env: [{ name: "FOO", value: "ZAP" }],
+			},
+			nilLister: false,
+			expectedEnvs: [
+				{ name: "FOO", value: "ZAP" },
+				{ name: "TEST_SERVICE_HOST", value: "1.2.3.5" },
+				{ name: "TEST_SERVICE_PORT", value: "8085" },
+				{ name: "TEST_PORT", value: "tcp://1.2.3.5:8085" },
+				{ name: "TEST_PORT_8085_TCP", value: "tcp://1.2.3.5:8085" },
+				{ name: "TEST_PORT_8085_TCP_PROTO", value: "tcp" },
+				{ name: "TEST_PORT_8085_TCP_PORT", value: "8085" },
+				{ name: "TEST_PORT_8085_TCP_ADDR", value: "1.2.3.5" },
+				{ name: "KUBERNETES_SERVICE_HOST", value: "1.2.3.4" },
+				{ name: "KUBERNETES_SERVICE_PORT", value: "8084" },
+				{ name: "KUBERNETES_PORT", value: "tcp://1.2.3.4:8084" },
+				{ name: "KUBERNETES_PORT_8084_TCP", value: "tcp://1.2.3.4:8084" },
+				{ name: "KUBERNETES_PORT_8084_TCP_PROTO", value: "tcp" },
+				{ name: "KUBERNETES_PORT_8084_TCP_PORT", value: "8084" },
+				{ name: "KUBERNETES_PORT_8084_TCP_ADDR", value: "1.2.3.4" },
+			],
+		},
+		{
+			name: "pod in master service ns",
+			ns: "default",
+			enableServiceLinks: falseValue,
+			container: { name: "container" },
+			nilLister: false,
+			expectedEnvs: [
+				{ name: "KUBERNETES_SERVICE_HOST", value: "1.2.3.1" },
+				{ name: "KUBERNETES_SERVICE_PORT", value: "8081" },
+				{ name: "KUBERNETES_PORT", value: "tcp://1.2.3.1:8081" },
+				{ name: "KUBERNETES_PORT_8081_TCP", value: "tcp://1.2.3.1:8081" },
+				{ name: "KUBERNETES_PORT_8081_TCP_PROTO", value: "tcp" },
+				{ name: "KUBERNETES_PORT_8081_TCP_PORT", value: "8081" },
+				{ name: "KUBERNETES_PORT_8081_TCP_ADDR", value: "1.2.3.1" },
+			],
+		},
+		{
+			name: "pod in master service ns, service env vars",
+			ns: "default",
+			enableServiceLinks: trueValue,
+			container: { name: "container" },
+			nilLister: false,
+			expectedEnvs: [
+				{ name: "NOT_SPECIAL_SERVICE_HOST", value: "1.2.3.8" },
+				{ name: "NOT_SPECIAL_SERVICE_PORT", value: "8088" },
+				{ name: "NOT_SPECIAL_PORT", value: "tcp://1.2.3.8:8088" },
+				{ name: "NOT_SPECIAL_PORT_8088_TCP", value: "tcp://1.2.3.8:8088" },
+				{ name: "NOT_SPECIAL_PORT_8088_TCP_PROTO", value: "tcp" },
+				{ name: "NOT_SPECIAL_PORT_8088_TCP_PORT", value: "8088" },
+				{ name: "NOT_SPECIAL_PORT_8088_TCP_ADDR", value: "1.2.3.8" },
+				{ name: "KUBERNETES_SERVICE_HOST", value: "1.2.3.1" },
+				{ name: "KUBERNETES_SERVICE_PORT", value: "8081" },
+				{ name: "KUBERNETES_PORT", value: "tcp://1.2.3.1:8081" },
+				{ name: "KUBERNETES_PORT_8081_TCP", value: "tcp://1.2.3.1:8081" },
+				{ name: "KUBERNETES_PORT_8081_TCP_PROTO", value: "tcp" },
+				{ name: "KUBERNETES_PORT_8081_TCP_PORT", value: "8081" },
+				{ name: "KUBERNETES_PORT_8081_TCP_ADDR", value: "1.2.3.1" },
+			],
+		},
+		{
+			name: "downward api pod",
+			ns: "downward-api",
+			enableServiceLinks: falseValue,
+			container: {
+				name: "container",
+				env: [
+					{
+						name: "POD_NAME",
+						valueFrom: {
+							fieldRef: {
+								apiVersion: "v1",
+								fieldPath: "metadata.name",
+							},
+						},
+					},
+					{
+						name: "POD_NAMESPACE",
+						valueFrom: {
+							fieldRef: {
+								apiVersion: "v1",
+								fieldPath: "metadata.namespace",
+							},
+						},
+					},
+					{
+						name: "POD_NODE_NAME",
+						valueFrom: {
+							fieldRef: {
+								apiVersion: "v1",
+								fieldPath: "spec.nodeName",
+							},
+						},
+					},
+					{
+						name: "POD_SERVICE_ACCOUNT_NAME",
+						valueFrom: {
+							fieldRef: {
+								apiVersion: "v1",
+								fieldPath: "spec.serviceAccountName",
+							},
+						},
+					},
+					{
+						name: "POD_IP",
+						valueFrom: {
+							fieldRef: {
+								apiVersion: "v1",
+								fieldPath: "status.podIP",
+							},
+						},
+					},
+					{
+						name: "POD_IPS",
+						valueFrom: {
+							fieldRef: {
+								apiVersion: "v1",
+								fieldPath: "status.podIPs",
+							},
+						},
+					},
+					{
+						name: "HOST_IP",
+						valueFrom: {
+							fieldRef: {
+								apiVersion: "v1",
+								fieldPath: "status.hostIP",
+							},
+						},
+					},
+					{
+						name: "HOST_IPS",
+						valueFrom: {
+							fieldRef: {
+								apiVersion: "v1",
+								fieldPath: "status.hostIPs",
+							},
+						},
+					},
+				],
+			},
+			podIPs: ["1.2.3.4", "fd00::6"],
+			nilLister: true,
+			expectedEnvs: [
+				{ name: "POD_NAME", value: "dapi-test-pod-name" },
+				{ name: "POD_NAMESPACE", value: "downward-api" },
+				{ name: "POD_NODE_NAME", value: "node-name" },
+				{ name: "POD_SERVICE_ACCOUNT_NAME", value: "special" },
+				{ name: "POD_IP", value: "1.2.3.4" },
+				{ name: "POD_IPS", value: "1.2.3.4,fd00::6" },
+				{ name: "HOST_IP", value: "127.0.0.1" },
+				{ name: "HOST_IPS", value: "127.0.0.1,::1" },
+			],
+		},
+		{
+			name: "downward api pod ips reverse order",
+			ns: "downward-api",
+			enableServiceLinks: falseValue,
+			container: {
+				name: "container",
+				env: [
+					{
+						name: "POD_IP",
+						valueFrom: {
+							fieldRef: {
+								apiVersion: "v1",
+								fieldPath: "status.podIP",
+							},
+						},
+					},
+					{
+						name: "POD_IPS",
+						valueFrom: {
+							fieldRef: {
+								apiVersion: "v1",
+								fieldPath: "status.podIPs",
+							},
+						},
+					},
+					{
+						name: "HOST_IP",
+						valueFrom: {
+							fieldRef: {
+								apiVersion: "v1",
+								fieldPath: "status.hostIP",
+							},
+						},
+					},
+					{
+						name: "HOST_IPS",
+						valueFrom: {
+							fieldRef: {
+								apiVersion: "v1",
+								fieldPath: "status.hostIPs",
+							},
+						},
+					},
+				],
+			},
+			podIPs: ["fd00::6", "1.2.3.4"],
+			nilLister: true,
+			expectedEnvs: [
+				{ name: "POD_IP", value: "1.2.3.4" },
+				{ name: "POD_IPS", value: "1.2.3.4,fd00::6" },
+				{ name: "HOST_IP", value: "127.0.0.1" },
+				{ name: "HOST_IPS", value: "127.0.0.1,::1" },
+			],
+		},
+		{
+			name: "downward api pod ips multiple ips",
+			ns: "downward-api",
+			enableServiceLinks: falseValue,
+			container: {
+				name: "container",
+				env: [
+					{
+						name: "POD_IP",
+						valueFrom: {
+							fieldRef: {
+								apiVersion: "v1",
+								fieldPath: "status.podIP",
+							},
+						},
+					},
+					{
+						name: "POD_IPS",
+						valueFrom: {
+							fieldRef: {
+								apiVersion: "v1",
+								fieldPath: "status.podIPs",
+							},
+						},
+					},
+					{
+						name: "HOST_IP",
+						valueFrom: {
+							fieldRef: {
+								apiVersion: "v1",
+								fieldPath: "status.hostIP",
+							},
+						},
+					},
+					{
+						name: "HOST_IPS",
+						valueFrom: {
+							fieldRef: {
+								apiVersion: "v1",
+								fieldPath: "status.hostIPs",
+							},
+						},
+					},
+				],
+			},
+			podIPs: ["1.2.3.4", "192.168.1.1.", "fd00::6"],
+			nilLister: true,
+			expectedEnvs: [
+				{ name: "POD_IP", value: "1.2.3.4" },
+				{ name: "POD_IPS", value: "1.2.3.4,fd00::6" },
+				{ name: "HOST_IP", value: "127.0.0.1" },
+				{ name: "HOST_IPS", value: "127.0.0.1,::1" },
+			],
+		},
+		{
+			name: "env expansion",
+			ns: "test1",
+			enableServiceLinks: falseValue,
+			container: {
+				name: "container",
+				env: [
+					{ name: "TEST_LITERAL", value: "test-test-test" },
+					{
+						name: "POD_NAME",
+						valueFrom: {
+							fieldRef: {
+								apiVersion: "v1",
+								fieldPath: "metadata.name",
+							},
+						},
+					},
+					{ name: "OUT_OF_ORDER_TEST", value: "$(OUT_OF_ORDER_TARGET)" },
+					{ name: "OUT_OF_ORDER_TARGET", value: "FOO" },
+					{ name: "EMPTY_VAR" },
+					{ name: "EMPTY_TEST", value: "foo-$(EMPTY_VAR)" },
+					{ name: "POD_NAME_TEST2", value: "test2-$(POD_NAME)" },
+					{ name: "POD_NAME_TEST3", value: "$(POD_NAME_TEST2)-3" },
+					{ name: "LITERAL_TEST", value: "literal-$(TEST_LITERAL)" },
+					{ name: "TEST_UNDEFINED", value: "$(UNDEFINED_VAR)" },
+				],
+			},
+			nilLister: false,
+			expectedEnvs: [
+				{ name: "TEST_LITERAL", value: "test-test-test" },
+				{ name: "POD_NAME", value: "dapi-test-pod-name" },
+				{ name: "POD_NAME_TEST2", value: "test2-dapi-test-pod-name" },
+				{ name: "POD_NAME_TEST3", value: "test2-dapi-test-pod-name-3" },
+				{ name: "LITERAL_TEST", value: "literal-test-test-test" },
+				{ name: "OUT_OF_ORDER_TEST", value: "$(OUT_OF_ORDER_TARGET)" },
+				{ name: "OUT_OF_ORDER_TARGET", value: "FOO" },
+				{ name: "TEST_UNDEFINED", value: "$(UNDEFINED_VAR)" },
+				{ name: "EMPTY_VAR", value: "" },
+				{ name: "EMPTY_TEST", value: "foo-" },
+				{ name: "KUBERNETES_SERVICE_HOST", value: "1.2.3.1" },
+				{ name: "KUBERNETES_SERVICE_PORT", value: "8081" },
+				{ name: "KUBERNETES_PORT", value: "tcp://1.2.3.1:8081" },
+				{ name: "KUBERNETES_PORT_8081_TCP", value: "tcp://1.2.3.1:8081" },
+				{ name: "KUBERNETES_PORT_8081_TCP_PROTO", value: "tcp" },
+				{ name: "KUBERNETES_PORT_8081_TCP_PORT", value: "8081" },
+				{ name: "KUBERNETES_PORT_8081_TCP_ADDR", value: "1.2.3.1" },
+			],
+		},
+		{
+			name: "env expansion, service env vars",
+			ns: "test1",
+			enableServiceLinks: trueValue,
+			container: {
+				name: "container",
+				env: [
+					{ name: "TEST_LITERAL", value: "test-test-test" },
+					{
+						name: "POD_NAME",
+						valueFrom: {
+							fieldRef: {
+								apiVersion: "v1",
+								fieldPath: "metadata.name",
+							},
+						},
+					},
+					{ name: "OUT_OF_ORDER_TEST", value: "$(OUT_OF_ORDER_TARGET)" },
+					{ name: "OUT_OF_ORDER_TARGET", value: "FOO" },
+					{ name: "EMPTY_VAR" },
+					{ name: "EMPTY_TEST", value: "foo-$(EMPTY_VAR)" },
+					{ name: "POD_NAME_TEST2", value: "test2-$(POD_NAME)" },
+					{ name: "POD_NAME_TEST3", value: "$(POD_NAME_TEST2)-3" },
+					{ name: "LITERAL_TEST", value: "literal-$(TEST_LITERAL)" },
+					{ name: "SERVICE_VAR_TEST", value: "$(TEST_SERVICE_HOST):$(TEST_SERVICE_PORT)" },
+					{ name: "TEST_UNDEFINED", value: "$(UNDEFINED_VAR)" },
+				],
+			},
+			nilLister: false,
+			expectedEnvs: [
+				{ name: "TEST_LITERAL", value: "test-test-test" },
+				{ name: "POD_NAME", value: "dapi-test-pod-name" },
+				{ name: "POD_NAME_TEST2", value: "test2-dapi-test-pod-name" },
+				{ name: "POD_NAME_TEST3", value: "test2-dapi-test-pod-name-3" },
+				{ name: "LITERAL_TEST", value: "literal-test-test-test" },
+				{ name: "TEST_SERVICE_HOST", value: "1.2.3.3" },
+				{ name: "TEST_SERVICE_PORT", value: "8083" },
+				{ name: "TEST_PORT", value: "tcp://1.2.3.3:8083" },
+				{ name: "TEST_PORT_8083_TCP", value: "tcp://1.2.3.3:8083" },
+				{ name: "TEST_PORT_8083_TCP_PROTO", value: "tcp" },
+				{ name: "TEST_PORT_8083_TCP_PORT", value: "8083" },
+				{ name: "TEST_PORT_8083_TCP_ADDR", value: "1.2.3.3" },
+				{ name: "SERVICE_VAR_TEST", value: "1.2.3.3:8083" },
+				{ name: "OUT_OF_ORDER_TEST", value: "$(OUT_OF_ORDER_TARGET)" },
+				{ name: "OUT_OF_ORDER_TARGET", value: "FOO" },
+				{ name: "TEST_UNDEFINED", value: "$(UNDEFINED_VAR)" },
+				{ name: "EMPTY_VAR", value: "" },
+				{ name: "EMPTY_TEST", value: "foo-" },
+				{ name: "KUBERNETES_SERVICE_HOST", value: "1.2.3.1" },
+				{ name: "KUBERNETES_SERVICE_PORT", value: "8081" },
+				{ name: "KUBERNETES_PORT", value: "tcp://1.2.3.1:8081" },
+				{ name: "KUBERNETES_PORT_8081_TCP", value: "tcp://1.2.3.1:8081" },
+				{ name: "KUBERNETES_PORT_8081_TCP_PROTO", value: "tcp" },
+				{ name: "KUBERNETES_PORT_8081_TCP_PORT", value: "8081" },
+				{ name: "KUBERNETES_PORT_8081_TCP_ADDR", value: "1.2.3.1" },
+			],
+		},
+		{
+			name: "nil_enableServiceLinks",
+			ns: "test",
+			container: {
+				name: "container",
+				env: [],
+			},
+			nilLister: true,
+			expectedError: true,
+		},
+	])("$name", async (tc) => {
+		const fakeRecorder = newFakeRecorder(1);
+		const testKubelet = newTestKubelet(false);
+		try {
+			const kl = testKubelet.kubelet;
+			kl.recorder = fakeRecorder;
+			if (tc.nilLister) {
+				kl.serviceLister = undefined;
+			} else if (tc.unsyncedServices) {
+				kl.serviceLister = new testServiceLister();
+				kl.serviceHasSynced = () => false;
+			} else {
+				kl.serviceLister = new testServiceLister(services);
+				kl.serviceHasSynced = () => true;
+			}
+			const testPod: V1Pod = {
+				metadata: {
+					namespace: tc.ns,
+					name: "dapi-test-pod-name",
+					annotations: {},
+				},
+				spec: {
+					containers: [],
+					serviceAccountName: "special",
+					nodeName: "node-name",
+					enableServiceLinks: tc.enableServiceLinks,
+				},
+			};
+			if (tc.staticPod) {
+				testPod.metadata!.annotations![kubetypes.configSourceAnnotationKey] = kubetypes.fileSource;
+			}
+			const podIPs = tc.podIPs ?? [];
+			const podIP = podIPs[0] ?? "";
+
+			const [result, err] = await kl.makeEnvironmentVariables(
+				context.background(),
+				testPod,
+				tc.container,
+				podIP,
+				podIPs,
+			);
+			const event = fakeRecorder.events?.tryReceive()?.value;
+			if (event !== undefined) {
+				expect(event).toBe(tc.expectedEvent);
+			} else {
+				expect(tc.expectedEvent ?? "").toBe("");
+			}
+
+			if (tc.expectedError) {
+				expect(err).toBeDefined();
+			} else {
+				expect(err).toBeUndefined();
+				result.sort((left, right) => left.name.localeCompare(right.name));
+				const expectedEnvs = tc.expectedEnvs ?? [];
+				expectedEnvs.sort((left, right) => left.name.localeCompare(right.name));
+				expect(result).toEqual(expectedEnvs);
+			}
+		} finally {
+			await testKubelet.cleanup();
+		}
+	});
+});
 
 // Models kubernetes/pkg/kubelet/kubelet_pods_test.go TestGeneratePodHostNameAndDomain.
 browser.describe("generatePodHostNameAndDomain", () => {
