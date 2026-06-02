@@ -1,3 +1,5 @@
+// oxlint-disable jest/no-standalone-expect
+// oxlint-disable jest/no-conditional-expect
 import { expect, it } from "vitest";
 import type {
 	V1Container,
@@ -11,10 +13,32 @@ import { browser } from "../../test/describe";
 import {
 	buildContainerID,
 	ContainerID,
+	newContainer,
+	newContainerID,
+	newPod,
+	type Pod as RuntimePod,
 	type PodStatus as PodRuntimeStatus,
 	type Status as ContainerRuntimeStatus,
 } from "./container";
-import { newTestKubelet, podWithUIDNameNs } from "./kubelet-test-helpers";
+import { newFakePod, type FakePod } from "./container/testing";
+import {
+	createPodWorkers,
+	drainAllWorkers,
+	newTestKubelet,
+	podWithUIDNameNs,
+	type syncPodRecord,
+} from "./kubelet-test-helpers";
+import {
+	isDeleted,
+	isFinished,
+	isTerminationRequested,
+	isTerminationStarted,
+	isWorking,
+	newPodSyncerFuncs,
+	newUpdatePodOptions,
+	PodWorkersImpl,
+} from "./pod-workers";
+import * as kubetypes from "./types";
 
 interface ConvertToAPIContainerStatusesUpstreamTestCase {
 	name: string;
@@ -26,6 +50,12 @@ interface ConvertToAPIContainerStatusesUpstreamTestCase {
 	isInitContainer?: boolean;
 	podRestarting?: boolean;
 	expected: V1ContainerStatus[];
+}
+
+interface rejectedPod {
+	uid: string;
+	reason: string;
+	message: string;
 }
 
 function containerStatusZero(cName: string): V1ContainerStatus {
@@ -369,6 +399,500 @@ browser.describe("generatePodHostNameAndDomain", () => {
 			}
 		},
 	);
+});
+
+// Models kubernetes/pkg/kubelet/kubelet_pods_test.go TestKubelet_HandlePodCleanups.
+browser.describe("kubeletHandlePodCleanups", () => {
+	const one = 1;
+	const two = 2;
+	const deleted = new Date(2_000);
+	const simplePod = (): V1Pod => ({
+		metadata: { name: "pod1", namespace: "ns1", uid: "1" },
+		spec: { containers: [{ name: "container-1" }] },
+	});
+	const withPhase = (pod: V1Pod, phase: string) => {
+		pod.status = { phase };
+		return pod;
+	};
+	const staticPod = (): V1Pod => ({
+		metadata: {
+			name: "pod1",
+			namespace: "ns1",
+			uid: "1",
+			annotations: {
+				[kubetypes.configSourceAnnotationKey]: kubetypes.fileSource,
+			},
+		},
+		spec: { containers: [{ name: "container-1" }] },
+	});
+	// Models kubernetes/pkg/kubelet/kubelet_pods_test.go runtimePod.
+	const runtimePod = (pod: V1Pod): RuntimePod => {
+		const runningPod = newPod({
+			id: pod.metadata?.uid ?? "",
+			name: pod.metadata?.name ?? "",
+			namespace: pod.metadata?.namespace ?? "default",
+			containers: [
+				newContainer({
+					name: "container-1",
+					id: newContainerID({ type: "test", id: "c1" }),
+				}),
+			],
+		});
+		for (const [i, container] of (pod.spec?.containers ?? []).entries()) {
+			runningPod.containers.push(
+				newContainer({
+					name: container.name,
+					id: newContainerID({ type: "test", id: `c${i}` }),
+				}),
+			);
+		}
+		return runningPod;
+	};
+
+	const tests: Array<{
+		name: string;
+		pods?: V1Pod[];
+		runtimePods?: FakePod[];
+		rejectedPods?: rejectedPod[];
+		terminatingErr?: Error;
+		prepareWorker?: (
+			podWorkers: PodWorkersImpl,
+			records: Map<string, syncPodRecord[]>,
+		) => Promise<void>;
+		wantWorker?: (
+			podWorkers: PodWorkersImpl,
+			records: Map<string, syncPodRecord[]>,
+		) => void | Promise<void>;
+		wantWorkerAfterRetry?: (
+			podWorkers: PodWorkersImpl,
+			records: Map<string, syncPodRecord[]>,
+		) => void;
+		wantErr?: boolean;
+		expectMetrics?: Record<string, string>;
+		expectMetricsAfterRetry?: Record<string, string>;
+	}> = [
+		{
+			name: "missing pod is requested for termination with short grace period",
+			runtimePods: [newFakePod({ pod: runtimePod(staticPod()) })],
+			wantWorker: async (w, records) => {
+				await drainAllWorkers(w);
+				expect(records.get("1") ?? []).toEqual([
+					{
+						name: "pod1",
+						updateType: "kill",
+						runningPod: runtimePod(staticPod()),
+					},
+				]);
+				expect(w.podSyncStatuses.has("1")).toBe(false);
+			},
+		},
+		{
+			name: "terminating pod that errored and is not in config is notified by the cleanup",
+			runtimePods: [newFakePod({ pod: runtimePod(simplePod()) })],
+			terminatingErr: new Error("unable to terminate"),
+			prepareWorker: async (w, records) => {
+				const pod: V1Pod = {
+					metadata: { name: "pod1", namespace: "ns1", uid: "1" },
+					spec: {
+						containers: [{ name: "container-1" }],
+					},
+				};
+				await w.updatePod(context.background(), {
+					updateType: "create",
+					startTime: new Date(1_000),
+					pod,
+				});
+				await drainAllWorkers(w);
+				const updatedPod: V1Pod = {
+					metadata: {
+						name: "pod1",
+						namespace: "ns1",
+						uid: "1",
+						deletionGracePeriodSeconds: two,
+						deletionTimestamp: deleted,
+					},
+					spec: {
+						terminationGracePeriodSeconds: two,
+						containers: [{ name: "container-1" }],
+					},
+				};
+				await w.updatePod(context.background(), {
+					updateType: "kill",
+					startTime: new Date(3_000),
+					pod: updatedPod,
+				});
+				await drainAllWorkers(w);
+				const r = records.get(updatedPod.metadata?.uid ?? "");
+				if (r === undefined || r.length !== 2 || r[1]?.gracePeriod !== 2) {
+					throw new Error(`unexpected records: ${JSON.stringify(Object.fromEntries(records))}`);
+				}
+			},
+			wantWorker: (podWorkers, records) => {
+				const uid = "1";
+				expect(podWorkers.podSyncStatuses.size).toBe(1);
+				const s = podWorkers.podSyncStatuses.get(uid);
+				if (
+					!s ||
+					!isTerminationRequested(s) ||
+					!isTerminationStarted(s) ||
+					isFinished(s) ||
+					isWorking(s) ||
+					!isDeleted(s)
+				) {
+					throw new Error(`unexpected requested pod termination: ${JSON.stringify(s)}`);
+				}
+				expect(records.get("1") ?? []).toEqual([
+					{ name: "pod1", updateType: "create" },
+					{ name: "pod1", updateType: "kill", gracePeriod: two },
+					{ name: "pod1", updateType: "kill", gracePeriod: two },
+				]);
+			},
+			wantWorkerAfterRetry: (podWorkers, records) => {
+				const uid = "1";
+				expect(podWorkers.podSyncStatuses.size).toBe(1);
+				const s = podWorkers.podSyncStatuses.get(uid);
+				if (
+					!s ||
+					!isTerminationRequested(s) ||
+					!isTerminationStarted(s) ||
+					!isFinished(s) ||
+					isWorking(s) ||
+					!isDeleted(s)
+				) {
+					throw new Error(`unexpected requested pod termination: ${JSON.stringify(s)}`);
+				}
+				expect(records.get("1") ?? []).toEqual([
+					{ name: "pod1", updateType: "create" },
+					{ name: "pod1", updateType: "kill", gracePeriod: two },
+					{ name: "pod1", updateType: "kill", gracePeriod: two },
+					{ name: "pod1", updateType: "kill", gracePeriod: two },
+					{ name: "pod1", terminated: true },
+				]);
+			},
+		},
+		{
+			name: "terminating pod that errored and is not in config or worker is force killed by the cleanup",
+			runtimePods: [newFakePod({ pod: runtimePod(simplePod()) })],
+			terminatingErr: new Error("unable to terminate"),
+			wantWorker: (podWorkers, records) => {
+				const uid = "1";
+				expect(podWorkers.podSyncStatuses.size).toBe(1);
+				const s = podWorkers.podSyncStatuses.get(uid);
+				if (
+					!s ||
+					!isTerminationRequested(s) ||
+					!isTerminationStarted(s) ||
+					isFinished(s) ||
+					isWorking(s) ||
+					!isDeleted(s)
+				) {
+					throw new Error(`unexpected requested pod termination: ${JSON.stringify(s)}`);
+				}
+				const expectedRunningPod = runtimePod(simplePod());
+				expect(s.activeUpdate?.runningPod).toEqual(expectedRunningPod);
+				expect(s.activeUpdate?.killPodOptions?.podTerminationGracePeriodSecondsOverride).toBe(one);
+				expect(records.get(uid) ?? []).toEqual([
+					{
+						name: "pod1",
+						updateType: "kill",
+						runningPod: expectedRunningPod,
+					},
+				]);
+			},
+			wantWorkerAfterRetry: (podWorkers, records) => {
+				const uid = "1";
+				expect(podWorkers.podSyncStatuses.size).toBe(0);
+				const expectedRunningPod = runtimePod(simplePod());
+				expect(records.get(uid) ?? []).toEqual([
+					{
+						name: "pod1",
+						updateType: "kill",
+						runningPod: expectedRunningPod,
+					},
+					{
+						name: "pod1",
+						updateType: "kill",
+						runningPod: expectedRunningPod,
+					},
+				]);
+			},
+		},
+		{
+			name: "pod is added to worker by sync method",
+			pods: [simplePod()],
+			wantWorker: (podWorkers, records) => {
+				const uid = "1";
+				expect(podWorkers.podSyncStatuses.size).toBe(1);
+				const s = podWorkers.podSyncStatuses.get(uid);
+				if (
+					!s ||
+					isTerminationRequested(s) ||
+					isTerminationStarted(s) ||
+					isFinished(s) ||
+					isWorking(s) ||
+					isDeleted(s)
+				) {
+					throw new Error(`unexpected requested pod termination: ${JSON.stringify(s)}`);
+				}
+				expect(records.get(uid) ?? []).toEqual([{ name: "pod1", updateType: "create" }]);
+			},
+		},
+		{
+			name: "pod is not added to worker by sync method because it is in a terminal phase",
+			pods: [withPhase(simplePod(), "Failed")],
+			wantWorker: (w, records) => {
+				expect(w.podSyncStatuses.size).toBe(0);
+				expect(records.get("1")).toBeUndefined();
+			},
+		},
+		{
+			name: "pod is not added to worker by sync method because it has been rejected",
+			pods: [simplePod()],
+			rejectedPods: [{ uid: "1", reason: "Test", message: "rejected" }],
+			wantWorker: (w, records) => {
+				expect(w.podSyncStatuses.size).toBe(0);
+				expect(records.get("1")).toBeUndefined();
+			},
+		},
+		{
+			name: "terminating pod that is known to the config gets no update during pod cleanup",
+			pods: [
+				{
+					metadata: {
+						name: "pod1",
+						namespace: "ns1",
+						uid: "1",
+						deletionGracePeriodSeconds: two,
+						deletionTimestamp: deleted,
+					},
+					spec: {
+						terminationGracePeriodSeconds: two,
+						containers: [{ name: "container-1" }],
+					},
+				},
+			],
+			runtimePods: [newFakePod({ pod: runtimePod(simplePod()) })],
+			terminatingErr: new Error("unable to terminate"),
+			prepareWorker: async (w, records) => {
+				const pod: V1Pod = {
+					metadata: { name: "pod1", namespace: "ns1", uid: "1" },
+					spec: {
+						containers: [{ name: "container-1" }],
+					},
+				};
+				await w.updatePod(context.background(), {
+					updateType: "create",
+					startTime: new Date(1_000),
+					pod,
+				});
+				await drainAllWorkers(w);
+				const updatedPod: V1Pod = {
+					metadata: {
+						name: "pod1",
+						namespace: "ns1",
+						uid: "1",
+						deletionGracePeriodSeconds: two,
+						deletionTimestamp: deleted,
+					},
+					spec: {
+						terminationGracePeriodSeconds: two,
+						containers: [{ name: "container-1" }],
+					},
+				};
+				await w.updatePod(context.background(), {
+					updateType: "kill",
+					startTime: new Date(3_000),
+					pod: updatedPod,
+				});
+				await drainAllWorkers(w);
+				expect(records.get(updatedPod.metadata?.uid ?? "") ?? []).toEqual([
+					{ name: "pod1", updateType: "create" },
+					{ name: "pod1", updateType: "kill", gracePeriod: two },
+				]);
+			},
+			wantWorker: (podWorkers, records) => {
+				const uid = "1";
+				expect(podWorkers.podSyncStatuses.size).toBe(1);
+				const s = podWorkers.podSyncStatuses.get(uid);
+				if (
+					!s ||
+					!isTerminationRequested(s) ||
+					!isTerminationStarted(s) ||
+					isFinished(s) ||
+					isWorking(s) ||
+					!isDeleted(s)
+				) {
+					throw new Error(`unexpected requested pod termination: ${JSON.stringify(s)}`);
+				}
+				expect(records.get(uid) ?? []).toEqual([
+					{ name: "pod1", updateType: "create" },
+					{ name: "pod1", updateType: "kill", gracePeriod: two },
+				]);
+			},
+		},
+		{
+			name: "started pod that is not in config is force terminated during pod cleanup",
+			runtimePods: [newFakePod({ pod: runtimePod(simplePod()) })],
+			terminatingErr: new Error("unable to terminate"),
+			prepareWorker: async (podWorkers, records) => {
+				const pod = staticPod();
+				await podWorkers.updatePod(context.background(), {
+					updateType: "create",
+					startTime: new Date(1_000),
+					pod,
+				});
+				await drainAllWorkers(podWorkers);
+				expect(records.get(pod.metadata?.uid ?? "") ?? []).toEqual([
+					{ name: "pod1", updateType: "create" },
+				]);
+			},
+			wantWorker: (podWorkers, records) => {
+				const uid = "1";
+				expect(podWorkers.podSyncStatuses.size).toBe(1);
+				const s = podWorkers.podSyncStatuses.get(uid);
+				if (
+					!s ||
+					!isTerminationRequested(s) ||
+					!isTerminationStarted(s) ||
+					isFinished(s) ||
+					isWorking(s) ||
+					!isDeleted(s)
+				) {
+					throw new Error(`unexpected requested pod termination: ${JSON.stringify(s)}`);
+				}
+				expect(records.get(uid) ?? []).toEqual([
+					{ name: "pod1", updateType: "create" },
+					{ name: "pod1", updateType: "kill", gracePeriod: undefined },
+				]);
+			},
+		},
+		{
+			name: "terminated pod is restarted in the same invocation that it is detected",
+			pods: [
+				(() => {
+					const pod = staticPod();
+					pod.metadata = { ...pod.metadata, annotations: { version: "2" } };
+					return pod;
+				})(),
+			],
+			prepareWorker: async (podWorkers) => {
+				const pod = simplePod();
+				await podWorkers.updatePod(context.background(), {
+					updateType: "create",
+					startTime: new Date(1_000),
+					pod,
+				});
+				await drainAllWorkers(podWorkers);
+				await podWorkers.updatePod(
+					context.background(),
+					newUpdatePodOptions({
+						updateType: "kill",
+						pod,
+					}),
+				);
+				const pod2 = simplePod();
+				pod2.metadata = { ...pod2.metadata, annotations: { version: "2" } };
+				await podWorkers.updatePod(
+					context.background(),
+					newUpdatePodOptions({
+						updateType: "create",
+						pod: pod2,
+					}),
+				);
+				await drainAllWorkers(podWorkers);
+			},
+			wantWorker: (podWorkers, records) => {
+				const uid = "1";
+				expect(podWorkers.podSyncStatuses.size).toBe(1);
+				const s = podWorkers.podSyncStatuses.get(uid);
+				if (
+					!s ||
+					isTerminationRequested(s) ||
+					isTerminationStarted(s) ||
+					isFinished(s) ||
+					isWorking(s) ||
+					isDeleted(s)
+				) {
+					throw new Error(`unexpected requested pod termination: ${JSON.stringify(s)}`);
+				}
+				if (
+					s.pendingUpdate !== undefined ||
+					s.activeUpdate?.pod === undefined ||
+					s.activeUpdate.pod.metadata?.annotations?.version !== "2"
+				) {
+					throw new Error(`unexpected restarted pod: ${JSON.stringify(s.activeUpdate?.pod)}`);
+				}
+				expect(records.get(uid) ?? []).toEqual([
+					{ name: "pod1", updateType: "create" },
+					{ name: "pod1", updateType: "kill", gracePeriod: one },
+					{ name: "pod1", terminated: true },
+					{ name: "pod1", updateType: "create" },
+				]);
+			},
+		},
+	];
+
+	it.each(tests)("$name", async (test) => {
+		const tCtx = context.background();
+		const testKubelet = newTestKubelet(false);
+		const kl = testKubelet.kubelet;
+		const [podWorkers, fakeRuntime, records] = createPodWorkers();
+		kl.podWorkers = podWorkers;
+		const originalPodSyncer = podWorkers.podSyncer;
+		const syncFuncs = newPodSyncerFuncs(originalPodSyncer);
+		podWorkers.podSyncer = syncFuncs;
+		if (test.terminatingErr) {
+			syncFuncs.syncTerminatingPod = async (ctx, pod, podStatus, gracePeriod, podStatusFunc) => {
+				const err = await originalPodSyncer.syncTerminatingPod(
+					ctx,
+					pod,
+					podStatus,
+					gracePeriod,
+					podStatusFunc,
+				);
+				if (err) {
+					throw new Error(`unexpected error in syncTerminatingPodFn: ${err.message}`);
+				}
+				return test.terminatingErr;
+			};
+			syncFuncs.syncTerminatingRuntimePod = async (ctx, runningPod) => {
+				const err = await originalPodSyncer.syncTerminatingRuntimePod(ctx, runningPod);
+				if (err) {
+					throw new Error(`unexpected error in syncTerminatingRuntimePodFn: ${err.message}`);
+				}
+				return test.terminatingErr;
+			};
+		}
+		fakeRuntime.podList = test.runtimePods ?? [];
+		testKubelet.fakeRuntime.podList = test.runtimePods ?? [];
+		try {
+			await test.prepareWorker?.(podWorkers, records);
+			kl.podManager.setPods(test.pods ?? []);
+			for (const reject of test.rejectedPods ?? []) {
+				const pod = kl.podManager.getPodByUid(reject.uid);
+				if (!pod) {
+					throw new Error(`unable to reject pod by UID ${reject.uid}`);
+				}
+				await kl.rejectPod(tCtx, pod, reject.reason, reject.message);
+			}
+
+			const err = await kl.handlePodCleanups(tCtx);
+			expect(err !== undefined).toBe(test.wantErr ?? false);
+			await drainAllWorkers(podWorkers);
+			await test.wantWorker?.(podWorkers, records);
+
+			if (test.wantWorkerAfterRetry) {
+				podWorkers.podSyncer = originalPodSyncer;
+				const retryErr = await kl.handlePodCleanups(tCtx);
+				expect(retryErr !== undefined).toBe(test.wantErr ?? false);
+				await drainAllWorkers(podWorkers);
+				test.wantWorkerAfterRetry(podWorkers, records);
+			}
+		} finally {
+			await podWorkers.close();
+			await testKubelet.cleanup();
+		}
+	});
 });
 
 // Models kubernetes/pkg/kubelet/kubelet_pods_test.go TestConvertToAPIContainerStatuses.
