@@ -82,6 +82,30 @@ function newTestPods(count: number): V1Pod[] {
 	return pods;
 }
 
+// Models kubernetes/pkg/kubelet/kubelet_test.go TestSyncPodsStartPod.
+browser.describe("syncPodsStartPod", () => {
+	it("starts pods dispatched through handlePodSyncs", async () => {
+		expect.hasAssertions();
+		const tCtx = context.background();
+		const testKubelet = newTestKubelet(false);
+		const kubelet = testKubelet.kubelet;
+		const fakeRuntime = testKubelet.fakeRuntime;
+		try {
+			const pods = [
+				podWithUIDNameNsSpec("12345678", "foo", "new", {
+					containers: [{ name: "bar" }],
+				}),
+			];
+
+			kubelet.podManager.setPods(pods);
+			await kubelet.handlePodSyncs(tCtx, pods);
+			expect(fakeRuntime.assertStartedPods([pods[0].metadata?.uid ?? ""])).toBe(true);
+		} finally {
+			await testKubelet.cleanup();
+		}
+	});
+});
+
 // Models kubernetes/pkg/kubelet/kubelet_test.go TestGenerateAPIPodStatusWithSortedContainers.
 browser.describe("generateAPIPodStatusWithSortedContainers", () => {
 	it("sorts container statuses by pod spec container order", async () => {
