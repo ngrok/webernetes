@@ -18,6 +18,11 @@ export class FakePassiveClock implements PassiveClock {
 	setTime(t: Date): void {
 		this.time = new Date(t);
 	}
+
+	// Models vendor/k8s.io/utils/clock/testing/fake_clock.go FakePassiveClock.Step.
+	step(d: number): void {
+		this.setTime(new Date(this.now().getTime() + d));
+	}
 }
 
 // Models vendor/k8s.io/utils/clock/testing/fake_clock.go NewFakePassiveClock.

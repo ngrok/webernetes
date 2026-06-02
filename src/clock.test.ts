@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 import { Clock, MockedDate } from "./clock";
 import { browser } from "./test/describe";
+import { newFakePassiveClock } from "./utils/clock/testing/fake-clock";
 
 function diffMs(time1: Date, time2: Date): number {
 	return time1.getTime() - time2.getTime();
@@ -82,6 +83,36 @@ browser.describe("Clock", () => {
 		clock.pause();
 		await vi.advanceTimersByTimeAsync(20);
 		expect(completed).toBe(false);
+	});
+
+	it("should allow timeouts to be scheduled while paused", async () => {
+		let completed = false;
+
+		clock.pause();
+		clock.setTimeout(() => {
+			completed = true;
+		}, 10);
+
+		await vi.advanceTimersByTimeAsync(20);
+		expect(completed).toBe(false);
+
+		clock.resume();
+		await vi.advanceTimersByTimeAsync(10);
+		expect(completed).toBe(true);
+	});
+
+	it("should allow paused timeouts to be fired by stepping", () => {
+		let completed = false;
+
+		clock.pause();
+		clock.setTimeout(() => {
+			completed = true;
+		}, 10);
+
+		clock.step(10);
+
+		expect(completed).toBe(true);
+		expect(clock.isPaused()).toBe(true);
 	});
 
 	it("should complete timeouts when resumed", async () => {
@@ -241,6 +272,200 @@ browser.describe("Clock", () => {
 		expect(diffTimes(fakeTimes)).toEqual([10, 10, 10]);
 	});
 
+	it("should step time without waiting for wall time", () => {
+		const start = clock.now();
+
+		clock.step(30);
+
+		expect(diffMs(clock.now(), start)).toBe(30);
+	});
+
+	it("should fire due timeouts when stepped", () => {
+		const calls: string[] = [];
+
+		clock.setTimeout(() => {
+			calls.push("10");
+		}, 10);
+		clock.setTimeout(() => {
+			calls.push("30");
+		}, 30);
+
+		clock.step(20);
+		expect(calls).toEqual(["10"]);
+
+		clock.step(10);
+		expect(calls).toEqual(["10", "30"]);
+	});
+
+	it("should fire nested due timeouts during the same step", () => {
+		const calls: string[] = [];
+
+		clock.setTimeout(() => {
+			calls.push("first");
+			clock.setTimeout(() => {
+				calls.push("second");
+			}, 5);
+		}, 10);
+
+		clock.step(15);
+
+		expect(calls).toEqual(["first", "second"]);
+	});
+
+	it("should flush clock microtasks while stepping", () => {
+		const calls: string[] = [];
+
+		clock.setTimeout(() => {
+			calls.push("timeout");
+			clock.queueMicrotask(() => {
+				calls.push("microtask");
+			});
+		}, 10);
+
+		clock.step(10);
+
+		expect(calls).toEqual(["timeout", "microtask"]);
+	});
+
+	it("should flush clock microtasks between stepped callbacks", () => {
+		const calls: string[] = [];
+
+		clock.setTimeout(() => {
+			calls.push("first timeout");
+			clock.queueMicrotask(() => {
+				calls.push("first microtask");
+			});
+		}, 10);
+		clock.setTimeout(() => {
+			calls.push("second timeout");
+		}, 20);
+
+		clock.step(20);
+
+		expect(calls).toEqual(["first timeout", "first microtask", "second timeout"]);
+	});
+
+	it("should flush clock microtasks when stepping without due timers", () => {
+		const calls: string[] = [];
+
+		clock.queueMicrotask(() => {
+			calls.push("microtask");
+		});
+
+		clock.step(0);
+
+		expect(calls).toEqual(["microtask"]);
+	});
+
+	it("should fire intervals for each elapsed period when stepped", () => {
+		const times: Date[] = [clock.now()];
+
+		clock.setInterval(() => {
+			times.push(clock.now());
+		}, 10);
+
+		clock.step(35);
+		expect(diffTimes(times)).toEqual([10, 10, 10]);
+
+		clock.step(5);
+		expect(diffTimes(times)).toEqual([10, 10, 10, 10]);
+	});
+
+	it("should not fire cleared tasks when stepped", () => {
+		const calls: string[] = [];
+		const timeout = clock.setTimeout(() => {
+			calls.push("timeout");
+		}, 10);
+		const interval = clock.setInterval(() => {
+			calls.push("interval");
+		}, 10);
+
+		clock.clearTimeout(timeout);
+		clock.clearInterval(interval);
+		clock.step(30);
+
+		expect(calls).toEqual([]);
+	});
+
+	it("should remove stepped one-shot timeouts that throw", () => {
+		clock.setTimeout(() => {
+			throw new Error("timeout failed");
+		}, 10);
+
+		expect(() => clock.step(10)).not.toThrow();
+
+		expect(clock.pendingTaskCount()).toBe(0);
+	});
+
+	it("should reschedule stepped intervals that throw", () => {
+		const calls: Date[] = [];
+		clock.setInterval(() => {
+			calls.push(clock.now());
+			throw new Error("interval failed");
+		}, 10);
+
+		expect(() => clock.step(10)).not.toThrow();
+		expect(clock.pendingTaskCount()).toBe(1);
+
+		expect(() => clock.step(10)).not.toThrow();
+		expect(diffTimes(calls)).toEqual([10]);
+	});
+
+	it("should continue stepping after a callback throws", () => {
+		const calls: string[] = [];
+		clock.setTimeout(() => {
+			calls.push("throws");
+			throw new Error("timeout failed");
+		}, 10);
+		clock.setTimeout(() => {
+			calls.push("continues");
+		}, 20);
+
+		clock.step(20);
+
+		expect(calls).toEqual(["throws", "continues"]);
+		expect(clock.pendingTaskCount()).toBe(0);
+	});
+
+	it("should preserve paused state after stepping", () => {
+		clock.pause();
+
+		clock.step(10);
+
+		expect(clock.isPaused()).toBe(true);
+	});
+
+	it("should resume wall timer scheduling after stepping an unpaused clock", async () => {
+		const calls: string[] = [];
+		clock.setTimeout(() => {
+			calls.push("timeout");
+		}, 30);
+
+		clock.step(10);
+		expect(clock.isPaused()).toBe(false);
+		expect(calls).toEqual([]);
+
+		await vi.advanceTimersByTimeAsync(19);
+		expect(calls).toEqual([]);
+
+		await vi.advanceTimersByTimeAsync(1);
+		expect(calls).toEqual(["timeout"]);
+	});
+
+	it("should not leave stepped clock microtasks waiting for wall time", async () => {
+		const calls: string[] = [];
+		clock.queueMicrotask(() => {
+			calls.push("microtask");
+		});
+
+		clock.step(0);
+		expect(clock.isPaused()).toBe(false);
+		expect(calls).toEqual(["microtask"]);
+
+		await vi.advanceTimersByTimeAsync(0);
+		expect(calls).toEqual(["microtask"]);
+	});
+
 	it("should dispose correctly", async () => {
 		let completed = false;
 		{
@@ -251,5 +476,16 @@ browser.describe("Clock", () => {
 		}
 		await vi.advanceTimersByTimeAsync(20);
 		expect(completed).toBe(false);
+	});
+});
+
+browser.describe("FakePassiveClock", () => {
+	it("should step passive time", () => {
+		const clock = newFakePassiveClock(new Date(1_000));
+
+		clock.step(30);
+
+		expect(clock.now()).toEqual(new Date(1_030));
+		expect(clock.since(new Date(1_000))).toBe(30);
 	});
 });

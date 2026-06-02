@@ -1,6 +1,7 @@
 // oxlint-disable jest/no-standalone-expect
 import { expect, it } from "vitest";
 import type { V1Container, V1ContainerStatus, V1Pod } from "../../client";
+import { Channel } from "../../go/channel";
 import * as context from "../../go/context";
 import { browser } from "../../test/describe";
 import {
@@ -17,8 +18,10 @@ import {
 	podWithUIDNameNs,
 	podWithUIDNameNsSpec,
 } from "./kubelet-test-helpers";
+import type { PodLifecycleEvent } from "./pleg";
 import { newReasonCache } from "./reason-cache";
 import { configSourceAnnotationKey } from "./types";
+import type { PodUpdate } from "./types/pod-update";
 
 function containerStatusZero(cName: string): V1ContainerStatus {
 	return {
@@ -82,6 +85,38 @@ function newTestPods(count: number): V1Pod[] {
 	return pods;
 }
 
+function podsByUID(a: V1Pod, b: V1Pod): number {
+	return (a.metadata?.uid ?? "").localeCompare(b.metadata?.uid ?? "");
+}
+
+// Models kubernetes/pkg/kubelet/kubelet_test.go TestSyncLoopAbort.
+browser.describe("syncLoopAbort", () => {
+	it("returns false when the config channel is closed", async () => {
+		expect.hasAssertions();
+		const tCtx = context.background();
+		const testKubelet = newTestKubelet(false);
+		const kubelet = testKubelet.kubelet;
+		try {
+			kubelet.runtimeState.setRuntimeSync(kubelet.clock.now());
+
+			const ch = new Channel<PodUpdate>();
+			ch.close();
+
+			const ok = await kubelet.syncLoopIteration(
+				tCtx,
+				ch.readOnly(),
+				kubelet,
+				new Channel<Date>().readOnly(),
+				new Channel<Date>().readOnly(),
+				new Channel<PodLifecycleEvent>(1).readOnly(),
+			);
+			expect(ok).toBe(false);
+		} finally {
+			await testKubelet.cleanup();
+		}
+	});
+});
+
 // Models kubernetes/pkg/kubelet/kubelet_test.go TestSyncPodsStartPod.
 browser.describe("syncPodsStartPod", () => {
 	it("starts pods dispatched through handlePodSyncs", async () => {
@@ -100,6 +135,87 @@ browser.describe("syncPodsStartPod", () => {
 			kubelet.podManager.setPods(pods);
 			await kubelet.handlePodSyncs(tCtx, pods);
 			expect(fakeRuntime.assertStartedPods([pods[0].metadata?.uid ?? ""])).toBe(true);
+		} finally {
+			await testKubelet.cleanup();
+		}
+	});
+});
+
+// Models kubernetes/pkg/kubelet/kubelet_test.go TestGetPodsToSync.
+browser.describe("getPodsToSync", () => {
+	it("returns due work queue pods and pods selected by sync-loop handlers", async () => {
+		expect.hasAssertions();
+		const testKubelet = newTestKubelet(false);
+		const kubelet = testKubelet.kubelet;
+		try {
+			const pods = newTestPods(5);
+
+			const exceededActiveDeadlineSeconds = 30;
+			const notYetActiveDeadlineSeconds = 120;
+			const startTime = kubelet.clock.now();
+			pods[0].status = { startTime };
+			pods[0].spec = {
+				...pods[0].spec,
+				containers: pods[0].spec?.containers ?? [],
+				activeDeadlineSeconds: exceededActiveDeadlineSeconds,
+			};
+			pods[1].status = { startTime };
+			pods[1].spec = {
+				...pods[1].spec,
+				containers: pods[1].spec?.containers ?? [],
+				activeDeadlineSeconds: notYetActiveDeadlineSeconds,
+			};
+			pods[2].status = { startTime };
+			pods[2].spec = {
+				...pods[2].spec,
+				containers: pods[2].spec?.containers ?? [],
+				activeDeadlineSeconds: exceededActiveDeadlineSeconds,
+			};
+
+			kubelet.podManager.setPods(pods);
+			kubelet.workQueue.enqueue(pods[2].metadata?.uid ?? "", 0);
+			kubelet.workQueue.enqueue(pods[3].metadata?.uid ?? "", 30 * 1000);
+			kubelet.workQueue.enqueue(pods[4].metadata?.uid ?? "", 2 * 60 * 1000);
+
+			kubelet.clock.step(60 * 1000);
+
+			const expected = [pods[2], pods[3], pods[0]];
+			const podsToSync = kubelet.getPodsToSync();
+			expect(podsToSync.toSorted(podsByUID)).toEqual(expected.toSorted(podsByUID));
+		} finally {
+			await testKubelet.cleanup();
+		}
+	});
+});
+
+class testPodSyncLoopHandler {
+	constructor(private readonly podsToSync: V1Pod[]) {}
+
+	// Models kubernetes/pkg/kubelet/kubelet_test.go testPodSyncLoopHandler.ShouldSync.
+	shouldSync(pod: V1Pod): boolean {
+		for (const podToSync of this.podsToSync) {
+			if (podToSync.metadata?.uid === pod.metadata?.uid) {
+				return true;
+			}
+		}
+		return false;
+	}
+}
+
+// Models kubernetes/pkg/kubelet/kubelet_test.go TestGetPodsToSyncInvokesPodSyncLoopHandlers.
+browser.describe("getPodsToSyncInvokesPodSyncLoopHandlers", () => {
+	it("invokes registered sync-loop handlers", async () => {
+		expect.hasAssertions();
+		const testKubelet = newTestKubelet(false);
+		const kubelet = testKubelet.kubelet;
+		try {
+			const pods = newTestPods(5);
+			const expected = [pods[0]];
+			kubelet.addPodSyncLoopHandler(new testPodSyncLoopHandler(expected));
+			kubelet.podManager.setPods(pods);
+
+			const podsToSync = kubelet.getPodsToSync();
+			expect(podsToSync.toSorted(podsByUID)).toEqual(expected.toSorted(podsByUID));
 		} finally {
 			await testKubelet.cleanup();
 		}

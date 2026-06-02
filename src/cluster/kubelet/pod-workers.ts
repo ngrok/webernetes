@@ -245,7 +245,7 @@ function isPodStatusCacheTerminal(status: PodRuntimeStatus): boolean {
 
 // Models kubernetes/pkg/kubelet/pod_workers.go podWorkers.
 export class PodWorkersImpl implements PodWorkers {
-	private readonly podUpdates = new Map<string, Channel<void>>();
+	readonly podUpdates = new Map<string, Channel<void>>();
 	// Simulator-only bookkeeping: Kubernetes starts pod workers as goroutines
 	// and does not retain handles, but async close() needs promises it can await.
 	private readonly workerRuns = new Map<string, Promise<void>>();
@@ -256,13 +256,21 @@ export class PodWorkersImpl implements PodWorkers {
 	private stopped = false;
 
 	constructor(
-		private readonly clock: PassiveClock,
-		private readonly workQueue: WorkQueue,
-		private readonly resyncIntervalMs: number,
-		private readonly backOffPeriodMs: number,
+		clock: PassiveClock,
+		readonly workQueue: WorkQueue,
+		resyncIntervalMs: number,
+		backOffPeriodMs: number,
 		public podSyncer: PodSyncer,
 		readonly podCache: kubecontainer.ROCache,
-	) {}
+	) {
+		this.clock = clock;
+		this.resyncIntervalMs = resyncIntervalMs;
+		this.backOffPeriodMs = backOffPeriodMs;
+	}
+
+	clock: PassiveClock;
+	resyncIntervalMs: number;
+	backOffPeriodMs: number;
 
 	// Models kubernetes/pkg/kubelet/pod_workers.go UpdatePod.
 	async updatePod(ctx: context.Context, options: UpdatePodOptions): Promise<void> {
@@ -743,7 +751,7 @@ export class PodWorkersImpl implements PodWorkers {
 	}
 
 	// Models kubernetes/pkg/kubelet/pod_workers.go completeWork.
-	private completeWork(podUID: string, phaseTransition: boolean, syncError: unknown): void {
+	completeWork(podUID: string, phaseTransition: boolean, syncError: unknown): void {
 		switch (true) {
 			case phaseTransition:
 				this.workQueue.enqueue(podUID, 0);

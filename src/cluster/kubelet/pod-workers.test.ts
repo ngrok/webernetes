@@ -1,14 +1,26 @@
 import { expect, it } from "vitest";
 import type { V1Pod } from "../../client";
+import { newAggregate } from "../../apimachinery/pkg/util/errors/errors";
 import { deepEqual } from "../../deep-equal";
 import { Channel, type ReadOnlyChannel } from "../../go/channel";
 import * as context from "../../go/context";
 import { wait } from "../../promise";
 import { browser } from "../../test/describe";
-import type { FakePassiveClock } from "../../utils/clock/testing/fake-clock";
-import { newPod, newPodStatus, type PodStatus as PodRuntimeStatus } from "./container";
+import { newFakePassiveClock, type FakePassiveClock } from "../../utils/clock/testing/fake-clock";
+import {
+	newBackoffError,
+	newPod,
+	newPodStatus,
+	type PodStatus as PodRuntimeStatus,
+} from "./container";
+import { networkNotReadyErrorMsg } from "./errors";
 import { FakeRuntime } from "./container/testing";
-import { createPodWorkers, drainAllWorkers, type syncPodRecord } from "./kubelet-test-helpers";
+import {
+	createPodWorkers,
+	drainAllWorkers,
+	FakeQueue,
+	type syncPodRecord,
+} from "./kubelet-test-helpers";
 import {
 	newPodSyncStatus,
 	newUpdatePodOptions,
@@ -195,6 +207,177 @@ async function drainWorkers(podWorkers: PodWorkersImpl, numPods: number): Promis
 		await wait(50);
 	}
 }
+
+// Models kubernetes/pkg/kubelet/pod_workers_test.go TestCompleteWork_Enqueue.
+browser.describe("completeWork_Enqueue", () => {
+	const noJitter = 0;
+	const defaultBackoff = 10 * 1000;
+	const resyncInterval = 20 * 1000;
+	const clock = newFakePassiveClock(new Date(1_000));
+
+	const testCases: Array<{
+		name: string;
+		phaseTransition?: boolean;
+		syncErr?: Error;
+		expectedMin: number;
+		jitterFactor: number;
+	}> = [
+		{
+			name: "phase transition requeues for immediate processing",
+			phaseTransition: true,
+			expectedMin: 0,
+			jitterFactor: noJitter,
+		},
+		{
+			name: "no error uses regular resync interval",
+			expectedMin: resyncInterval,
+			jitterFactor: 0.5,
+		},
+		{
+			name: "generic error uses default backoff",
+			syncErr: new Error("generic error"),
+			expectedMin: defaultBackoff,
+			jitterFactor: 0.5,
+		},
+		{
+			name: "BackoffError uses error's backoff",
+			syncErr: newBackoffError(
+				new Error("backoff error"),
+				new Date(clock.now().getTime() + 5 * 1000),
+			),
+			expectedMin: 5 * 1000,
+			jitterFactor: 0.5,
+		},
+		{
+			name: "Aggregate error with one BackoffError uses its backoff",
+			syncErr: newAggregate([
+				new Error("some other error"),
+				newBackoffError(
+					new Error("backoff error in aggregate"),
+					new Date(clock.now().getTime() + 7 * 1000),
+				),
+			]),
+			expectedMin: 7 * 1000,
+			jitterFactor: 0.5,
+		},
+		{
+			name: "Aggregate error with multiple BackoffErrors uses minimum backoff",
+			syncErr: newAggregate([
+				newBackoffError(new Error("backoff error 1"), new Date(clock.now().getTime() + 10 * 1000)),
+				newBackoffError(new Error("backoff error 2"), new Date(clock.now().getTime() + 3 * 1000)),
+			]),
+			expectedMin: 3 * 1000,
+			jitterFactor: 0.5,
+		},
+		{
+			name: "BackoffError in the past enqueues for immediate processing with jitter",
+			syncErr: newBackoffError(
+				new Error("backoff error"),
+				new Date(clock.now().getTime() - 5 * 1000),
+			),
+			expectedMin: 0,
+			jitterFactor: 0.5,
+		},
+		{
+			name: "Excessively long backoff duration enqueues for the maximum allowed",
+			syncErr: newBackoffError(
+				new Error("backoff error"),
+				new Date(clock.now().getTime() + resyncInterval * 2),
+			),
+			expectedMin: resyncInterval,
+			jitterFactor: 0.5,
+		},
+		{
+			name: "NetworkNotReadyError uses backOffOnTransientErrorPeriod",
+			syncErr: new Error(networkNotReadyErrorMsg),
+			expectedMin: 1000,
+			jitterFactor: 0.5,
+		},
+		{
+			name: "Aggregate with NetworkNotReadyError",
+			syncErr: newAggregate([new Error("some other error"), new Error(networkNotReadyErrorMsg)]),
+			expectedMin: 1000,
+			jitterFactor: 0.5,
+		},
+		{
+			name: "Aggregate with NetworkNotReadyError and BackoffError",
+			syncErr: newAggregate([
+				new Error("some other error"),
+				new Error(networkNotReadyErrorMsg),
+				newBackoffError(new Error("backoff error 2"), new Date(clock.now().getTime() + 3 * 1000)),
+			]),
+			expectedMin: 1000,
+			jitterFactor: 0.5,
+		},
+	];
+
+	it.each(testCases)("$name", async (tc) => {
+		const [podWorkers] = createPodWorkers();
+		try {
+			const fakeQueue = podWorkers.workQueue as FakeQueue;
+			const podUID = "12345";
+
+			podWorkers.clock = clock;
+			podWorkers.resyncIntervalMs = resyncInterval;
+			podWorkers.backOffPeriodMs = defaultBackoff;
+			podWorkers.podSyncStatuses.set(podUID, newPodSyncStatus({}));
+			podWorkers.completeWork(podUID, tc.phaseTransition ?? false, tc.syncErr);
+
+			expect(fakeQueue.empty()).toBe(false);
+			const items = fakeQueue.items();
+			expect(items).toHaveLength(1);
+			const item = items[0];
+			expect(item?.uid).toBe(podUID);
+
+			const expectedMax = tc.expectedMin + tc.expectedMin * tc.jitterFactor;
+			expect(item?.delay).toBeGreaterThanOrEqual(tc.expectedMin);
+			expect(item?.delay).toBeLessThanOrEqual(expectedMax);
+		} finally {
+			await podWorkers.close();
+		}
+	});
+});
+
+// Models kubernetes/pkg/kubelet/pod_workers_test.go TestCompleteWork_PendingUpdate.
+browser.describe("completeWork_PendingUpdate", () => {
+	const podUID = "pod-with-pending-update-check";
+
+	it("with nil pendingUpdate, clears working status", async () => {
+		const [p] = createPodWorkers();
+		try {
+			p.podSyncStatuses.set(podUID, newPodSyncStatus({ working: true }));
+
+			p.completeWork(podUID, false, undefined);
+
+			expect(p.podSyncStatuses.get(podUID)?.working).toBe(false);
+		} finally {
+			await p.close();
+		}
+	});
+
+	it("with non-nil pendingUpdate, queues an update signal", async () => {
+		const [p] = createPodWorkers();
+		try {
+			p.podUpdates.set(podUID, new Channel<void>(1));
+			p.podSyncStatuses.set(
+				podUID,
+				newPodSyncStatus({
+					working: true,
+					pendingUpdate: {
+						pod: newNamedPod("1", "ns", "running-pod", false),
+					},
+				}),
+			);
+
+			p.completeWork(podUID, false, undefined);
+
+			const queued = p.podUpdates.get(podUID)?.tryReceive();
+			expect(queued?.ok).toBe(true);
+		} finally {
+			await p.close();
+		}
+	});
+});
 
 // Models kubernetes/pkg/kubelet/pod_workers_test.go TestUpdatePodForRuntimePod.
 browser.describe("updatePodForRuntimePod", () => {
@@ -687,6 +870,104 @@ browser.describe("updatePodDoesNotForgetSyncPodKill", () => {
 				}
 				expect(match).toBe(true);
 			}
+		} finally {
+			await podWorkers.close();
+		}
+	});
+});
+
+// Models kubernetes/pkg/kubelet/pod_workers_test.go TestSyncKnownPods.
+browser.describe("syncKnownPods", () => {
+	it("tracks lifecycle query state while forgetting terminated workers", async () => {
+		const tCtx = context.background();
+		const [podWorkers] = createPodWorkers();
+		try {
+			const numPods = 20;
+			for (let i = 0; i < numPods; i++) {
+				await podWorkers.updatePod(
+					tCtx,
+					newUpdatePodOptions({
+						pod: newNamedPod(String(i), "ns", "name", false),
+						updateType: "update",
+					}),
+				);
+			}
+			await drainWorkers(podWorkers, numPods);
+
+			expect(podWorkers.podUpdates.size).toBe(numPods);
+
+			const desiredPods = new Set(["2", "14"]);
+			const desiredPodList = [
+				newNamedPod("2", "ns", "name", false),
+				newNamedPod("14", "ns", "name", false),
+			];
+
+			for (let i = 0; i < numPods; i++) {
+				const pod = newNamedPod(String(i), "ns", "name", false);
+				if (desiredPods.has(pod.metadata?.uid ?? "")) {
+					continue;
+				}
+				if (i % 2 === 0) {
+					pod.metadata ??= {};
+					pod.metadata.deletionTimestamp = new Date();
+				}
+				await podWorkers.updatePod(
+					tCtx,
+					newUpdatePodOptions({
+						pod,
+						updateType: "kill",
+					}),
+				);
+			}
+			await drainWorkers(podWorkers, numPods);
+
+			expect(podWorkers.shouldPodContainersBeTerminating("0")).toBe(true);
+			expect(podWorkers.shouldPodContainersBeTerminating("1")).toBe(true);
+			expect(podWorkers.shouldPodContainersBeTerminating("2")).toBe(false);
+			expect(podWorkers.isPodTerminationRequested("0")).toBe(true);
+			expect(podWorkers.isPodTerminationRequested("2")).toBe(false);
+
+			expect(podWorkers.couldHaveRunningContainers("0")).toBe(false);
+			expect(podWorkers.couldHaveRunningContainers("1")).toBe(false);
+			expect(podWorkers.couldHaveRunningContainers("2")).toBe(true);
+
+			expect(podWorkers.shouldPodContentBeRemoved("0")).toBe(true);
+			expect(podWorkers.shouldPodContentBeRemoved("1")).toBe(false);
+			expect(podWorkers.shouldPodContentBeRemoved("2")).toBe(false);
+
+			expect(podWorkers.shouldPodContainersBeTerminating("abc")).toBe(false);
+			expect(podWorkers.couldHaveRunningContainers("abc")).toBe(true);
+			expect(podWorkers.shouldPodContentBeRemoved("abc")).toBe(false);
+
+			podWorkers.syncKnownPods(desiredPodList);
+			expect(podWorkers.podUpdates.size).toBe(2);
+			expect(podWorkers.podUpdates.has("2")).toBe(true);
+			expect(podWorkers.podUpdates.has("14")).toBe(true);
+			expect(podWorkers.isPodTerminationRequested("2")).toBe(false);
+
+			expect(podWorkers.shouldPodContainersBeTerminating("abc")).toBe(true);
+			expect(podWorkers.couldHaveRunningContainers("abc")).toBe(false);
+			expect(podWorkers.shouldPodContentBeRemoved("abc")).toBe(true);
+
+			podWorkers.syncKnownPods([]);
+			await drainAllWorkers(podWorkers);
+			expect(podWorkers.podUpdates.size).toBe(0);
+			expect(podWorkers.podSyncStatuses.size).toBe(2);
+
+			for (const uid of desiredPods) {
+				await podWorkers.updatePod(
+					tCtx,
+					newUpdatePodOptions({
+						pod: newNamedPod(uid, "ns", "name", false),
+						updateType: "kill",
+					}),
+				);
+			}
+			await drainWorkers(podWorkers, numPods);
+
+			podWorkers.syncKnownPods([]);
+			expect(podWorkers.podUpdates.size).toBe(0);
+			expect(podWorkers.podSyncStatuses.size).toBe(0);
 		} finally {
 			await podWorkers.close();
 		}

@@ -77,6 +77,64 @@ export class Clock implements PassiveClock {
 		});
 	}
 
+	step(ms: number): void {
+		if (ms < 0) {
+			throw new Error("Step duration must be non-negative");
+		}
+		const wasPaused = this.paused;
+		const targetMs = this.nowMs() + ms;
+		if (!wasPaused) {
+			this.simulatedNowMs = this.nowMs();
+			this.paused = true;
+		}
+		for (const task of this.tasks.values()) {
+			this.unscheduleTask(task);
+		}
+
+		try {
+			for (;;) {
+				const task = this.nextDueTask(targetMs);
+				if (!task) {
+					break;
+				}
+
+				this.simulatedNowMs = task.dueAtMs;
+				if (task.cancelled) {
+					this.tasks.delete(task.handle);
+					continue;
+				}
+
+				try {
+					task.callback();
+					// A stepped timer callback is one simulated task; flush queued clock
+					// microtasks before running the next due timer task.
+					this.flushMicrotasks(true);
+				} catch {
+					// Match timer behavior: callback failures do not stop clock advancement.
+				} finally {
+					if (task.cancelled || task.intervalMs == null) {
+						this.tasks.delete(task.handle);
+					} else {
+						task.dueAtMs += task.intervalMs;
+					}
+				}
+			}
+			this.simulatedNowMs = targetMs;
+			// If no timer task ran, or if callers queued clock microtasks before
+			// stepping, still complete the simulated microtask checkpoint.
+			this.flushMicrotasks(true);
+		} finally {
+			if (!wasPaused) {
+				this.paused = false;
+				this.wallStartedAtMs = Date.now();
+				for (const task of this.tasks.values()) {
+					this.scheduleTask(task);
+				}
+				this.scheduleMicrotaskFlush();
+			}
+		}
+	}
+
 	setTimeout(callback: () => void, delayMs: number): number {
 		const handle = this.nextHandle++;
 		const task: Task = {
@@ -154,14 +212,17 @@ export class Clock implements PassiveClock {
 		});
 	}
 
-	private flushMicrotasks() {
-		if (this.paused || this.flushingMicrotasks) {
+	private flushMicrotasks(force = false) {
+		if ((!force && this.paused) || this.flushingMicrotasks) {
 			return;
 		}
 
 		this.flushingMicrotasks = true;
 		try {
-			while (!this.paused) {
+			for (;;) {
+				if (!force && this.paused) {
+					return;
+				}
 				const callback = this.microtasks.shift();
 				if (!callback) {
 					return;
@@ -179,6 +240,9 @@ export class Clock implements PassiveClock {
 	private scheduleTask(task: Task) {
 		if (task.cancelled) {
 			throw new Error("Tried to schedule a cancelled task");
+		}
+		if (this.paused) {
+			return;
 		}
 
 		const delayMs = Math.max(0, task.dueAtMs - this.nowMs());
@@ -201,11 +265,7 @@ export class Clock implements PassiveClock {
 	}
 
 	private pauseTask(task: Task) {
-		if (!task.setTimeoutHandle) {
-			throw new Error("Tried to pause a task that is not scheduled");
-		}
-		clearTimeout(task.setTimeoutHandle);
-		task.setTimeoutHandle = undefined;
+		this.unscheduleTask(task);
 	}
 
 	private resumeTask(task: Task) {
@@ -213,6 +273,30 @@ export class Clock implements PassiveClock {
 			throw new Error("Tried to resume a task that is already scheduled");
 		}
 		this.scheduleTask(task);
+	}
+
+	private unscheduleTask(task: Task): void {
+		if (task.setTimeoutHandle) {
+			clearTimeout(task.setTimeoutHandle);
+			task.setTimeoutHandle = undefined;
+		}
+	}
+
+	private nextDueTask(targetMs: number): Task | undefined {
+		let next: Task | undefined;
+		for (const task of this.tasks.values()) {
+			if (task.cancelled || task.dueAtMs > targetMs) {
+				continue;
+			}
+			if (
+				!next ||
+				task.dueAtMs < next.dueAtMs ||
+				(task.dueAtMs === next.dueAtMs && task.handle < next.handle)
+			) {
+				next = task;
+			}
+		}
+		return next;
 	}
 
 	[Symbol.dispose]() {
