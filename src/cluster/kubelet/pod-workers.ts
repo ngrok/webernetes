@@ -1,12 +1,12 @@
-import { Channel, type SendChannel } from "../../go/channel";
+import { Channel, type ReadOnlyChannel, type SendChannel } from "../../go/channel";
 import * as context from "../../go/context";
 import type { V1Pod, V1PodStatus } from "../../client";
-import type { Clock } from "../../clock";
 import * as kubecontainer from "./container";
 import type { PodStatus as PodRuntimeStatus } from "./container";
 import { networkNotReadyErrorMsg } from "./errors";
 import { isStaticPod, type SyncPodType } from "./types/pod-update";
 import type { WorkQueue } from "./util/queue/work-queue";
+import type { PassiveClock } from "../../utils/clock/clock";
 
 // Models kubernetes/pkg/kubelet/pod_workers.go workerResyncIntervalJitterFactor.
 const workerResyncIntervalJitterFactor = 0.5;
@@ -191,11 +191,13 @@ export class PodWorkersImpl implements PodWorkers {
 	// and does not retain handles, but async close() needs promises it can await.
 	private readonly workerRuns = new Map<string, Promise<void>>();
 	readonly podSyncStatuses = new Map<string, PodSyncStatus>();
+	// Models kubernetes/pkg/kubelet/pod_workers.go podWorkers.workerChannelFn.
+	workerChannelFn?: (uid: string, inCh: ReadOnlyChannel<void>) => ReadOnlyChannel<void>;
 	private podsSynced = false;
 	private stopped = false;
 
 	constructor(
-		private readonly clock: Clock,
+		private readonly clock: PassiveClock,
 		private readonly workQueue: WorkQueue,
 		private readonly resyncIntervalMs: number,
 		private readonly backOffPeriodMs: number,
@@ -385,9 +387,11 @@ export class PodWorkersImpl implements PodWorkers {
 		if (!podUpdates) {
 			podUpdates = new Channel<void>(1);
 			this.podUpdates.set(uid, podUpdates);
+			const workerUpdates =
+				this.workerChannelFn?.(uid, podUpdates.readOnly()) ?? podUpdates.readOnly();
 			// Mirrors the goroutine defer that observes worker exit upstream; the
 			// map itself is simulator-only bookkeeping for awaitable shutdown.
-			const run = this.podWorkerLoop(ctx, uid, podUpdates).finally(() => {
+			const run = this.podWorkerLoop(ctx, uid, workerUpdates).finally(() => {
 				this.workerRuns.delete(uid);
 			});
 			this.workerRuns.set(uid, run);
@@ -481,7 +485,7 @@ export class PodWorkersImpl implements PodWorkers {
 	private async podWorkerLoop(
 		parentCtx: context.Context,
 		podUID: string,
-		podUpdates: Channel<void>,
+		podUpdates: ReadOnlyChannel<void>,
 	): Promise<void> {
 		let lastSyncTime = new Date(0);
 		for await (const _ of podUpdates) {
@@ -909,7 +913,7 @@ export class PodWorkersImpl implements PodWorkers {
 function mergeLastUpdate(s: PodSyncStatus, other: UpdatePodOptions): void {
 	let opts = s.activeUpdate;
 	if (!opts) {
-		opts = { updateType: "create", startTime: new Date(0) };
+		opts = { updateType: "sync", startTime: new Date(0) };
 		s.activeUpdate = opts;
 	}
 

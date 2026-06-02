@@ -1,3 +1,5 @@
+import type { PassiveClock } from "./utils/clock/clock";
+
 interface Task {
 	handle: number;
 	callback: () => void;
@@ -17,7 +19,7 @@ export class MockedDate extends Date {
 	}
 }
 
-export class Clock {
+export class Clock implements PassiveClock {
 	private nextHandle = 1;
 	private readonly tasks = new Map<number, Task>();
 	private readonly microtasks: Array<() => void> = [];
@@ -29,6 +31,10 @@ export class Clock {
 
 	now(): MockedDate {
 		return new MockedDate(this, this.nowMs());
+	}
+
+	since(ts: Date): number {
+		return this.nowMs() - ts.getTime();
 	}
 
 	nowMs(): number {
