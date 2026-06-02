@@ -695,7 +695,7 @@ export class StatusManager {
 	private normalizeStatus(pod: V1Pod, status: V1PodStatus): V1PodStatus {
 		let bytesPerStatus = 1024 * 12;
 		const containers =
-			(pod.spec?.containers.length ?? 0) +
+			(pod.spec?.containers?.length ?? 0) +
 			(pod.spec?.initContainers?.length ?? 0) +
 			(pod.spec?.ephemeralContainers?.length ?? 0);
 		if (containers > 0) {
