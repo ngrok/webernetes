@@ -103,7 +103,11 @@ export class NamespaceController extends BaseImage {
 			try {
 				await this.syncNamespace(ctx, selected);
 			} catch {
-				// ignore
+				if (!ctx.err()) {
+					await ctx.sleep(1000);
+					this.queued.add(selected);
+					await this.queue.send(selected);
+				}
 			}
 		}
 	}
@@ -115,7 +119,10 @@ export class NamespaceController extends BaseImage {
 			return;
 		}
 
-		await this.deleteAllContent(namespaceName);
+		const remaining = await this.deleteAllContent(namespaceName);
+		if (remaining) {
+			throw new Error(`namespace ${namespaceName} still has content`);
+		}
 		await retryConflicts(
 			async () => {
 				const latest = await this.readNamespace(namespaceName);
@@ -134,17 +141,19 @@ export class NamespaceController extends BaseImage {
 	}
 
 	// Models kubernetes/pkg/controller/namespace/deletion/namespaced_resources_deleter.go deleteAllContent.
-	private async deleteAllContent(namespace: string): Promise<void> {
+	private async deleteAllContent(namespace: string): Promise<boolean> {
+		let remaining = false;
 		for (const deleter of this.namespacedResourceDeleters) {
-			await this.deleteAllContentForResource(deleter, namespace);
+			remaining = (await this.deleteAllContentForResource(deleter, namespace)) || remaining;
 		}
+		return remaining;
 	}
 
 	// Models kubernetes/pkg/controller/namespace/deletion/namespaced_resources_deleter.go deleteAllContentForGroupVersionResource.
 	private async deleteAllContentForResource<T extends k8s.KubernetesObject>(
 		deleter: NamespacedResourceDeleter<T>,
 		namespace: string,
-	): Promise<void> {
+	): Promise<boolean> {
 		const items = await deleter.list(namespace);
 		await Promise.all(
 			items.map(async (item) => {
@@ -155,6 +164,7 @@ export class NamespaceController extends BaseImage {
 				await this.ignoreNotFound(() => deleter.delete(name, namespace));
 			}),
 		);
+		return (await deleter.list(namespace)).length > 0;
 	}
 
 	private async readNamespace(name: string): Promise<k8s.V1Namespace | undefined> {
