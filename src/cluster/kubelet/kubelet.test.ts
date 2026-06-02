@@ -1,3 +1,4 @@
+// oxlint-disable jest/no-standalone-expect
 import { expect, it } from "vitest";
 import type { V1Container, V1ContainerStatus, V1Pod } from "../../client";
 import * as context from "../../go/context";
@@ -9,7 +10,7 @@ import {
 	type Status as ContainerRuntimeStatus,
 	newSyncResult,
 } from "./container";
-import type { FakePod } from "./container/testing";
+import { newFakePod, type FakePod } from "./container/testing";
 import {
 	FakePodWorkers,
 	newTestKubelet,
@@ -140,7 +141,7 @@ browser.describe("handlePodRemovesWhenSourcesAreReady", () => {
 		const testKubelet = newTestKubelet(false);
 		const kubelet = testKubelet.kubelet;
 		try {
-			const fakePod: FakePod = {
+			const fakePod: FakePod = newFakePod({
 				pod: {
 					id: "1",
 					name: "foo",
@@ -163,8 +164,7 @@ browser.describe("handlePodRemovesWhenSourcesAreReady", () => {
 					],
 					sandboxes: [],
 				},
-				netnsPath: "",
-			};
+			});
 			testKubelet.fakeRuntime.podList = [fakePod];
 			const pods = [podWithUIDNameNs("1", "foo", "new")];
 			kubelet.sourcesReady = { addSource: () => {}, allReady: () => ready };
@@ -194,7 +194,7 @@ browser.describe("handlePodCleanups", () => {
 		const kubelet = testKubelet.kubelet;
 		try {
 			testKubelet.fakeRuntime.podList = [
-				{
+				newFakePod({
 					pod: {
 						id: "12345678",
 						name: "foo",
@@ -217,8 +217,7 @@ browser.describe("handlePodCleanups", () => {
 						],
 						sandboxes: [],
 					},
-					netnsPath: "",
-				},
+				}),
 			];
 
 			const err = await kubelet.handlePodCleanups(tCtx);

@@ -1,8 +1,10 @@
 import type { V1Container, V1Pod, V1PodStatus } from "../../../../client";
 import type { Backoff } from "../../../../client-go/util/flowcontrol/backoff";
 import { deepEqual } from "../../../../deep-equal";
+import { deepMerge } from "../../../../deep-merge";
 import { Channel, select } from "../../../../go/channel";
 import type * as context from "../../../../go/context";
+import type { DeepPartial } from "../../../../utility-types";
 import type { ImageFsInfoResponse, PodSandboxConfig } from "../../../cri";
 import type {
 	CheckpointContainerRequest,
@@ -13,6 +15,7 @@ import type {
 import {
 	ContainerID,
 	errPodNotFound,
+	newPod,
 	PodSyncResult,
 	type GCPolicy,
 	type Image,
@@ -32,6 +35,21 @@ import {
 export interface FakePod {
 	pod: Pod;
 	netnsPath: string;
+}
+
+// Models kubernetes/pkg/kubelet/container/testing/fake_runtime.go FakePod.
+export function newFakePod(fakePod: DeepPartial<FakePod> = {}): FakePod {
+	const normalizedFakePod: DeepPartial<FakePod> = { ...fakePod };
+	if (fakePod.pod) {
+		normalizedFakePod.pod = newPod(fakePod.pod);
+	}
+	return deepMerge<FakePod>(
+		{
+			pod: newPod(),
+			netnsPath: "",
+		},
+		normalizedFakePod,
+	);
 }
 
 // Models kubernetes/pkg/kubelet/container/testing/fake_runtime.go FakeRuntime.

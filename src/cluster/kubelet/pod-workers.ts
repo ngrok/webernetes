@@ -113,6 +113,21 @@ export interface PodSyncer {
 	): Promise<Error | undefined>;
 }
 
+// Models kubernetes/pkg/kubelet/pod_workers.go podSyncerFuncs.
+export type PodSyncerFuncs = PodSyncer;
+
+// Models kubernetes/pkg/kubelet/pod_workers.go newPodSyncerFuncs.
+export function newPodSyncerFuncs(s: PodSyncer): PodSyncerFuncs {
+	return {
+		syncPod: (ctx, updateType, pod, mirrorPod, podStatus) =>
+			s.syncPod(ctx, updateType, pod, mirrorPod, podStatus),
+		syncTerminatingPod: (ctx, pod, podStatus, gracePeriod, podStatusFunc) =>
+			s.syncTerminatingPod(ctx, pod, podStatus, gracePeriod, podStatusFunc),
+		syncTerminatingRuntimePod: (ctx, runningPod) => s.syncTerminatingRuntimePod(ctx, runningPod),
+		syncTerminatedPod: (ctx, pod, podStatus) => s.syncTerminatedPod(ctx, pod, podStatus),
+	};
+}
+
 // Models kubernetes/pkg/kubelet/pod_workers.go podSyncStatus.
 export interface PodSyncStatus {
 	cancelFn?: context.CancelFunc;
@@ -163,37 +178,42 @@ export function newPodSyncStatus(status: DeepPartial<PodSyncStatus>): PodSyncSta
 }
 
 // Models kubernetes/pkg/kubelet/pod_workers.go podSyncStatus.IsTerminationRequested.
-function isTerminationRequested(status: PodSyncStatus): boolean {
+export function isTerminationRequested(status: PodSyncStatus): boolean {
 	return status.terminatingAt !== undefined;
 }
 
 // Models kubernetes/pkg/kubelet/pod_workers.go podSyncStatus.IsTerminated.
-function isTerminated(status: PodSyncStatus): boolean {
+export function isTerminated(status: PodSyncStatus): boolean {
 	return status.terminatedAt !== undefined;
 }
 
 // Models kubernetes/pkg/kubelet/pod_workers.go podSyncStatus.IsFinished.
-function isFinished(status: PodSyncStatus): boolean {
+export function isFinished(status: PodSyncStatus): boolean {
 	return status.finished;
 }
 
 // Models kubernetes/pkg/kubelet/pod_workers.go podSyncStatus.IsTerminationStarted.
-function isTerminationStarted(status: PodSyncStatus): boolean {
+export function isTerminationStarted(status: PodSyncStatus): boolean {
 	return status.startedTerminating;
 }
 
 // Models kubernetes/pkg/kubelet/pod_workers.go podSyncStatus.IsDeleted.
-function isDeleted(status: PodSyncStatus): boolean {
+export function isDeleted(status: PodSyncStatus): boolean {
 	return status.deleted;
 }
 
 // Models kubernetes/pkg/kubelet/pod_workers.go podSyncStatus.IsEvicted.
-function isEvicted(status: PodSyncStatus): boolean {
+export function isEvicted(status: PodSyncStatus): boolean {
 	return status.evicted;
 }
 
+// Models kubernetes/pkg/kubelet/pod_workers.go podSyncStatus.IsWorking.
+export function isWorking(status: PodSyncStatus): boolean {
+	return status.working;
+}
+
 // Models kubernetes/pkg/kubelet/pod_workers.go podSyncStatus.IsStarted.
-function isStarted(status: PodSyncStatus): boolean {
+export function isStarted(status: PodSyncStatus): boolean {
 	return status.startedAt !== undefined;
 }
 
