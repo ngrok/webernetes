@@ -20,8 +20,15 @@ import { FakeContainerCommandRunner, FakeRuntime, newFakeRuntimeCache } from "./
 import type { KubeletConfiguration } from "./apis/config";
 import { newPodConfig } from "./config";
 import { newMainKubelet, NoopPodStartupSLIObserver, type Kubelet } from "./kubelet";
-import type { PodWorkers, PodWorkerSync, SyncPodResult, UpdatePodOptions } from "./pod-workers";
+import type {
+	PodWorkers,
+	PodWorkersImpl,
+	PodWorkerSync,
+	SyncPodResult,
+	UpdatePodOptions,
+} from "./pod-workers";
 import { FakeManager } from "./prober/testing/fake-manager";
+import { wait } from "../../promise";
 import type { SyncPodType } from "./types/pod-update";
 import type { WorkQueue } from "./util/queue/work-queue";
 
@@ -67,14 +74,14 @@ export class FakePodWorkers implements PodWorkers {
 	syncPodFn: SyncPodFnType;
 	readonly triggeredDeletion: string[] = [];
 	readonly triggeredTerminal: string[] = [];
-	readonly running = new Map<string, boolean>();
-	readonly terminating = new Map<string, boolean>();
-	readonly terminated = new Map<string, boolean>();
-	readonly terminationRequested = new Map<string, boolean>();
-	readonly finished = new Map<string, boolean>();
-	readonly removeRuntime = new Map<string, boolean>();
-	readonly removeContent = new Map<string, boolean>();
-	readonly terminatingStaticPods = new Map<string, boolean>();
+	running = new Map<string, boolean>();
+	terminating = new Map<string, boolean>();
+	terminated = new Map<string, boolean>();
+	terminationRequested = new Map<string, boolean>();
+	finished = new Map<string, boolean>();
+	removeRuntime = new Map<string, boolean>();
+	removeContent = new Map<string, boolean>();
+	terminatingStaticPods = new Map<string, boolean>();
 
 	constructor(
 		readonly cache: ROCache,
@@ -214,6 +221,23 @@ export class FakeQueue implements WorkQueue {
 		const work = this.queue.slice(this.currentStart).map((item) => item.uid);
 		this.currentStart = this.queue.length;
 		return work;
+	}
+}
+
+// Models kubernetes/pkg/kubelet/pod_workers_test.go drainAllWorkers.
+export async function drainAllWorkers(podWorkers: PodWorkersImpl): Promise<void> {
+	for (;;) {
+		let stillWorking = false;
+		for (const status of podWorkers.podSyncStatuses.values()) {
+			if (status.working) {
+				stillWorking = true;
+				break;
+			}
+		}
+		if (!stillWorking) {
+			return;
+		}
+		await wait(50);
 	}
 }
 
