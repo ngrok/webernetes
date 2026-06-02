@@ -198,6 +198,11 @@ export class ContainerID {
 	}
 }
 
+// Models kubernetes/pkg/kubelet/container/runtime.go ContainerID.
+export function newContainerID(id: DeepPartial<ContainerID> = {}): ContainerID {
+	return new ContainerID(id.type ?? "", id.id ?? "");
+}
+
 // Models kubernetes/pkg/kubelet/container/runtime.go State.
 export type State = "Created" | "Running" | "Exited" | "Unknown";
 
@@ -212,6 +217,29 @@ export interface Pod {
 	timestamp: Date;
 }
 
+// Models kubernetes/pkg/kubelet/container/runtime.go Pod.
+export function newPod(pod: DeepPartial<Pod> = {}): Pod {
+	const normalizedPod: DeepPartial<Pod> = { ...pod };
+	if (pod.containers) {
+		normalizedPod.containers = pod.containers.map((container) => newContainer(container));
+	}
+	if (pod.sandboxes) {
+		normalizedPod.sandboxes = pod.sandboxes.map((sandbox) => newContainer(sandbox));
+	}
+	return deepMerge<Pod>(
+		{
+			id: "",
+			name: "",
+			namespace: "",
+			createdAt: 0,
+			containers: [],
+			sandboxes: [],
+			timestamp: new Date(0),
+		},
+		normalizedPod,
+	);
+}
+
 // Models kubernetes/pkg/kubelet/container/runtime.go Container.
 export interface Container {
 	id: ContainerID;
@@ -224,6 +252,29 @@ export interface Container {
 	state: State;
 	podSandboxID: string;
 	createdAt: number;
+}
+
+// Models kubernetes/pkg/kubelet/container/runtime.go Container.
+export function newContainer(container: DeepPartial<Container> = {}): Container {
+	const normalizedContainer: DeepPartial<Container> = { ...container };
+	if (container.id) {
+		normalizedContainer.id = newContainerID(container.id);
+	}
+	return deepMerge<Container>(
+		{
+			id: newContainerID(),
+			name: "",
+			image: "",
+			imageID: "",
+			imageRef: "",
+			imageRuntimeHandler: "",
+			hash: 0,
+			state: "Created",
+			podSandboxID: "",
+			createdAt: 0,
+		},
+		normalizedContainer,
+	);
 }
 
 // Models kubernetes/pkg/kubelet/container/runtime.go PodStatus.
