@@ -3,6 +3,7 @@ import { KubeConfig } from "../../client";
 import { Clock } from "../../clock";
 import * as context from "../../go/context";
 import { Mutex } from "../../go/sync/mutex";
+import { newFakePassiveClock, type FakePassiveClock } from "../../utils/clock/testing/fake-clock";
 import { KubeClient } from "../cluster";
 import { ClusterNetwork } from "../cni";
 import { Etcd } from "../etcd";
@@ -13,19 +14,25 @@ import {
 	RuntimeStatus,
 	runtimeReady,
 	type Image,
+	type Pod,
 	type PodStatus as PodRuntimeStatus,
 	type ROCache,
 } from "./container";
-import { FakeContainerCommandRunner, FakeRuntime, newFakeRuntimeCache } from "./container/testing";
+import {
+	FakeContainerCommandRunner,
+	FakeRuntime,
+	newFakeCache,
+	newFakeRuntimeCache,
+} from "./container/testing";
 import type { KubeletConfiguration } from "./apis/config";
 import { newPodConfig } from "./config";
 import { newMainKubelet, NoopPodStartupSLIObserver, type Kubelet } from "./kubelet";
-import type {
-	PodWorkers,
+import {
 	PodWorkersImpl,
-	PodWorkerSync,
-	SyncPodResult,
-	UpdatePodOptions,
+	type PodWorkers,
+	type PodWorkerSync,
+	type SyncPodResult,
+	type UpdatePodOptions,
 } from "./pod-workers";
 import { FakeManager } from "./prober/testing/fake-manager";
 import { wait } from "../../promise";
@@ -222,6 +229,70 @@ export class FakeQueue implements WorkQueue {
 		this.currentStart = this.queue.length;
 		return work;
 	}
+}
+
+export interface syncPodRecord {
+	name: string;
+	updateType?: UpdatePodOptions["updateType"];
+	gracePeriod?: number;
+	runningPod?: Pod;
+	terminated?: boolean;
+}
+
+// Models kubernetes/pkg/kubelet/pod_workers_test.go createPodWorkers.
+export function createPodWorkers(): [
+	podWorkers: PodWorkersImpl,
+	fakeRuntime: FakeRuntime,
+	processed: Map<string, syncPodRecord[]>,
+	fakeClock: FakePassiveClock,
+] {
+	const clock = newFakePassiveClock(new Date(1_000));
+	const fakeRuntime = new FakeRuntime();
+	const fakeCache = newFakeCache(fakeRuntime);
+	const processed = new Map<string, syncPodRecord[]>();
+	const record = (uid: string, update: syncPodRecord) => {
+		processed.set(uid, [...(processed.get(uid) ?? []), update]);
+	};
+	const podWorkers = new PodWorkersImpl(
+		clock,
+		new FakeQueue(),
+		60 * 1000,
+		1000,
+		{
+			async syncPod(_ctx, updateType, pod) {
+				if (!pod) {
+					throw new Error("syncPod requires a pod");
+				}
+				const uid = pod.metadata?.uid ?? "";
+				record(uid, { name: pod.metadata?.name ?? "", updateType });
+				return [false, undefined, undefined];
+			},
+			async syncTerminatingPod(_ctx, pod, _podStatus, gracePeriod) {
+				const uid = pod.metadata?.uid ?? "";
+				record(uid, {
+					name: pod.metadata?.name ?? "",
+					updateType: "kill",
+					gracePeriod,
+				});
+				return undefined;
+			},
+			async syncTerminatingRuntimePod(_ctx, runningPod) {
+				record(runningPod.id, {
+					name: runningPod.name,
+					updateType: "kill",
+					runningPod,
+				});
+				return undefined;
+			},
+			async syncTerminatedPod(_ctx, pod) {
+				const uid = pod.metadata?.uid ?? "";
+				record(uid, { name: pod.metadata?.name ?? "", terminated: true });
+				return undefined;
+			},
+		},
+		fakeCache,
+	);
+	return [podWorkers, fakeRuntime, processed, clock];
 }
 
 // Models kubernetes/pkg/kubelet/pod_workers_test.go drainAllWorkers.
