@@ -39,11 +39,13 @@ export interface RuntimeHelper {
 		podIP: string,
 		podIPs: string[],
 		imageVolumes: unknown,
-	): [
-		containerOptions: RunContainerOptions | undefined,
-		cleanupAction: (() => void) | undefined,
-		err: Error | undefined,
-	];
+	): Promise<
+		[
+			containerOptions: RunContainerOptions | undefined,
+			cleanupAction: (() => void) | undefined,
+			err: Error | undefined,
+		]
+	>;
 	getPodDNS(
 		ctx: context.Context,
 		pod: V1Pod,

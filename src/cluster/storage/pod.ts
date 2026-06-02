@@ -22,6 +22,8 @@ export class PodStore extends Store<V1Pod> {
 		if (!pod.spec) {
 			throw new Error("Pod spec is required");
 		}
+		// https://github.com/kubernetes/kubernetes/issues/121787
+		pod.spec.enableServiceLinks ??= true;
 		if (!pod.spec.containers || pod.spec.containers.length === 0) {
 			throw new Invalid(`Pod "${pod.metadata.name}" is invalid: spec.containers: Required value`);
 		}

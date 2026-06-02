@@ -34,6 +34,7 @@ import {
 	hashContainer,
 	newBackoffError,
 	type PodStatus as PodRuntimeStatus,
+	runtimeProtocol,
 	type RuntimeHelper,
 	type Pod as RuntimePod,
 	type Status as ContainerStatus,
@@ -46,6 +47,50 @@ import {
 	type PodActions,
 } from "./kuberuntime-manager";
 import { getBackoffKey } from "./helpers";
+import { newContainerAnnotations, newContainerLabels } from "./labels";
+
+// Models kubernetes/pkg/kubelet/kuberuntime/kuberuntime_container_linux_test.go makeExpectedConfig.
+async function makeExpectedConfig(
+	_t: unknown,
+	tCtx: context.Context,
+	m: KubeGenericRuntimeManager,
+	pod: V1Pod,
+	containerIndex: number,
+	_enforceMemoryQoS: boolean,
+): Promise<ContainerConfig> {
+	const container = pod.spec?.containers[containerIndex] as V1Container;
+	const podIP = "";
+	const restartCount = 0;
+	const [opts] = await m.runtimeHelper.generateRunContainerOptions(
+		tCtx,
+		pod,
+		container,
+		podIP,
+		[podIP],
+		undefined,
+	);
+	const restartCountUint32 = restartCount;
+
+	const expectedConfig: ContainerConfig = {
+		metadata: {
+			name: container.name,
+			attempt: restartCountUint32,
+		},
+		image: { image: container.image ?? "", userSpecifiedImage: container.image },
+		command: container.command,
+		args: undefined,
+		workingDir: container.workingDir,
+		labels: newContainerLabels(container, pod),
+		annotations: newContainerAnnotations(tCtx, container, pod, restartCount, opts ?? {}),
+		env: Object.fromEntries((opts?.envs ?? []).map((env) => [env.name, env.value])),
+		ports: (container.ports ?? []).map((port) => ({
+			name: port.name,
+			containerPort: port.containerPort,
+			protocol: runtimeProtocol(port.protocol),
+		})),
+	};
+	return expectedConfig;
+}
 
 browser.describe("KubeGenericRuntimeManager", () => {
 	// Models kubernetes/pkg/kubelet/kuberuntime/kuberuntime_manager_test.go TestNewKubeRuntimeManager.
@@ -125,6 +170,58 @@ browser.describe("KubeGenericRuntimeManager", () => {
 
 		const runtimeType = m.type();
 		expect(runtimeType).toBe("simulator");
+	});
+
+	// Models kubernetes/pkg/kubelet/kuberuntime/kuberuntime_container_linux_test.go TestGenerateContainerConfig.
+	it("TestGenerateContainerConfig", async () => {
+		const tCtx = context.background();
+		const [, _imageService, m, err] = createTestRuntimeManager(tCtx);
+		expect(err).toBeUndefined();
+
+		const runAsUser = 1000;
+		const runAsGroup = 2000;
+		const pod: V1Pod = {
+			metadata: {
+				uid: "12345678",
+				name: "bar",
+				namespace: "new",
+			},
+			spec: {
+				containers: [
+					{
+						name: "foo",
+						image: "busybox",
+						imagePullPolicy: "IfNotPresent",
+						command: ["testCommand"],
+						workingDir: "testWorkingDir",
+						securityContext: {
+							runAsUser,
+							runAsGroup,
+						},
+					},
+				],
+			},
+		};
+
+		const expectedConfig = await makeExpectedConfig(undefined, tCtx, m, pod, 0, false);
+		const container = pod.spec?.containers[0] as V1Container;
+		const [containerConfig, , containerConfigErr] = await m.generateContainerConfig(
+			tCtx,
+			container,
+			pod,
+			0,
+			"",
+			container.image ?? "",
+			[],
+			undefined,
+			undefined,
+		);
+		expect(containerConfigErr).toBeUndefined();
+		expect(containerConfig).toEqual(expectedConfig);
+
+		// Upstream also verifies Linux RunAsUser/RunAsGroup and RunAsNonRoot
+		// image-user failure paths here. The simulator does not currently model
+		// Linux container config or image user lookup in generateContainerConfig.
 	});
 });
 
@@ -1889,7 +1986,7 @@ class TestRuntimeHelper implements RuntimeHelper {
 
 	constructor(private readonly fakeRuntime: TestRuntimeService) {}
 
-	generateRunContainerOptions(): [{ envs: [] }, undefined, undefined] {
+	async generateRunContainerOptions(): Promise<[{ envs: [] }, undefined, undefined]> {
 		return [{ envs: [] }, undefined, undefined];
 	}
 
@@ -2061,7 +2158,7 @@ async function makeFakeContainer(
 	expect(sandboxConfigErr).toBeUndefined();
 	expect(sandboxConfig).toBeDefined();
 
-	const [containerConfig, cleanupAction, containerConfigErr] = m.generateContainerConfig(
+	const [containerConfig, cleanupAction, containerConfigErr] = await m.generateContainerConfig(
 		ctx,
 		template.container,
 		template.pod,

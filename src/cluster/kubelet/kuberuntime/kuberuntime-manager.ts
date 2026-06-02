@@ -1340,7 +1340,7 @@ export class KubeGenericRuntimeManager implements Runtime, CommandRunner {
 			restartCount = containerStatus.restartCount + 1;
 		}
 
-		const [containerConfig, cleanupAction, configErr] = this.generateContainerConfig(
+		const [containerConfig, cleanupAction, configErr] = await this.generateContainerConfig(
 			ctx,
 			container,
 			pod,
@@ -1533,7 +1533,7 @@ export class KubeGenericRuntimeManager implements Runtime, CommandRunner {
 	// Models kubernetes/pkg/kubelet/kuberuntime/kuberuntime_container.go generateContainerConfig.
 	// Parity is very low here because upstream communicates a bunch with the OS
 	// in this function and we have no analogues.
-	generateContainerConfig(
+	async generateContainerConfig(
 		ctx: context.Context,
 		container: V1Container,
 		pod: V1Pod,
@@ -1543,8 +1543,10 @@ export class KubeGenericRuntimeManager implements Runtime, CommandRunner {
 		podIPs: string[],
 		_nsTarget: unknown,
 		imageVolumes: unknown,
-	): [config: ContainerConfig | undefined, cleanupAction: CleanupAction, err: RuntimeError] {
-		const [opts, cleanupAction, err] = this.runtimeHelper.generateRunContainerOptions(
+	): Promise<
+		[config: ContainerConfig | undefined, cleanupAction: CleanupAction, err: RuntimeError]
+	> {
+		const [opts, cleanupAction, err] = await this.runtimeHelper.generateRunContainerOptions(
 			ctx,
 			pod,
 			container,
