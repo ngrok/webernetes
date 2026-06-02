@@ -4,7 +4,7 @@
 import { expect, it } from "vitest";
 import type { V1ObjectReference, V1Pod } from "../../../../client";
 import type { DnsConfig } from "../../../cri";
-import type { EventObject } from "../../../../client-go/tools/record/event";
+import { FakeRecorder, newFakeRecorder } from "../../../../client-go/tools/record/fake";
 import * as context from "../../../../go/context";
 import { browser } from "../../../../test/describe";
 import * as validation from "../../../apis/core/validation/validation";
@@ -34,7 +34,7 @@ browser.describe("TestFormDNSSearchFitsLimits", () => {
 		"A".repeat(127),
 	];
 
-	const recorder = new FakeRecorder();
+	const recorder = newFakeRecorder(20);
 	const nodeRef: V1ObjectReference = {
 		kind: "Node",
 		name: "testNode",
@@ -288,7 +288,7 @@ browser.describe("TestFormDNSSearchFitsLimits", () => {
 
 // Models kubernetes/pkg/kubelet/network/dns/dns_test.go TestFormDNSNameserversFitsLimits.
 browser.describe("TestFormDNSNameserversFitsLimits", () => {
-	const recorder = new FakeRecorder();
+	const recorder = newFakeRecorder(20);
 	const nodeRef: V1ObjectReference = {
 		kind: "Node",
 		name: "testNode",
@@ -408,7 +408,7 @@ browser.describe("TestMergeDNSOptions", () => {
 
 // Models kubernetes/pkg/kubelet/network/dns/dns_test.go TestGetPodDNSType.
 browser.describe("TestGetPodDNSType", () => {
-	const recorder = new FakeRecorder();
+	const recorder = newFakeRecorder(20);
 	const nodeRef: V1ObjectReference = {
 		kind: "Node",
 		name: "testNode",
@@ -529,7 +529,7 @@ browser.describe("TestGetPodDNSType", () => {
 // Models kubernetes/pkg/kubelet/network/dns/dns_test.go TestGetPodDNS.
 browser.describe("TestGetPodDNS", () => {
 	it("generates pod DNS config", async () => {
-		const recorder = new FakeRecorder();
+		const recorder = newFakeRecorder(20);
 		const nodeRef: V1ObjectReference = {
 			kind: "Node",
 			name: "testNode",
@@ -671,7 +671,7 @@ browser.describe("TestGetPodDNS", () => {
 
 // Models kubernetes/pkg/kubelet/network/dns/dns_test.go TestGetPodDNSCustom.
 browser.describe("TestGetPodDNSCustom", () => {
-	const recorder = new FakeRecorder();
+	const recorder = newFakeRecorder(20);
 	const nodeRef: V1ObjectReference = {
 		kind: "Node",
 		name: "testNode",
@@ -821,7 +821,7 @@ browser.describe("TestGetPodDNSCustom", () => {
 
 browser.describe("GetPodDNS local event coverage", () => {
 	it("returns host DNS config errors", async () => {
-		const recorder = new FakeRecorder();
+		const recorder = newFakeRecorder(20);
 		const hostDNSErr = new Error("host dns config failed");
 		const configurer = newConfigurer(recorder, {
 			resolverConfig: "broken",
@@ -836,7 +836,7 @@ browser.describe("GetPodDNS local event coverage", () => {
 	});
 
 	it("falls back for invalid DNS policy without recording an invalid-policy warning", async () => {
-		const recorder = new FakeRecorder();
+		const recorder = newFakeRecorder(20);
 		const configurer = newConfigurer(recorder, {
 			clusterDNS: ["203.0.113.1"],
 			clusterDomain: "kubernetes.io",
@@ -856,11 +856,12 @@ browser.describe("GetPodDNS local event coverage", () => {
 			searches: ["testNS.svc.kubernetes.io", "svc.kubernetes.io", "kubernetes.io"],
 			options: ["ndots:5"],
 		});
-		expect(recorder.events).toHaveLength(0);
+		expect(recorder.events?.tryReceive()).toBeUndefined();
 	});
 
 	it("records MissingClusterDNS warnings and falls back to host DNS", async () => {
-		const recorder = new FakeRecorder();
+		const recorder = newFakeRecorder(20);
+		recorder.includeObject = true;
 		const configurer = newConfigurer(recorder, {
 			clusterDNS: [],
 			clusterDomain: "kubernetes.io",
@@ -881,18 +882,12 @@ browser.describe("GetPodDNS local event coverage", () => {
 			searches: ["."],
 			options: [],
 		});
-		expect(recorder.events.map((event) => event.reason)).toEqual([
-			"MissingClusterDNS",
-			"MissingClusterDNS",
-		]);
-		expect(recorder.events.map((event) => event.type)).toEqual(["Warning", "Warning"]);
-		expect(recorder.events[0]?.object).toEqual({
-			kind: "Node",
-			name: "testNode",
-			uid: "testNode",
-			namespace: "",
-		});
-		expect(recorder.events[1]?.object).toBe(pod);
+		expect(fetchEvent(recorder)).toContain(
+			"Warning MissingClusterDNS kubelet does not have ClusterDNS IP configured",
+		);
+		expect(fetchEvent(recorder)).toContain(
+			'Warning MissingClusterDNS pod: "testNS/test_pod ()". kubelet does not have ClusterDNS IP configured',
+		);
 	});
 });
 
@@ -979,61 +974,11 @@ function newConfigurer(
 }
 
 function fetchEvent(recorder: FakeRecorder): string {
-	const event = recorder.events.shift();
-	if (!event) {
+	const event = recorder.events?.tryReceive();
+	if (!event?.ok) {
 		return "";
 	}
-	return eventString(event);
-}
-
-class FakeRecorder {
-	events: Array<{
-		object: EventObject;
-		type: string;
-		reason: string;
-		message: string;
-	}> = [];
-
-	async event(object: EventObject, type: string, reason: string, message: string): Promise<void> {
-		this.events.push({ object, type, reason, message });
-	}
-
-	async eventf(
-		object: EventObject,
-		type: string,
-		reason: string,
-		messageFmt: string,
-		...args: unknown[]
-	): Promise<void> {
-		await this.event(object, type, reason, sprintf(messageFmt, args));
-	}
-
-	async annotatedEventf(
-		object: EventObject,
-		annotations: Record<string, string>,
-		type: string,
-		reason: string,
-		messageFmt: string,
-		...args: unknown[]
-	): Promise<void> {
-		void annotations;
-		await this.eventf(object, type, reason, messageFmt, ...args);
-	}
-}
-
-function eventString(event: { type: string; reason: string; message: string }): string {
-	return `${event.type} ${event.reason} ${event.message}`;
-}
-
-function sprintf(messageFmt: string, args: unknown[]): string {
-	let index = 0;
-	return messageFmt.replace(/%[sdvq]/g, (verb) => {
-		const value = args[index++] ?? "";
-		if (verb === "%q") {
-			return JSON.stringify(String(value));
-		}
-		return String(value);
-	});
+	return event.value;
 }
 
 function setEquals<T>(left: Set<T>, right: Set<T>): boolean {

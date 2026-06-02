@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 
 import type { V1Pod } from "../../../client";
-import type { EventObject } from "../../../client-go/tools/record/event";
+import { FakeRecorder, newFakeRecorder } from "../../../client-go/tools/record/fake";
 import { Clock } from "../../../clock";
 import { select, type ReadOnlyChannel, type WriteOnlyChannel } from "../../../go/channel";
 import * as context from "../../../go/context";
@@ -67,7 +67,7 @@ browser.describe("PodConfig", () => {
 
 	// Simulator-only test.
 	it("records validation events for duplicate pod full names in a source update", async () => {
-		const recorder = new FakeRecorder();
+		const recorder = newFakeRecorder(20);
 		const config = newPodConfig(recorder, new MockPodStartupSLIObserver(), new Clock());
 		const channel = config.channel(context.background(), testSource);
 		const ch = config.updates();
@@ -76,7 +76,7 @@ browser.describe("PodConfig", () => {
 		);
 
 		await expectPodUpdate(ch, createPodUpdate("ADD", testSource, createValidPod("foo", "new")));
-		expect(recorder.events.map((event) => event.reason)).toEqual([failedValidation]);
+		expect(fetchEvent(recorder)).toContain(`Warning ${failedValidation}`);
 	});
 
 	// Models kubernetes/pkg/kubelet/config/config_test.go TestNewPodAddedUpdatedRemoved.
@@ -382,49 +382,10 @@ class MockPodStartupSLIObserver {
 	observedPodOnWatch(_pod: V1Pod, _when: Date): void {}
 }
 
-class FakeRecorder {
-	events: Array<{ object: EventObject; type: string; reason: string; message: string }> = [];
-
-	async event(object: EventObject, type: string, reason: string, message: string): Promise<void> {
-		this.events.push({
-			object,
-			type,
-			reason,
-			message,
-		});
+function fetchEvent(recorder: FakeRecorder): string {
+	const event = recorder.events?.tryReceive();
+	if (!event?.ok) {
+		return "";
 	}
-
-	async eventf(
-		object: EventObject,
-		type: string,
-		reason: string,
-		messageFmt: string,
-		...args: unknown[]
-	): Promise<void> {
-		let index = 0;
-		await this.event(
-			object,
-			type,
-			reason,
-			messageFmt.replace(/%[sdvq]/g, (verb) => {
-				const value = args[index++] ?? "";
-				if (verb === "%q") {
-					return JSON.stringify(String(value));
-				}
-				return String(value);
-			}),
-		);
-	}
-
-	async annotatedEventf(
-		object: EventObject,
-		annotations: Record<string, string>,
-		type: string,
-		reason: string,
-		messageFmt: string,
-		...args: unknown[]
-	): Promise<void> {
-		void annotations;
-		await this.eventf(object, type, reason, messageFmt, ...args);
-	}
+	return event.value;
 }
