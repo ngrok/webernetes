@@ -702,11 +702,14 @@ browser.describe("TestGetPodDNSCustom", () => {
 		clusterDNS: [testClusterNameserver],
 		clusterDomain: testClusterDNSDomain,
 		resolverConfig: "injected",
-		getHostDNSConfig: () => ({
-			servers: [testHostNameserver],
-			searches: [testHostDomain],
-			options: [],
-		}),
+		getHostDNSConfig: () => [
+			{
+				servers: [testHostNameserver],
+				searches: [testHostDomain],
+				options: [],
+			},
+			undefined,
+		],
 	});
 
 	const testCases: Array<{
@@ -817,6 +820,21 @@ browser.describe("TestGetPodDNSCustom", () => {
 });
 
 browser.describe("GetPodDNS local event coverage", () => {
+	it("returns host DNS config errors", async () => {
+		const recorder = new FakeRecorder();
+		const hostDNSErr = new Error("host dns config failed");
+		const configurer = newConfigurer(recorder, {
+			resolverConfig: "broken",
+			getHostDNSConfig: () => [undefined, hostDNSErr],
+		});
+		const pod = testPod();
+
+		const [dnsConfig, err] = await configurer.getPodDNS(context.background(), pod);
+
+		expect(dnsConfig).toBeUndefined();
+		expect(err).toBe(hostDNSErr);
+	});
+
 	it("falls back for invalid DNS policy without recording an invalid-policy warning", async () => {
 		const recorder = new FakeRecorder();
 		const configurer = newConfigurer(recorder, {
@@ -878,12 +896,15 @@ browser.describe("GetPodDNS local event coverage", () => {
 	});
 });
 
-function fakeGetHostDNSConfigCustom(): DnsConfig {
-	return {
-		servers: [testHostNameserver],
-		searches: [testHostDomain],
-		options: [],
-	};
+function fakeGetHostDNSConfigCustom(): [dnsConfig: DnsConfig, err: undefined] {
+	return [
+		{
+			servers: [testHostNameserver],
+			searches: [testHostDomain],
+			options: [],
+		},
+		undefined,
+	];
 }
 
 function dnsConfigsAreEqual(resConfig: DnsConfig | undefined, expectedConfig: DnsConfig): boolean {

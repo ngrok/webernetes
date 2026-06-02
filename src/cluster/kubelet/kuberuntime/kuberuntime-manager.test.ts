@@ -68,12 +68,12 @@ browser.describe("KubeGenericRuntimeManager", () => {
 		expect(version?.toString()).toBe("0.1.0");
 	});
 
-	it("generatePodSandboxConfig preserves pod labels and Kubernetes identity labels", () => {
+	it("generatePodSandboxConfig preserves pod labels and Kubernetes identity labels", async () => {
 		const tCtx = context.background();
 		const [, , m, err] = createTestRuntimeManager(tCtx);
 		expect(err).toBeUndefined();
 
-		const [config, configErr] = m.generatePodSandboxConfig(
+		const [config, configErr] = await m.generatePodSandboxConfig(
 			tCtx,
 			{
 				metadata: {
@@ -143,7 +143,7 @@ browser.describe("KubeGenericRuntimeManager runtime state", () => {
 			spec: { containers },
 		};
 
-		makeAndSetFakePod(tCtx, m, fakeRuntime, pod);
+		await makeAndSetFakePod(tCtx, m, fakeRuntime, pod);
 
 		const [runtimePod, getPodErr] = await m.getPod(tCtx, pod.metadata?.uid ?? "");
 		expect(getPodErr).toBeUndefined();
@@ -170,7 +170,7 @@ browser.describe("KubeGenericRuntimeManager runtime state", () => {
 			spec: { containers },
 		};
 
-		makeAndSetFakePod(tCtx, m, fakeRuntime, pod);
+		await makeAndSetFakePod(tCtx, m, fakeRuntime, pod);
 		fakeRuntime.injectError(
 			"StopContainer",
 			new Error("rpc error: code = NotFound desc = No such container"),
@@ -201,7 +201,7 @@ browser.describe("KubeGenericRuntimeManager runtime state", () => {
 			spec: { containers },
 		};
 
-		makeAndSetFakePod(tCtx, m, fakeRuntime, pod);
+		await makeAndSetFakePod(tCtx, m, fakeRuntime, pod);
 		fakeRuntime.injectError(
 			"ContainerStatus",
 			new Error("rpc error: code = NotFound desc = No such container"),
@@ -232,7 +232,7 @@ browser.describe("KubeGenericRuntimeManager runtime state", () => {
 			},
 		} satisfies V1Pod;
 
-		const [fakeSandbox, fakeContainers] = makeAndSetFakePod(tCtx, m, fakeRuntime, pod);
+		const [fakeSandbox, fakeContainers] = await makeAndSetFakePod(tCtx, m, fakeRuntime, pod);
 
 		const containers = fakeContainers.map((fakeContainer) => ({
 			id: buildContainerID(m.type(), fakeContainer.id),
@@ -292,7 +292,7 @@ browser.describe("KubeGenericRuntimeManager runtime state", () => {
 		for (const [i, createdAt] of createdTimestamps.entries()) {
 			pod.metadata = { ...pod.metadata, uid: String(i) };
 			fakeSandboxes.push(
-				makeFakePodSandbox(tCtx, m, {
+				await makeFakePodSandbox(tCtx, m, {
 					pod,
 					createdAt,
 					state: "Ready",
@@ -325,7 +325,7 @@ browser.describe("KubeGenericRuntimeManager runtime state", () => {
 			},
 		};
 
-		const [fakeSandbox, fakeContainers] = makeAndSetFakePod(tCtx, m, fakeRuntime, pod);
+		const [fakeSandbox, fakeContainers] = await makeAndSetFakePod(tCtx, m, fakeRuntime, pod);
 
 		const containers: RuntimePod["containers"] = new Array(fakeContainers.length);
 		for (const i of containers.keys()) {
@@ -1593,7 +1593,9 @@ function createTestRuntimeManager(ctx: context.Context): TestRuntimeManagerFixtu
 		imagePuller: fakeImage,
 		events: {
 			event: async () => undefined,
-		} as unknown as KubeGenericRuntimeManagerOptions["events"],
+			eventf: async () => undefined,
+			annotatedEventf: async () => undefined,
+		},
 		internalLifecycle: testInternalLifecycle(),
 		livenessManager,
 		runner: {
@@ -1891,7 +1893,7 @@ class TestRuntimeHelper implements RuntimeHelper {
 		return [{ envs: [] }, undefined, undefined];
 	}
 
-	getPodDNS(): [{ servers: []; searches: []; options: [] }, undefined] {
+	async getPodDNS(): Promise<[{ servers: []; searches: []; options: [] }, undefined]> {
 		return [{ servers: [], searches: [], options: [] }, undefined];
 	}
 
@@ -1989,13 +1991,13 @@ interface ContainerTemplate {
 	state: CRIContainerStatus["state"];
 }
 
-function makeAndSetFakePod(
+async function makeAndSetFakePod(
 	ctx: context.Context,
 	m: KubeGenericRuntimeManager,
 	fakeRuntime: TestRuntimeService,
 	pod: V1Pod,
-): [TestPodSandboxRecord, TestContainerRecord[]] {
-	const sandbox = makeFakePodSandbox(ctx, m, {
+): Promise<[TestPodSandboxRecord, TestContainerRecord[]]> {
+	const sandbox = await makeFakePodSandbox(ctx, m, {
 		pod,
 		createdAt: fakeCreatedAt,
 		state: "Ready",
@@ -2009,7 +2011,7 @@ function makeAndSetFakePod(
 		state: "Running",
 	});
 	for (const container of pod.spec?.containers ?? []) {
-		containers.push(makeFakeContainer(ctx, m, newTemplate(container)));
+		containers.push(await makeFakeContainer(ctx, m, newTemplate(container)));
 	}
 
 	fakeRuntime.setFakeSandboxes([sandbox]);
@@ -2017,12 +2019,12 @@ function makeAndSetFakePod(
 	return [sandbox, containers];
 }
 
-function makeFakePodSandbox(
+async function makeFakePodSandbox(
 	ctx: context.Context,
 	m: KubeGenericRuntimeManager,
 	template: SandboxTemplate,
-): TestPodSandboxRecord {
-	const [sandboxConfig, sandboxConfigErr] = m.generatePodSandboxConfig(
+): Promise<TestPodSandboxRecord> {
+	const [sandboxConfig, sandboxConfigErr] = await m.generatePodSandboxConfig(
 		ctx,
 		template.pod,
 		template.attempt ?? 0,
@@ -2046,12 +2048,12 @@ function makeFakePodSandbox(
 	};
 }
 
-function makeFakeContainer(
+async function makeFakeContainer(
 	ctx: context.Context,
 	m: KubeGenericRuntimeManager,
 	template: ContainerTemplate,
-): TestContainerRecord {
-	const [sandboxConfig, sandboxConfigErr] = m.generatePodSandboxConfig(
+): Promise<TestContainerRecord> {
+	const [sandboxConfig, sandboxConfigErr] = await m.generatePodSandboxConfig(
 		ctx,
 		template.pod,
 		template.sandboxAttempt ?? 0,

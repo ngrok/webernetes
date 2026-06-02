@@ -58,7 +58,7 @@ import {
 	type SwapBehavior,
 	type Version,
 } from "../container";
-import type { EventRecorder } from "../../events";
+import type { EventRecorder } from "../../../client-go/tools/record/event";
 import type { ImageManager } from "../images";
 import type { ResultsManager } from "../prober/results";
 import type { InternalContainerLifecycle } from "../cm";
@@ -525,7 +525,7 @@ export class KubeGenericRuntimeManager implements Runtime, CommandRunner {
 			podIP = podIPs[0];
 		}
 
-		const [sandboxConfig, sandboxConfigErr] = this.generatePodSandboxConfig(
+		const [sandboxConfig, sandboxConfigErr] = await this.generatePodSandboxConfig(
 			ctx,
 			pod,
 			podContainerChanges.attempt,
@@ -1589,7 +1589,7 @@ export class KubeGenericRuntimeManager implements Runtime, CommandRunner {
 		pod: V1Pod,
 		attempt: number,
 	): Promise<[podSandboxID: string, message: string, err: RuntimeError]> {
-		const [podSandboxConfig, err] = this.generatePodSandboxConfig(ctx, pod, attempt);
+		const [podSandboxConfig, err] = await this.generatePodSandboxConfig(ctx, pod, attempt);
 		if (err || !podSandboxConfig) {
 			const message = `Failed to generate sandbox config for pod "${format.pod(pod)}": ${err?.message ?? "failed to generate pod sandbox config"}`;
 			return ["", message, err ?? new Error("failed to generate pod sandbox config")];
@@ -1609,13 +1609,13 @@ export class KubeGenericRuntimeManager implements Runtime, CommandRunner {
 	}
 
 	// Models kubernetes/pkg/kubelet/kuberuntime/kuberuntime_sandbox.go generatePodSandboxConfig.
-	generatePodSandboxConfig(
+	async generatePodSandboxConfig(
 		ctx: context.Context,
 		pod: V1Pod,
 		attempt: number,
-	): [config: PodSandboxConfig | undefined, err: RuntimeError] {
+	): Promise<[config: PodSandboxConfig | undefined, err: RuntimeError]> {
 		const namespace = pod.metadata?.namespace ?? "default";
-		const [dnsConfig, dnsErr] = this.runtimeHelper.getPodDNS(ctx, pod);
+		const [dnsConfig, dnsErr] = await this.runtimeHelper.getPodDNS(ctx, pod);
 		if (dnsErr || !dnsConfig) {
 			return [undefined, dnsErr];
 		}
