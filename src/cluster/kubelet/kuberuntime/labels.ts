@@ -103,7 +103,7 @@ export function getContainerInfoFromLabels(labels: Record<string, string>): {
 	};
 }
 
-interface AnnotatedContainerInfo {
+export interface AnnotatedContainerInfo {
 	hash: number;
 	restartCount: number;
 	podDeletionGracePeriod?: number;
