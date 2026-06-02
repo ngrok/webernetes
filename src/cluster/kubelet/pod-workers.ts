@@ -87,7 +87,7 @@ export type SyncPodResult = [
 ];
 
 // Models kubernetes/pkg/kubelet/pod_workers.go podSyncer.
-interface PodSyncer {
+export interface PodSyncer {
 	syncPod(
 		ctx: context.Context,
 		updateType: SyncPodType,
@@ -101,9 +101,16 @@ interface PodSyncer {
 		podStatus: PodRuntimeStatus,
 		gracePeriod: number | undefined,
 		podStatusFunc: PodStatusFunc | undefined,
-	): Promise<void>;
-	syncTerminatingRuntimePod(ctx: context.Context, runningPod: kubecontainer.Pod): Promise<void>;
-	syncTerminatedPod(ctx: context.Context, pod: V1Pod, podStatus: PodRuntimeStatus): Promise<void>;
+	): Promise<Error | undefined>;
+	syncTerminatingRuntimePod(
+		ctx: context.Context,
+		runningPod: kubecontainer.Pod,
+	): Promise<Error | undefined>;
+	syncTerminatedPod(
+		ctx: context.Context,
+		pod: V1Pod,
+		podStatus: PodRuntimeStatus,
+	): Promise<Error | undefined>;
 }
 
 // Models kubernetes/pkg/kubelet/pod_workers.go podSyncStatus.
@@ -233,8 +240,8 @@ export class PodWorkersImpl implements PodWorkers {
 		private readonly workQueue: WorkQueue,
 		private readonly resyncIntervalMs: number,
 		private readonly backOffPeriodMs: number,
-		private readonly podSyncer: PodSyncer,
-		private readonly podCache: kubecontainer.ROCache,
+		public podSyncer: PodSyncer,
+		readonly podCache: kubecontainer.ROCache,
 	) {}
 
 	// Models kubernetes/pkg/kubelet/pod_workers.go UpdatePod.
@@ -575,7 +582,7 @@ export class PodWorkersImpl implements PodWorkers {
 						{
 							const pod = requiredPod(update);
 							const podStatus = requiredStatus(status);
-							await this.podSyncer.syncTerminatedPod(ctx, pod, podStatus);
+							err = await this.podSyncer.syncTerminatedPod(ctx, pod, podStatus);
 						}
 						break;
 					case "TerminatingPod":
@@ -583,11 +590,11 @@ export class PodWorkersImpl implements PodWorkers {
 							update.options.killPodOptions?.podTerminationGracePeriodSecondsOverride;
 						const podStatusFunc = this.acknowledgeTerminating(podUID);
 						if (update.options.runningPod) {
-							await this.podSyncer.syncTerminatingRuntimePod(ctx, update.options.runningPod);
+							err = await this.podSyncer.syncTerminatingRuntimePod(ctx, update.options.runningPod);
 						} else {
 							const pod = requiredPod(update);
 							const podStatus = requiredStatus(status);
-							await this.podSyncer.syncTerminatingPod(
+							err = await this.podSyncer.syncTerminatingPod(
 								ctx,
 								pod,
 								podStatus,
