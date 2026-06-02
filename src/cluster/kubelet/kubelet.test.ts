@@ -5,7 +5,6 @@ import { browser } from "../../test/describe";
 import {
 	ContainerID,
 	PodSyncResult,
-	type Pod as RuntimePod,
 	type PodStatus as PodRuntimeStatus,
 	type Status as ContainerRuntimeStatus,
 	newSyncResult,
@@ -64,29 +63,22 @@ function verifyContainerStatuses(
 	}
 }
 
-function runtimePodWithContainer(uid: string, name: string, namespace: string): RuntimePod {
-	return {
-		id: uid,
-		name,
-		namespace,
-		createdAt: 0,
-		timestamp: new Date(0),
-		containers: [
-			{
-				id: new ContainerID("test", "bar"),
-				name: "bar",
-				image: "",
-				imageID: "",
-				imageRef: "",
-				imageRuntimeHandler: "",
-				hash: 0,
-				state: "Running",
-				podSandboxID: "sandbox",
-				createdAt: 0,
+// Models kubernetes/pkg/kubelet/kubelet_test.go newTestPods.
+function newTestPods(count: number): V1Pod[] {
+	const pods: V1Pod[] = new Array(count);
+	for (let i = 0; i < count; i++) {
+		pods[i] = {
+			spec: {
+				containers: [],
+				hostNetwork: true,
 			},
-		],
-		sandboxes: [],
-	};
+			metadata: {
+				uid: String(10000 + i),
+				name: `pod${i}`,
+			},
+		};
+	}
+	return pods;
 }
 
 // Models kubernetes/pkg/kubelet/kubelet_test.go TestGenerateAPIPodStatusWithSortedContainers.
@@ -149,7 +141,28 @@ browser.describe("handlePodRemovesWhenSourcesAreReady", () => {
 		const kubelet = testKubelet.kubelet;
 		try {
 			const fakePod: FakePod = {
-				pod: runtimePodWithContainer("1", "foo", "new"),
+				pod: {
+					id: "1",
+					name: "foo",
+					namespace: "new",
+					createdAt: 0,
+					timestamp: new Date(0),
+					containers: [
+						{
+							id: new ContainerID("test", "bar"),
+							name: "bar",
+							image: "",
+							imageID: "",
+							imageRef: "",
+							imageRuntimeHandler: "",
+							hash: 0,
+							state: "Running",
+							podSandboxID: "sandbox",
+							createdAt: 0,
+						},
+					],
+					sandboxes: [],
+				},
 				netnsPath: "",
 			};
 			testKubelet.fakeRuntime.podList = [fakePod];
@@ -166,6 +179,132 @@ browser.describe("handlePodRemovesWhenSourcesAreReady", () => {
 			await Promise.resolve();
 
 			expect(testKubelet.fakePodWorkers.triggeredDeletion).toEqual(["1"]);
+		} finally {
+			await testKubelet.cleanup();
+		}
+	});
+});
+
+// Models kubernetes/pkg/kubelet/kubelet_test.go TestHandlePodCleanups.
+browser.describe("handlePodCleanups", () => {
+	it("queues orphaned runtime pods for deletion through pod workers", async () => {
+		expect.hasAssertions();
+		const tCtx = context.background();
+		const testKubelet = newTestKubelet(false);
+		const kubelet = testKubelet.kubelet;
+		try {
+			testKubelet.fakeRuntime.podList = [
+				{
+					pod: {
+						id: "12345678",
+						name: "foo",
+						namespace: "new",
+						createdAt: 0,
+						timestamp: new Date(0),
+						containers: [
+							{
+								id: new ContainerID("test", "bar"),
+								name: "bar",
+								image: "",
+								imageID: "",
+								imageRef: "",
+								imageRuntimeHandler: "",
+								hash: 0,
+								state: "Running",
+								podSandboxID: "sandbox",
+								createdAt: 0,
+							},
+						],
+						sandboxes: [],
+					},
+					netnsPath: "",
+				},
+			];
+
+			const err = await kubelet.handlePodCleanups(tCtx);
+			expect(err).toBeUndefined();
+
+			expect(testKubelet.fakePodWorkers.triggeredDeletion).toEqual(["12345678"]);
+			expect(testKubelet.fakeRuntime.killedPods).toEqual([]);
+		} finally {
+			await testKubelet.cleanup();
+		}
+	});
+});
+
+// Models kubernetes/pkg/kubelet/kubelet_test.go TestPurgingObsoleteStatusMapEntries.
+browser.describe("purgingObsoleteStatusMapEntries", () => {
+	it("removes obsolete status manager cache entries during cleanup", async () => {
+		expect.hasAssertions();
+		const tCtx = context.background();
+		const testKubelet = newTestKubelet(false);
+		const kubelet = testKubelet.kubelet;
+		try {
+			const pods = [
+				{
+					metadata: { name: "pod1", uid: "1234" },
+					spec: { containers: [{ name: "", ports: [{ containerPort: 0, hostPort: 80 }] }] },
+				},
+				{
+					metadata: { name: "pod2", uid: "4567" },
+					spec: { containers: [{ name: "", ports: [{ containerPort: 0, hostPort: 80 }] }] },
+				},
+			];
+			const podToTest = pods[1];
+
+			await kubelet.handlePodAdditions(tCtx, pods);
+			expect(kubelet.statusManager.getPodStatus(podToTest.metadata?.uid ?? "")).toBeDefined();
+
+			kubelet.podManager.setPods([]);
+			const err = await kubelet.handlePodCleanups(tCtx);
+			expect(err).toBeUndefined();
+
+			expect(kubelet.statusManager.getPodStatus(podToTest.metadata?.uid ?? "")).toBeUndefined();
+		} finally {
+			await testKubelet.cleanup();
+		}
+	});
+});
+
+// Models kubernetes/pkg/kubelet/kubelet_test.go TestFilterOutInactivePods.
+browser.describe("filterOutInactivePods", () => {
+	it("excludes terminal and worker-known terminated pods while keeping active terminating pods", async () => {
+		expect.hasAssertions();
+		const testKubelet = newTestKubelet(false);
+		const kubelet = testKubelet.kubelet;
+		try {
+			const pods = newTestPods(8);
+			const now = new Date();
+
+			pods[0].status = { phase: "Failed" };
+			pods[1].status = { phase: "Succeeded" };
+			pods[2].metadata = { ...pods[2].metadata, deletionTimestamp: now };
+			pods[2].status = {
+				phase: "Running",
+				containerStatuses: [
+					{
+						name: "",
+						image: "",
+						imageID: "",
+						ready: false,
+						restartCount: 0,
+						state: { running: { startedAt: now } },
+					},
+				],
+			};
+			pods[3].status = { phase: "Pending" };
+			pods[4].status = { phase: "Running" };
+			pods[5].status = { phase: "Running" };
+			await kubelet.statusManager.setPodStatus(pods[5], { phase: "Failed" });
+			pods[6].status = { phase: "Running" };
+			testKubelet.fakePodWorkers.terminated = new Map([[pods[6].metadata?.uid ?? "", true]]);
+			pods[7].status = { phase: "Failed" };
+			testKubelet.fakePodWorkers.terminationRequested = new Map([
+				[pods[7].metadata?.uid ?? "", true],
+			]);
+
+			kubelet.podManager.setPods(pods);
+			expect(kubelet.filterOutInactivePods(pods)).toEqual([pods[2], pods[3], pods[4], pods[7]]);
 		} finally {
 			await testKubelet.cleanup();
 		}
