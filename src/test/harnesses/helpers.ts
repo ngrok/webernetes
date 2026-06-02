@@ -11,7 +11,7 @@ import type {
 } from "../../client/gen/models";
 import { isConflictError } from "../../client/errors";
 import type { K8s, KubeConfig, KubernetesObject } from "../../client/types";
-import { deepMerge, isPlainObject as isRecord } from "../../deep-merge";
+import { deepMerge } from "../../deep-merge";
 import { retry } from "../../retry";
 import { waitFor } from "../wait";
 import type { FetchNodePort, NodePortRequest, NodePortResponse } from "./kubernetes";
@@ -524,6 +524,10 @@ function apiStatusMessageFromBody(body: unknown): string | undefined {
 		return undefined;
 	}
 	return typeof body.message === "string" ? body.message : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function parseJson(value: string): unknown {
