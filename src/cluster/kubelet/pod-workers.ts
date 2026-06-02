@@ -1,12 +1,14 @@
 import { Channel, type ReadOnlyChannel, type SendChannel } from "../../go/channel";
 import * as context from "../../go/context";
 import type { V1Pod, V1PodStatus } from "../../client";
+import { deepMerge } from "../../deep-merge";
 import * as kubecontainer from "./container";
 import type { PodStatus as PodRuntimeStatus } from "./container";
 import { networkNotReadyErrorMsg } from "./errors";
 import { isStaticPod, type SyncPodType } from "./types/pod-update";
 import type { WorkQueue } from "./util/queue/work-queue";
 import type { PassiveClock } from "../../utils/clock/clock";
+import type { DeepPartial } from "../../utility-types";
 
 // Models kubernetes/pkg/kubelet/pod_workers.go workerResyncIntervalJitterFactor.
 const workerResyncIntervalJitterFactor = 0.5;
@@ -33,6 +35,17 @@ export interface UpdatePodOptions {
 	mirrorPod?: V1Pod;
 	runningPod?: kubecontainer.Pod;
 	killPodOptions?: KillPodOptions;
+}
+
+// Models kubernetes/pkg/kubelet/pod_workers.go UpdatePodOptions.
+export function newUpdatePodOptions(options: DeepPartial<UpdatePodOptions>): UpdatePodOptions {
+	return deepMerge<UpdatePodOptions>(
+		{
+			updateType: "sync",
+			startTime: new Date(0),
+		},
+		options,
+	);
 }
 
 // Models kubernetes/pkg/kubelet/pod_workers.go PodWorkerState.
@@ -73,14 +86,6 @@ export type SyncPodResult = [
 	syncError: Error | undefined,
 ];
 
-// Internal zero-value shape used by podSyncStatus.activeUpdate. Go can allocate
-// &UpdatePodOptions{} with zero-valued fields; external simulator callers still
-// provide the required UpdatePodOptions fields enforced by TypeScript.
-export type ActiveUpdatePodOptions = Omit<UpdatePodOptions, "updateType" | "startTime"> & {
-	updateType: SyncPodType;
-	startTime: Date;
-};
-
 // Models kubernetes/pkg/kubelet/pod_workers.go podSyncer.
 interface PodSyncer {
 	syncPod(
@@ -107,7 +112,7 @@ export interface PodSyncStatus {
 	fullname: string;
 	working: boolean;
 	pendingUpdate?: UpdatePodOptions;
-	activeUpdate?: ActiveUpdatePodOptions;
+	activeUpdate?: UpdatePodOptions;
 	syncedAt: Date;
 	startedAt?: Date;
 	terminatingAt?: Date;
@@ -121,6 +126,33 @@ export interface PodSyncStatus {
 	finished: boolean;
 	restartRequested: boolean;
 	observedRuntime: boolean;
+}
+
+export function newPodSyncStatus(status: DeepPartial<PodSyncStatus>): PodSyncStatus {
+	const normalizedStatus: DeepPartial<PodSyncStatus> = { ...status };
+	if (status.pendingUpdate) {
+		normalizedStatus.pendingUpdate = newUpdatePodOptions(status.pendingUpdate);
+	}
+	if (status.activeUpdate) {
+		normalizedStatus.activeUpdate = newUpdatePodOptions(status.activeUpdate);
+	}
+	return deepMerge<PodSyncStatus>(
+		{
+			fullname: "",
+			working: false,
+			syncedAt: new Date(0),
+			gracePeriod: 0,
+			notifyPostTerminating: [],
+			statusPostTerminating: [],
+			startedTerminating: false,
+			deleted: false,
+			evicted: false,
+			finished: false,
+			restartRequested: false,
+			observedRuntime: false,
+		},
+		normalizedStatus,
+	);
 }
 
 // Models kubernetes/pkg/kubelet/pod_workers.go podSyncStatus.IsTerminationRequested.
@@ -913,7 +945,7 @@ export class PodWorkersImpl implements PodWorkers {
 function mergeLastUpdate(s: PodSyncStatus, other: UpdatePodOptions): void {
 	let opts = s.activeUpdate;
 	if (!opts) {
-		opts = { updateType: "sync", startTime: new Date(0) };
+		opts = newUpdatePodOptions({});
 		s.activeUpdate = opts;
 	}
 

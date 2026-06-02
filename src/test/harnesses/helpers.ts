@@ -11,20 +11,18 @@ import type {
 } from "../../client/gen/models";
 import { isConflictError } from "../../client/errors";
 import type { K8s, KubeConfig, KubernetesObject } from "../../client/types";
+import { deepMerge, isPlainObject as isRecord } from "../../deep-merge";
 import { retry } from "../../retry";
 import { waitFor } from "../wait";
 import type { FetchNodePort, NodePortRequest, NodePortResponse } from "./kubernetes";
+import type { DeepPartial } from "../../utility-types";
 
 const defaultPodImage = "registry.k8s.io/pause:3.10";
 const agnhostImage = "registry.k8s.io/e2e-test-images/agnhost:2.40";
 
 type NamedResource = KubernetesObject & { metadata?: { name?: string; namespace?: string } };
 type NameOrResource = string | NamedResource;
-export type DeepPartial<T> = T extends readonly (infer U)[]
-	? Array<DeepPartial<U>>
-	: T extends object
-		? { [K in keyof T]?: DeepPartial<T[K]> }
-		: T;
+export type { DeepPartial };
 
 export interface ExecCommandResult {
 	stdout: string;
@@ -130,7 +128,7 @@ export function createKubernetesHelpers({
 				: await getTestNamespace();
 		return await core.createNamespacedPod({
 			namespace: podNamespace,
-			body: deepMerge(
+			body: deepMerge<V1Pod>(
 				{
 					metadata: {
 						name: "test-pod",
@@ -162,7 +160,7 @@ export function createKubernetesHelpers({
 				: await getTestNamespace();
 		return await core.createNamespacedService({
 			namespace: serviceNamespace,
-			body: deepMerge(
+			body: deepMerge<V1Service>(
 				{
 					metadata: {
 						name: "test-service",
@@ -370,60 +368,6 @@ class TextWritable {
 	}
 
 	end(): void {}
-}
-
-function deepMerge<T>(base: T, override?: DeepPartial<T>): T {
-	return deepMergeUnknown(base, override) as T;
-}
-
-function deepMergeUnknown(base: unknown, override: unknown): unknown {
-	if (override === undefined) {
-		return cloneDeepUnknown(base);
-	}
-	if (Array.isArray(base) && Array.isArray(override)) {
-		const length = Math.max(base.length, override.length);
-		const result: unknown[] = [];
-		for (let index = 0; index < length; index++) {
-			if (index in override) {
-				result[index] = deepMergeUnknown(base[index], override[index]);
-			} else {
-				result[index] = cloneDeepUnknown(base[index]);
-			}
-		}
-		return result;
-	}
-	if (Array.isArray(override)) {
-		return cloneDeepUnknown(override);
-	}
-	if (isRecord(base) && isRecord(override)) {
-		const result: Record<string, unknown> = {};
-		for (const [key, value] of Object.entries(base)) {
-			result[key] = cloneDeepUnknown(value);
-		}
-		for (const [key, value] of Object.entries(override)) {
-			result[key] = deepMergeUnknown(result[key], value);
-		}
-		return result;
-	}
-	return cloneDeepUnknown(override);
-}
-
-function cloneDeepUnknown(value: unknown): unknown {
-	if (Array.isArray(value)) {
-		return value.map((item) => cloneDeepUnknown(item));
-	}
-	if (isRecord(value)) {
-		const clone: Record<string, unknown> = {};
-		for (const [key, item] of Object.entries(value)) {
-			clone[key] = cloneDeepUnknown(item);
-		}
-		return clone;
-	}
-	return value;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function sharedPodSelector(pods: readonly V1Pod[]): {

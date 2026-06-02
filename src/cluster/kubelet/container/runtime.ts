@@ -1,6 +1,8 @@
 import type { V1Pod } from "../../../client";
 import type { Backoff } from "../../../client-go/util/flowcontrol/backoff";
+import { deepMerge } from "../../../deep-merge";
 import type * as context from "../../../go/context";
+import type { DeepPartial } from "../../../utility-types";
 import type { ImageFsInfoResponse, PodSandboxConfig, PodSandboxStatus } from "../../cri";
 import type {
 	CheckpointContainerRequest,
@@ -234,6 +236,22 @@ export interface PodStatus {
 	activeContainerStatuses?: Status[];
 	sandboxStatuses: PodSandboxStatus[];
 	timestamp: Date;
+}
+
+// Models kubernetes/pkg/kubelet/container/runtime.go PodStatus.
+export function newPodStatus(status: DeepPartial<PodStatus> = {}): PodStatus {
+	return deepMerge<PodStatus>(
+		{
+			id: "",
+			name: "",
+			namespace: "",
+			ips: [],
+			containerStatuses: [],
+			sandboxStatuses: [],
+			timestamp: new Date(0),
+		},
+		status,
+	);
 }
 
 export interface EnvVar {
