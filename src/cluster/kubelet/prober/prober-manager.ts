@@ -239,6 +239,10 @@ export class ProbeManagerImpl implements ProbeManager {
 			return result === "success";
 		}
 
+		if (containerStatus.started === true) {
+			return true;
+		}
+
 		if (this.getWorker(pod.metadata?.uid ?? "", containerStatus.name, "startup")) {
 			return false;
 		}

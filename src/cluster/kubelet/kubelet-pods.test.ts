@@ -10,6 +10,7 @@ import type {
 } from "../../client";
 import * as context from "../../go/context";
 import { browser } from "../../test/describe";
+import { ClusterNetwork } from "../cni";
 import {
 	buildContainerID,
 	ContainerID,
@@ -20,7 +21,7 @@ import {
 	type PodStatus as PodRuntimeStatus,
 	type Status as ContainerRuntimeStatus,
 } from "./container";
-import { newFakePod, type FakePod } from "./container/testing";
+import { FakeContainerCommandRunner, newFakePod, type FakePod } from "./container/testing";
 import {
 	createPodWorkers,
 	drainAllWorkers,
@@ -38,6 +39,7 @@ import {
 	newUpdatePodOptions,
 	PodWorkersImpl,
 } from "./pod-workers";
+import { ProbeManagerImpl } from "./prober";
 import * as kubetypes from "./types";
 
 interface ConvertToAPIContainerStatusesUpstreamTestCase {
@@ -184,6 +186,13 @@ function withLastTerminationState(
 	return {
 		...status,
 		lastState,
+	};
+}
+
+function withStarted(status: V1ContainerStatus, started: boolean): V1ContainerStatus {
+	return {
+		...status,
+		started,
 	};
 }
 
@@ -1185,6 +1194,40 @@ browser.describe("convertToAPIContainerStatuses", () => {
 				withRestartCount(waitingStateWithRestartingAllContainers("containerB"), 1),
 			],
 		},
+		{
+			// simulator only test
+			name: "running container preserves old started false when kubelet restart status changes are disabled",
+			pod: { spec: desiredState },
+			currentStatus: {
+				id: "",
+				name: "",
+				namespace: "",
+				timestamp: new Date(0),
+				containerStatuses: [runtimeStatus("containerA", { state: "Running" })],
+				sandboxStatuses: [],
+				ips: [],
+			},
+			previousStatus: [withStarted(runningState("containerA"), false)],
+			containers: [{ name: "containerA" }],
+			expected: [withStarted(runningState("containerA"), false)],
+		},
+		{
+			// simulator only test
+			name: "running container preserves old started true when kubelet restart status changes are disabled",
+			pod: { spec: desiredState },
+			currentStatus: {
+				id: "",
+				name: "",
+				namespace: "",
+				timestamp: new Date(0),
+				containerStatuses: [runtimeStatus("containerA", { state: "Running" })],
+				sandboxStatuses: [],
+				ips: [],
+			},
+			previousStatus: [withStarted(runningState("containerA"), true)],
+			containers: [{ name: "containerA" }],
+			expected: [withStarted(runningState("containerA"), true)],
+		},
 	];
 
 	it.each(upstreamTestCases)("$name", async (tc) => {
@@ -1242,6 +1285,92 @@ browser.describe("convertToAPIContainerStatuses", () => {
 				),
 			).toThrow("image volume status conversion is not implemented");
 		} finally {
+			await testKubelet.cleanup();
+		}
+	});
+
+	it("does not mutate runtime container status order while sorting by creation time", async () => {
+		const tCtx = context.background();
+		const testKubelet = newTestKubelet(false);
+		const firstStatus = runtimeStatus("containerA", { createdAt: 1 });
+		const secondStatus = runtimeStatus("containerB", { createdAt: 2 });
+		const currentStatus: PodRuntimeStatus = {
+			id: "",
+			name: "",
+			namespace: "",
+			timestamp: new Date(0),
+			containerStatuses: [firstStatus, secondStatus],
+			sandboxStatuses: [],
+			ips: [],
+		};
+
+		try {
+			testKubelet.kubelet.convertToAPIContainerStatuses(
+				tCtx,
+				{ spec: desiredState },
+				currentStatus,
+				[],
+				desiredState.containers,
+				undefined,
+				false,
+				false,
+				false,
+			);
+
+			expect(currentStatus.containerStatuses).toEqual([firstStatus, secondStatus]);
+		} finally {
+			await testKubelet.cleanup();
+		}
+	});
+});
+
+// Models kubernetes/pkg/kubelet/prober/prober_manager.go UpdatePodStatus.
+browser.describe("probeManagerUpdatePodStatus", () => {
+	it("preserves old started true for a running container with a pending startup probe when kubelet restart status changes are disabled", async () => {
+		const tCtx = context.background();
+		const testKubelet = newTestKubelet(false);
+		const pod: V1Pod = {
+			metadata: {
+				uid: "pod-uid",
+				name: "pod-name",
+				namespace: "pod-namespace",
+			},
+			spec: {
+				containers: [
+					{
+						name: "containerA",
+						startupProbe: {
+							exec: { command: ["true"] },
+						},
+					},
+				],
+			},
+		};
+		const podStatus: V1PodStatus = {
+			containerStatuses: [
+				withStarted(
+					withID(
+						runningStateWithStartedAt("containerA", testKubelet.fakeClock.now()),
+						"test://containerA",
+					),
+					true,
+				),
+			],
+		};
+		const probeManager = new ProbeManagerImpl({
+			clock: testKubelet.fakeClock,
+			runner: new FakeContainerCommandRunner(),
+			network: new ClusterNetwork(),
+			statusManager: testKubelet.kubelet.statusManager,
+		});
+
+		try {
+			probeManager.addPod(tCtx, pod);
+			probeManager.updatePodStatus(tCtx, pod, podStatus);
+
+			expect(podStatus.containerStatuses?.[0]?.started).toBe(true);
+		} finally {
+			await probeManager.close();
 			await testKubelet.cleanup();
 		}
 	});
