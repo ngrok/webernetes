@@ -34,19 +34,19 @@ interface RelistRequest {
 }
 
 // Models kubernetes/pkg/kubelet/pleg/generic.go podRecord.
-interface PodRecord {
+export interface PodRecord {
 	old?: RuntimePod;
 	current?: RuntimePod;
 }
 
 // Models kubernetes/pkg/kubelet/pleg/generic.go GenericPLEG.
 export class GenericPLEG implements PodLifecycleEventGeneratorHandler {
-	private readonly podRecords = new PodRecords();
-	private readonly podsToReinspect = new Set<string>();
+	readonly podRecords = new PodRecords();
+	readonly podsToReinspect = new Set<string>();
 	private readonly relistRequests = new Channel<RelistRequest>(200);
 	private readonly relistLock = new Mutex();
 	private stopCh: Channel<void> | undefined;
-	private globalRelistTimer: time.Timer | undefined;
+	globalRelistTimer: time.Timer | undefined;
 	private relistTime: Date | undefined;
 	private isRunning = false;
 	private runPromise: Promise<void> | undefined;
@@ -54,8 +54,8 @@ export class GenericPLEG implements PodLifecycleEventGeneratorHandler {
 	constructor(
 		private readonly runtime: Runtime,
 		private readonly eventChannel: Channel<PodLifecycleEvent>,
-		private relistDuration: RelistDuration,
-		private readonly cache: Cache,
+		public relistDuration: RelistDuration,
+		readonly cache: Cache,
 		private readonly clock: Clock,
 		private readonly ctx: context.Context,
 	) {}
@@ -92,10 +92,10 @@ export class GenericPLEG implements PodLifecycleEventGeneratorHandler {
 	}
 
 	// Models kubernetes/pkg/kubelet/pleg/generic.go workerLoopIteration.
-	private async workerLoopIteration(): Promise<boolean> {
+	async workerLoopIteration(): Promise<boolean> {
 		const stopCh = this.stopCh;
 		const globalRelistTimer = this.globalRelistTimer;
-		if (!stopCh || !globalRelistTimer) {
+		if (!globalRelistTimer) {
 			return false;
 		}
 
@@ -264,7 +264,7 @@ export class GenericPLEG implements PodLifecycleEventGeneratorHandler {
 		}
 
 		const [oldStatus, oldStatusErr] = await this.cache.get(pid);
-		if (oldStatusErr || oldStatus.ips.length === 0) {
+		if (oldStatusErr || !oldStatus || oldStatus.ips.length === 0) {
 			return [];
 		}
 
@@ -397,7 +397,7 @@ export function getContainerState(
 }
 
 // Models kubernetes/pkg/kubelet/pleg/generic.go podRecords.
-class PodRecords {
+export class PodRecords {
 	readonly records = new Map<string, PodRecord>();
 
 	keys(): IterableIterator<string> {
