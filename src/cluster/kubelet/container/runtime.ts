@@ -475,6 +475,40 @@ export interface CommandRunner {
 	): Promise<[output: string, err: Error | undefined]>;
 }
 
+// Models k8s.io/utils/exec/exec.go ExitError.
+export interface ExitError extends Error {
+	exited(): boolean;
+	exitStatus(): number;
+}
+
+export function isExitError(err: Error | undefined): err is ExitError {
+	if (!err) {
+		return false;
+	}
+	return (
+		"exited" in err &&
+		typeof err.exited === "function" &&
+		"exitStatus" in err &&
+		typeof err.exitStatus === "function"
+	);
+}
+
+// Models k8s.io/utils/exec/exec.go CodeExitError for local command runner results.
+export class ContainerCommandExitError extends Error implements ExitError {
+	constructor(private readonly code: number) {
+		super(`command terminated with exit code ${code}`);
+		this.name = "ContainerCommandExitError";
+	}
+
+	exited(): boolean {
+		return true;
+	}
+
+	exitStatus(): number {
+		return this.code;
+	}
+}
+
 // Models kubernetes/pkg/kubelet/container/runtime.go PodStatus.FindContainerStatusByName.
 export function findContainerStatusByName(
 	podStatus: PodStatus,
