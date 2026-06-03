@@ -8,6 +8,7 @@ import { FakeRecorder, newFakeRecorder } from "../../../../client-go/tools/recor
 import * as context from "../../../../go/context";
 import { browser } from "../../../../test/describe";
 import * as validation from "../../../apis/core/validation/validation";
+import { newTestPods } from "../../kubelet-test-helpers";
 import { appendDNSConfig, Configurer, getPodDNSType } from "./dns";
 
 const testHostNameserver = "1.2.3.4";
@@ -922,23 +923,6 @@ function dnsConfigsAreEqual(resConfig: DnsConfig | undefined, expectedConfig: Dn
 		}
 	}
 	return setEquals(new Set(resConfig.options), new Set(expectedConfig.options));
-}
-
-function newTestPods(count: number): V1Pod[] {
-	const pods: V1Pod[] = new Array(count);
-	for (let i = 0; i < count; i++) {
-		pods[i] = {
-			spec: {
-				containers: [],
-				hostNetwork: true,
-			},
-			metadata: {
-				uid: String(10000 + i),
-				name: `pod${i}`,
-			},
-		};
-	}
-	return pods;
 }
 
 function testPod(): V1Pod {

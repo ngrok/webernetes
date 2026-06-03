@@ -75,6 +75,24 @@ export function podWithUIDNameNsSpec(
 	return pod;
 }
 
+// Models kubernetes/pkg/kubelet/kubelet_test.go newTestPods.
+export function newTestPods(count: number): V1Pod[] {
+	const pods: V1Pod[] = new Array(count);
+	for (let i = 0; i < count; i++) {
+		pods[i] = {
+			spec: {
+				containers: [],
+				hostNetwork: true,
+			},
+			metadata: {
+				uid: String(10000 + i),
+				name: `pod${i}`,
+			},
+		};
+	}
+	return pods;
+}
+
 // Models kubernetes/pkg/kubelet/pod_workers_test.go fakePodWorkers.
 export class FakePodWorkers implements PodWorkers {
 	private readonly lock = new Mutex();

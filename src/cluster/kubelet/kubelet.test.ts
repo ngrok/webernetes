@@ -14,6 +14,7 @@ import {
 import { newFakePod, type FakePod } from "./container/testing";
 import {
 	FakePodWorkers,
+	newTestPods,
 	newTestKubelet,
 	podWithUIDNameNs,
 	podWithUIDNameNsSpec,
@@ -65,24 +66,6 @@ function verifyContainerStatuses(
 		expect(status.state).toEqual(expectedState[status.name]);
 		expect(status.lastState).toEqual(expectedLastTerminationState[status.name]);
 	}
-}
-
-// Models kubernetes/pkg/kubelet/kubelet_test.go newTestPods.
-function newTestPods(count: number): V1Pod[] {
-	const pods: V1Pod[] = new Array(count);
-	for (let i = 0; i < count; i++) {
-		pods[i] = {
-			spec: {
-				containers: [],
-				hostNetwork: true,
-			},
-			metadata: {
-				uid: String(10000 + i),
-				name: `pod${i}`,
-			},
-		};
-	}
-	return pods;
 }
 
 function podsByUID(a: V1Pod, b: V1Pod): number {
