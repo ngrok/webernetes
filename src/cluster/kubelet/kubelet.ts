@@ -384,7 +384,7 @@ export class Kubelet implements RuntimeHelper {
 	readonly runtimeCache: RuntimeCache;
 	// Package-visible for upstream-parity tests that mirror kubelet_test.go.
 	readonly runtimeState: RuntimeState;
-	private readonly commandRunner: CommandRunner;
+	private readonly runner: CommandRunner;
 	// Package-visible for upstream-parity tests that mirror kubelet_test.go.
 	readonly podManager: PodManager;
 	// Package-visible for upstream-parity tests that mirror kubelet_test.go.
@@ -486,7 +486,7 @@ export class Kubelet implements RuntimeHelper {
 			if (!kubeDeps.commandRunner) {
 				throw new Error("command runner is required when container runtime is injected");
 			}
-			this.commandRunner = kubeDeps.commandRunner;
+			this.runner = kubeDeps.commandRunner;
 		} else {
 			if (!this.runtimeService || !this.imageService) {
 				throw new Error("remote runtime and image services are required");
@@ -559,11 +559,11 @@ export class Kubelet implements RuntimeHelper {
 				runtimeCacheRefreshPeriodMs,
 				this.clock,
 			);
-			this.commandRunner = this.runtimeManager;
+			this.runner = this.runtimeManager;
 			this.runtimeManager.setHandlerRunner(
 				newHandlerRunner({
 					clock: this.clock,
-					commandRunner: this.commandRunner,
+					commandRunner: this.runner,
 					containerManager: this.containerRuntime,
 					eventRecorder: this.recorder,
 					network: kubeDeps.network,
@@ -572,7 +572,7 @@ export class Kubelet implements RuntimeHelper {
 		}
 		this.probeManager = new ProbeManagerImpl({
 			clock: this.clock,
-			runner: this.commandRunner,
+			runner: this.runner,
 			network: kubeDeps.network,
 			statusManager: this.statusManager,
 			livenessManager,

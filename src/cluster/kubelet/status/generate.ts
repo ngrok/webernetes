@@ -109,8 +109,8 @@ export function generateContainersReadyCondition(
 export function generatePodReadyCondition(
 	pod: V1Pod,
 	oldPodStatus: V1PodStatus,
-	conditions: V1PodCondition[],
-	containerStatuses: V1ContainerStatus[],
+	conditions: V1PodCondition[] | undefined,
+	containerStatuses: V1ContainerStatus[] | undefined,
 	phase: V1PodStatus["phase"],
 ): V1PodCondition {
 	const containersReady = generateContainersReadyCondition(
