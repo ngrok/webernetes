@@ -1,3 +1,5 @@
+import { deepMerge } from "../../../deep-merge";
+import type { DeepPartial } from "../../../utility-types";
 import { V1ContainerState } from "./V1ContainerState";
 import { V1ContainerUser } from "./V1ContainerUser";
 import { V1ResourceRequirements } from "./V1ResourceRequirements";
@@ -24,4 +26,17 @@ export interface V1ContainerStatus {
 	stopSignal?: string;
 	user?: V1ContainerUser;
 	volumeMounts?: Array<V1VolumeMountStatus>;
+}
+
+export function newContainerStatus(status: DeepPartial<V1ContainerStatus> = {}): V1ContainerStatus {
+	return deepMerge<V1ContainerStatus>(
+		{
+			name: "",
+			image: "",
+			imageID: "",
+			ready: false,
+			restartCount: 0,
+		},
+		status,
+	);
 }

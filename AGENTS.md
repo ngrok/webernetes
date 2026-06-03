@@ -70,6 +70,10 @@ General rules for this repository:
 - When mirroring Go `iota` enums in TypeScript, use string unions for the named
   enum values. If code needs to model the Go zero value, use the first `iota`
   enum value; do not add an empty string to the union to emulate a zero value.
+- When adding zero-value helper constructors in TypeScript, name them
+  `new<TypeName>`, such as `newContainerStatus`, accept a `DeepPartial` of the
+  type they create for overrides, and define them in the same file as the type
+  they construct.
 - Simulator behavior is currently targeting Kubernetes 1.36. A local checkout
   of `kubernetes/kubernetes` at commit
   `ecf6decece6a6de25a57aad9ba90b6ce580f6f78` is available at
