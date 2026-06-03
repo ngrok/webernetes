@@ -9,6 +9,7 @@ import { isStaticPod, type SyncPodType } from "./types/pod-update";
 import type { WorkQueue } from "./util/queue/work-queue";
 import type { PassiveClock } from "../../utils/clock/clock";
 import type { DeepPartial } from "../../utility-types";
+import { Mutex } from "../../go/sync/mutex";
 
 // Models kubernetes/pkg/kubelet/pod_workers.go workerResyncIntervalJitterFactor.
 const workerResyncIntervalJitterFactor = 0.5;
@@ -62,15 +63,15 @@ export interface PodWorkerSync {
 // Models kubernetes/pkg/kubelet/pod_workers.go podWorkers.
 export interface PodWorkers {
 	updatePod(ctx: context.Context, options: UpdatePodOptions): Promise<void>;
-	syncKnownPods(desiredPods: V1Pod[]): Map<string, PodWorkerSync>;
-	isPodKnownTerminated(uid: string): boolean;
-	couldHaveRunningContainers(uid: string): boolean;
-	shouldPodBeFinished(uid: string): boolean;
-	isPodTerminationRequested(uid: string): boolean;
-	shouldPodContainersBeTerminating(uid: string): boolean;
-	shouldPodRuntimeBeRemoved(uid: string): boolean;
-	shouldPodContentBeRemoved(uid: string): boolean;
-	isPodForMirrorPodTerminatingByFullName(podFullname: string): boolean;
+	syncKnownPods(desiredPods: V1Pod[]): Promise<Map<string, PodWorkerSync>>;
+	isPodKnownTerminated(uid: string): Promise<boolean>;
+	couldHaveRunningContainers(uid: string): Promise<boolean>;
+	shouldPodBeFinished(uid: string): Promise<boolean>;
+	isPodTerminationRequested(uid: string): Promise<boolean>;
+	shouldPodContainersBeTerminating(uid: string): Promise<boolean>;
+	shouldPodRuntimeBeRemoved(uid: string): Promise<boolean>;
+	shouldPodContentBeRemoved(uid: string): Promise<boolean>;
+	isPodForMirrorPodTerminatingByFullName(podFullname: string): Promise<boolean>;
 }
 
 // Models kubernetes/pkg/kubelet/pod_workers.go podWork.
@@ -250,6 +251,7 @@ export class PodWorkersImpl implements PodWorkers {
 	// and does not retain handles, but async close() needs promises it can await.
 	private readonly workerRuns = new Map<string, Promise<void>>();
 	readonly podSyncStatuses = new Map<string, PodSyncStatus>();
+	private readonly podLock = new Mutex();
 	// Models kubernetes/pkg/kubelet/pod_workers.go podWorkers.workerChannelFn.
 	workerChannelFn?: (uid: string, inCh: ReadOnlyChannel<void>) => ReadOnlyChannel<void>;
 	private podsSynced = false;
@@ -309,179 +311,194 @@ export class PodWorkersImpl implements PodWorkers {
 			return;
 		}
 
-		let firstTime = false;
-		const now = this.clock.now();
-		let status = this.podSyncStatuses.get(uid);
-		if (!status) {
-			firstTime = true;
-			status = {
-				syncedAt: now,
-				fullname: kubecontainer.buildPodFullName(name, ns),
-				// Rest are zero values
-				working: false,
-				deleted: false,
-				evicted: false,
-				restartRequested: false,
-				startedTerminating: false,
-				finished: false,
-				observedRuntime: false,
-				gracePeriod: 0,
-				notifyPostTerminating: [],
-				statusPostTerminating: [],
-			};
+		await this.podLock.withLock(async () => {
+			let firstTime = false;
+			const now = this.clock.now();
+			let status = this.podSyncStatuses.get(uid);
+			if (!status) {
+				firstTime = true;
+				status = {
+					syncedAt: now,
+					fullname: kubecontainer.buildPodFullName(name, ns),
+					// Rest are zero values
+					working: false,
+					deleted: false,
+					evicted: false,
+					restartRequested: false,
+					startedTerminating: false,
+					finished: false,
+					observedRuntime: false,
+					gracePeriod: 0,
+					notifyPostTerminating: [],
+					statusPostTerminating: [],
+				};
 
-			if (
-				options.pod &&
-				(options.pod.status?.phase === "Failed" || options.pod.status?.phase === "Succeeded")
-			) {
-				const [cachedPodStatus, statusCacheErr] = await this.podCache.get(uid);
-				if (!statusCacheErr && isPodStatusCacheTerminal(cachedPodStatus)) {
-					status = {
-						terminatingAt: now,
-						terminatedAt: now,
-						syncedAt: now,
-						startedTerminating: true,
-						finished: false,
-						fullname: kubecontainer.buildPodFullName(name, ns),
-						// Rest are zero values
-						working: false,
-						deleted: false,
-						evicted: false,
-						restartRequested: false,
-						observedRuntime: false,
-						gracePeriod: 0,
-						notifyPostTerminating: [],
-						statusPostTerminating: [],
-					};
+				if (
+					options.pod &&
+					(options.pod.status?.phase === "Failed" || options.pod.status?.phase === "Succeeded")
+				) {
+					const [cachedPodStatus, statusCacheErr] = await this.podCache.get(uid);
+					if (!statusCacheErr && cachedPodStatus && isPodStatusCacheTerminal(cachedPodStatus)) {
+						status = {
+							terminatingAt: now,
+							terminatedAt: now,
+							syncedAt: now,
+							startedTerminating: true,
+							finished: false,
+							fullname: kubecontainer.buildPodFullName(name, ns),
+							// Rest are zero values
+							working: false,
+							deleted: false,
+							evicted: false,
+							restartRequested: false,
+							observedRuntime: false,
+							gracePeriod: 0,
+							notifyPostTerminating: [],
+							statusPostTerminating: [],
+						};
+					}
+				}
+
+				this.podSyncStatuses.set(uid, status);
+			}
+
+			let pod = options.pod;
+			// Kubernetes can send a runtime-only pod update when the container runtime
+			// still has a sandbox/container but the kubelet no longer has a normal API
+			// Pod object for it. Those updates are only useful for teardown because a
+			// runtime pod does not carry enough spec to do a full sync.
+			if (isRuntimePod) {
+				status.observedRuntime = true;
+				if (status.pendingUpdate?.pod) {
+					pod = status.pendingUpdate.pod;
+					options.pod = pod;
+					options.runningPod = undefined;
+				} else if (status.activeUpdate?.pod) {
+					pod = status.activeUpdate.pod;
+					options.pod = pod;
+					options.runningPod = undefined;
+				} else if (options.runningPod) {
+					pod = kubecontainer.toAPIPod(options.runningPod);
 				}
 			}
 
-			this.podSyncStatuses.set(uid, status);
-		}
-
-		let pod = options.pod;
-		// Kubernetes can send a runtime-only pod update when the container runtime
-		// still has a sandbox/container but the kubelet no longer has a normal API
-		// Pod object for it. Those updates are only useful for teardown because a
-		// runtime pod does not carry enough spec to do a full sync.
-		if (isRuntimePod) {
-			status.observedRuntime = true;
-			if (status.pendingUpdate?.pod) {
-				pod = status.pendingUpdate.pod;
-				options.pod = pod;
-				options.runningPod = undefined;
-			} else if (status.activeUpdate?.pod) {
-				pod = status.activeUpdate.pod;
-				options.pod = pod;
-				options.runningPod = undefined;
-			} else if (options.runningPod) {
-				pod = kubecontainer.toAPIPod(options.runningPod);
-			}
-		}
-
-		if (!firstTime && isTerminationRequested(status)) {
-			if (options.updateType === "create") {
-				status.restartRequested = true;
-				return;
-			}
-		}
-
-		if (isFinished(status)) {
-			return;
-		}
-
-		let becameTerminating = false;
-		if (!isTerminationRequested(status)) {
-			switch (true) {
-				case isRuntimePod:
-					status.deleted = true;
-					status.terminatingAt = now;
-					becameTerminating = true;
-					break;
-				case pod?.metadata?.deletionTimestamp !== undefined:
-					status.deleted = true;
-					status.terminatingAt = now;
-					becameTerminating = true;
-					break;
-				case pod?.status?.phase === "Failed":
-				case pod?.status?.phase === "Succeeded":
-					status.terminatingAt = now;
-					becameTerminating = true;
-					break;
-				case options.updateType === "kill":
-					if (options.killPodOptions?.evict) {
-						status.evicted = true;
-					}
-					status.terminatingAt = now;
-					becameTerminating = true;
-					break;
-			}
-		}
-
-		let wasGracePeriodShortened = false;
-		switch (true) {
-			case isTerminated(status):
-				if (isRuntimePod) {
+			if (!firstTime && isTerminationRequested(status)) {
+				if (options.updateType === "create") {
+					status.restartRequested = true;
 					return;
 				}
-				options.killPodOptions?.completedCh?.close();
-				options.killPodOptions = undefined;
-				break;
-			case isTerminationRequested(status):
-				options.killPodOptions ??= {};
-				if (options.killPodOptions.completedCh) {
-					status.notifyPostTerminating.push(options.killPodOptions.completedCh);
+			}
+
+			if (isFinished(status)) {
+				return;
+			}
+
+			let becameTerminating = false;
+			if (!isTerminationRequested(status)) {
+				switch (true) {
+					case isRuntimePod:
+						status.deleted = true;
+						status.terminatingAt = now;
+						becameTerminating = true;
+						break;
+					case pod?.metadata?.deletionTimestamp !== undefined:
+						status.deleted = true;
+						status.terminatingAt = now;
+						becameTerminating = true;
+						break;
+					case pod?.status?.phase === "Failed":
+					case pod?.status?.phase === "Succeeded":
+						status.terminatingAt = now;
+						becameTerminating = true;
+						break;
+					case options.updateType === "kill":
+						if (options.killPodOptions?.evict) {
+							status.evicted = true;
+						}
+						status.terminatingAt = now;
+						becameTerminating = true;
+						break;
 				}
-				if (options.killPodOptions.podStatusFunc) {
-					status.statusPostTerminating.push(options.killPodOptions.podStatusFunc);
-				}
-				const [gracePeriod, gracePeriodShortened] = calculateEffectiveGracePeriod(
-					status,
-					pod,
-					options.killPodOptions,
-				);
-				wasGracePeriodShortened = gracePeriodShortened;
-				status.gracePeriod = gracePeriod;
-				options.killPodOptions.podTerminationGracePeriodSecondsOverride = gracePeriod;
-				break;
-			default:
-				options.killPodOptions?.completedCh?.close();
-				options.killPodOptions = undefined;
-				break;
-		}
+			}
 
-		let podUpdates = this.podUpdates.get(uid);
-		if (!podUpdates) {
-			podUpdates = new Channel<void>(1);
-			this.podUpdates.set(uid, podUpdates);
-			const workerUpdates =
-				this.workerChannelFn?.(uid, podUpdates.readOnly()) ?? podUpdates.readOnly();
-			// Mirrors the goroutine defer that observes worker exit upstream; the
-			// map itself is simulator-only bookkeeping for awaitable shutdown.
-			const run = this.podWorkerLoop(ctx, uid, workerUpdates).finally(() => {
-				this.workerRuns.delete(uid);
-			});
-			this.workerRuns.set(uid, run);
-		}
+			let wasGracePeriodShortened = false;
+			switch (true) {
+				case isTerminated(status):
+					if (isRuntimePod) {
+						return;
+					}
+					options.killPodOptions?.completedCh?.close();
+					options.killPodOptions = undefined;
+					break;
+				case isTerminationRequested(status):
+					options.killPodOptions ??= {};
+					if (options.killPodOptions.completedCh) {
+						status.notifyPostTerminating.push(options.killPodOptions.completedCh);
+					}
+					if (options.killPodOptions.podStatusFunc) {
+						status.statusPostTerminating.push(options.killPodOptions.podStatusFunc);
+					}
+					const [gracePeriod, gracePeriodShortened] = calculateEffectiveGracePeriod(
+						status,
+						pod,
+						options.killPodOptions,
+					);
+					wasGracePeriodShortened = gracePeriodShortened;
+					status.gracePeriod = gracePeriod;
+					options.killPodOptions.podTerminationGracePeriodSecondsOverride = gracePeriod;
+					break;
+				default:
+					options.killPodOptions?.completedCh?.close();
+					options.killPodOptions = undefined;
+					break;
+			}
 
-		if (status.pendingUpdate && status.pendingUpdate.startTime < options.startTime) {
-			options.startTime = status.pendingUpdate.startTime;
-		}
+			let podUpdates = this.podUpdates.get(uid);
+			if (!podUpdates) {
+				podUpdates = new Channel<void>(1);
+				this.podUpdates.set(uid, podUpdates);
+				const workerUpdates =
+					this.workerChannelFn?.(uid, podUpdates.readOnly()) ?? podUpdates.readOnly();
+				// Mirrors the goroutine defer that observes worker exit upstream; the
+				// map itself is simulator-only bookkeeping for awaitable shutdown.
+				const run = this.podWorkerLoop(ctx, uid, workerUpdates).finally(() => {
+					this.workerRuns.delete(uid);
+				});
+				this.workerRuns.set(uid, run);
+			}
 
-		// Kubernetes rewrites pendingUpdate.Pod from allocationManager here when
-		// InPlacePodVerticalScaling is enabled. The simulator does not yet model
-		// resource requests/limits, resize admission, or allocated resources.
-		status.pendingUpdate = options;
-		status.working = true;
-		podUpdates.trySend(undefined);
+			if (status.pendingUpdate && status.pendingUpdate.startTime < options.startTime) {
+				options.startTime = status.pendingUpdate.startTime;
+			}
 
-		if ((becameTerminating || wasGracePeriodShortened) && status.cancelFn) {
-			status.cancelFn();
-		}
+			// Kubernetes rewrites pendingUpdate.Pod from allocationManager here when
+			// InPlacePodVerticalScaling is enabled. The simulator does not yet model
+			// resource requests/limits, resize admission, or allocated resources.
+			status.pendingUpdate = options;
+			status.working = true;
+			podUpdates.trySend(undefined);
+
+			if ((becameTerminating || wasGracePeriodShortened) && status.cancelFn) {
+				status.cancelFn();
+			}
+		});
 	}
 
 	// Models kubernetes/pkg/kubelet/pod_workers.go startPodSync.
 	private startPodSync(
+		parentCtx: context.Context,
+		podUID: string,
+	): Promise<{
+		ctx: context.Context;
+		update: PodWork;
+		canStart: boolean;
+		canEverStart: boolean;
+		ok: boolean;
+	}> {
+		return this.podLock.withLock(() => this.startPodSyncLocked(parentCtx, podUID));
+	}
+
+	private startPodSyncLocked(
 		parentCtx: context.Context,
 		podUID: string,
 	): {
@@ -556,7 +573,10 @@ export class PodWorkersImpl implements PodWorkers {
 	): Promise<void> {
 		let lastSyncTime = new Date(0);
 		for await (const _ of podUpdates) {
-			const { ctx, update, canStart, canEverStart, ok } = this.startPodSync(parentCtx, podUID);
+			const { ctx, update, canStart, canEverStart, ok } = await this.startPodSync(
+				parentCtx,
+				podUID,
+			);
 			if (!ok) {
 				continue;
 			}
@@ -616,7 +636,7 @@ export class PodWorkersImpl implements PodWorkers {
 					case "TerminatingPod":
 						const gracePeriod =
 							update.options.killPodOptions?.podTerminationGracePeriodSecondsOverride;
-						const podStatusFunc = this.acknowledgeTerminating(podUID);
+						const podStatusFunc = await this.acknowledgeTerminating(podUID);
 						if (update.options.runningPod) {
 							err = await this.podSyncer.syncTerminatingRuntimePod(ctx, update.options.runningPod);
 						} else {
@@ -666,28 +686,32 @@ export class PodWorkersImpl implements PodWorkers {
 					// we will queue a retry
 					break;
 				case update.workType === "TerminatedPod":
-					this.completeTerminated(podUID);
+					await this.completeTerminated(podUID);
 					return;
 				case update.workType === "TerminatingPod":
 					if (update.options.runningPod) {
-						this.completeTerminatingRuntimePod(podUID);
+						await this.completeTerminatingRuntimePod(podUID);
 						return;
 					}
-					this.completeTerminating(podUID);
+					await this.completeTerminating(podUID);
 					phaseTransition = true;
 					break;
 				case isTerminal:
-					this.completeSync(podUID);
+					await this.completeSync(podUID);
 					phaseTransition = true;
 					break;
 			}
 
-			this.completeWork(podUID, phaseTransition, err);
+			await this.completeWork(podUID, phaseTransition, err);
 		}
 	}
 
 	// Models kubernetes/pkg/kubelet/pod_workers.go completeSync.
-	private completeSync(podUID: string): void {
+	private async completeSync(podUID: string): Promise<void> {
+		await this.podLock.withLock(() => this.completeSyncLocked(podUID));
+	}
+
+	private completeSyncLocked(podUID: string): void {
 		const status = this.podSyncStatuses.get(podUID);
 		if (!status) {
 			return;
@@ -698,7 +722,11 @@ export class PodWorkersImpl implements PodWorkers {
 	}
 
 	// Models kubernetes/pkg/kubelet/pod_workers.go completeTerminating.
-	private completeTerminating(podUID: string): void {
+	private async completeTerminating(podUID: string): Promise<void> {
+		await this.podLock.withLock(() => this.completeTerminatingLocked(podUID));
+	}
+
+	private completeTerminatingLocked(podUID: string): void {
 		const status = this.podSyncStatuses.get(podUID);
 		if (!status) {
 			return;
@@ -713,7 +741,11 @@ export class PodWorkersImpl implements PodWorkers {
 	}
 
 	// Models kubernetes/pkg/kubelet/pod_workers.go completeTerminatingRuntimePod.
-	private completeTerminatingRuntimePod(podUID: string): void {
+	private async completeTerminatingRuntimePod(podUID: string): Promise<void> {
+		await this.podLock.withLock(() => this.completeTerminatingRuntimePodLocked(podUID));
+	}
+
+	private completeTerminatingRuntimePodLocked(podUID: string): void {
 		this.cleanupPodUpdates(podUID);
 		const status = this.podSyncStatuses.get(podUID);
 		if (!status) {
@@ -726,7 +758,11 @@ export class PodWorkersImpl implements PodWorkers {
 	}
 
 	// Models kubernetes/pkg/kubelet/pod_workers.go acknowledgeTerminating.
-	private acknowledgeTerminating(podUID: string): PodStatusFunc | undefined {
+	private async acknowledgeTerminating(podUID: string): Promise<PodStatusFunc | undefined> {
+		return await this.podLock.withLock(() => this.acknowledgeTerminatingLocked(podUID));
+	}
+
+	private acknowledgeTerminatingLocked(podUID: string): PodStatusFunc | undefined {
 		const status = this.podSyncStatuses.get(podUID);
 		if (!status) {
 			return undefined;
@@ -740,7 +776,11 @@ export class PodWorkersImpl implements PodWorkers {
 	}
 
 	// Models kubernetes/pkg/kubelet/pod_workers.go completeTerminated.
-	private completeTerminated(podUID: string): void {
+	private async completeTerminated(podUID: string): Promise<void> {
+		await this.podLock.withLock(() => this.completeTerminatedLocked(podUID));
+	}
+
+	private completeTerminatedLocked(podUID: string): void {
 		this.cleanupPodUpdates(podUID);
 		const status = this.podSyncStatuses.get(podUID);
 		if (!status) {
@@ -751,7 +791,7 @@ export class PodWorkersImpl implements PodWorkers {
 	}
 
 	// Models kubernetes/pkg/kubelet/pod_workers.go completeWork.
-	completeWork(podUID: string, phaseTransition: boolean, syncError: unknown): void {
+	async completeWork(podUID: string, phaseTransition: boolean, syncError: unknown): Promise<void> {
 		switch (true) {
 			case phaseTransition:
 				this.workQueue.enqueue(podUID, 0);
@@ -783,127 +823,150 @@ export class PodWorkersImpl implements PodWorkers {
 				break;
 		}
 
-		const status = this.podSyncStatuses.get(podUID);
-		if (status) {
-			if (status.pendingUpdate) {
-				this.podUpdates.get(podUID)?.trySend(undefined);
-			} else {
-				status.working = false;
+		await this.podLock.withLock(() => {
+			const status = this.podSyncStatuses.get(podUID);
+			if (status) {
+				if (status.pendingUpdate) {
+					this.podUpdates.get(podUID)?.trySend(undefined);
+				} else {
+					status.working = false;
+				}
 			}
-		}
+		});
 	}
 
 	// Models kubernetes/pkg/kubelet/pod_workers.go SyncKnownPods.
-	syncKnownPods(desiredPods: V1Pod[]): Map<string, PodWorkerSync> {
+	async syncKnownPods(desiredPods: V1Pod[]): Promise<Map<string, PodWorkerSync>> {
 		const workers = new Map<string, PodWorkerSync>();
 		const known = new Set<string>();
 		for (const pod of desiredPods) {
 			known.add(podUIDFromPod(pod));
 		}
 
-		this.podsSynced = true;
-		for (const [uid, status] of this.podSyncStatuses) {
-			const orphan = !known.has(uid);
-			if (status.restartRequested || orphan) {
-				if (this.removeTerminatedWorker(uid, status, orphan)) {
-					continue;
+		await this.podLock.lock();
+		try {
+			this.podsSynced = true;
+			for (const [uid, status] of this.podSyncStatuses) {
+				const orphan = !known.has(uid);
+				if (status.restartRequested || orphan) {
+					if (this.removeTerminatedWorker(uid, status, orphan)) {
+						continue;
+					}
 				}
-			}
 
-			const sync: PodWorkerSync = {
-				state: workType(status),
-				orphan,
-				// Rest are zero values
-				hasConfig: false,
-				static: false,
-			};
-			switch (true) {
-				case status.activeUpdate !== undefined:
-					if (status.activeUpdate.pod) {
-						sync.hasConfig = true;
-						sync.static = isStaticPod(status.activeUpdate.pod);
-					}
-					break;
-				case status.pendingUpdate !== undefined:
-					if (status.pendingUpdate.pod) {
-						sync.hasConfig = true;
-						sync.static = isStaticPod(status.pendingUpdate.pod);
-					}
-					break;
+				const sync: PodWorkerSync = {
+					state: workType(status),
+					orphan,
+					// Rest are zero values
+					hasConfig: false,
+					static: false,
+				};
+				switch (true) {
+					case status.activeUpdate !== undefined:
+						if (status.activeUpdate.pod) {
+							sync.hasConfig = true;
+							sync.static = isStaticPod(status.activeUpdate.pod);
+						}
+						break;
+					case status.pendingUpdate !== undefined:
+						if (status.pendingUpdate.pod) {
+							sync.hasConfig = true;
+							sync.static = isStaticPod(status.pendingUpdate.pod);
+						}
+						break;
+				}
+				workers.set(uid, sync);
 			}
-			workers.set(uid, sync);
+			return workers;
+		} finally {
+			this.podLock.unlock();
 		}
-		return workers;
 	}
 
 	// Models kubernetes/pkg/kubelet/pod_workers.go IsPodKnownTerminated.
-	isPodKnownTerminated(uid: string): boolean {
-		const status = this.podSyncStatuses.get(uid);
-		if (status) {
-			return isTerminated(status);
-		}
-		return false;
+	async isPodKnownTerminated(uid: string): Promise<boolean> {
+		return await this.podLock.withLock(() => {
+			const status = this.podSyncStatuses.get(uid);
+			if (status) {
+				return isTerminated(status);
+			}
+			return false;
+		});
 	}
 
 	// Models kubernetes/pkg/kubelet/pod_workers.go CouldHaveRunningContainers.
-	couldHaveRunningContainers(uid: string): boolean {
-		const status = this.podSyncStatuses.get(uid);
-		if (status) {
-			return !isTerminated(status);
-		}
-		return !this.podsSynced;
+	async couldHaveRunningContainers(uid: string): Promise<boolean> {
+		return await this.podLock.withLock(() => {
+			const status = this.podSyncStatuses.get(uid);
+			if (status) {
+				return !isTerminated(status);
+			}
+			return !this.podsSynced;
+		});
 	}
 
 	// Models kubernetes/pkg/kubelet/pod_workers.go ShouldPodBeFinished.
-	shouldPodBeFinished(uid: string): boolean {
-		const status = this.podSyncStatuses.get(uid);
-		if (status) {
-			return isFinished(status);
-		}
-		return this.podsSynced;
+	async shouldPodBeFinished(uid: string): Promise<boolean> {
+		return await this.podLock.withLock(() => {
+			const status = this.podSyncStatuses.get(uid);
+			if (status) {
+				return isFinished(status);
+			}
+			return this.podsSynced;
+		});
 	}
 
 	// Models kubernetes/pkg/kubelet/pod_workers.go IsPodTerminationRequested.
-	isPodTerminationRequested(uid: string): boolean {
-		const status = this.podSyncStatuses.get(uid);
-		if (status) {
-			return isTerminationRequested(status);
-		}
-		return false;
+	async isPodTerminationRequested(uid: string): Promise<boolean> {
+		return await this.podLock.withLock(() => {
+			const status = this.podSyncStatuses.get(uid);
+			if (status) {
+				return isTerminationRequested(status);
+			}
+			return false;
+		});
 	}
 
 	// Models kubernetes/pkg/kubelet/pod_workers.go ShouldPodContainersBeTerminating.
-	shouldPodContainersBeTerminating(uid: string): boolean {
-		const status = this.podSyncStatuses.get(uid);
-		if (status) {
-			return isTerminationStarted(status);
-		}
-		return this.podsSynced;
+	async shouldPodContainersBeTerminating(uid: string): Promise<boolean> {
+		return await this.podLock.withLock(() => {
+			const status = this.podSyncStatuses.get(uid);
+			if (status) {
+				return isTerminationStarted(status);
+			}
+			return this.podsSynced;
+		});
 	}
 
 	// Models kubernetes/pkg/kubelet/pod_workers.go ShouldPodRuntimeBeRemoved.
-	shouldPodRuntimeBeRemoved(uid: string): boolean {
-		const status = this.podSyncStatuses.get(uid);
-		if (status) {
-			return isTerminated(status);
-		}
-		return this.podsSynced;
+	async shouldPodRuntimeBeRemoved(uid: string): Promise<boolean> {
+		return await this.podLock.withLock(() => {
+			const status = this.podSyncStatuses.get(uid);
+			if (status) {
+				return isTerminated(status);
+			}
+			return this.podsSynced;
+		});
 	}
 
 	// Models kubernetes/pkg/kubelet/pod_workers.go ShouldPodContentBeRemoved.
-	shouldPodContentBeRemoved(uid: string): boolean {
-		const status = this.podSyncStatuses.get(uid);
-		if (status) {
-			return isEvicted(status) || (isDeleted(status) && isTerminated(status));
-		}
-		return this.podsSynced;
+	async shouldPodContentBeRemoved(uid: string): Promise<boolean> {
+		return await this.podLock.withLock(() => {
+			const status = this.podSyncStatuses.get(uid);
+			if (status) {
+				return isEvicted(status) || (isDeleted(status) && isTerminated(status));
+			}
+			return this.podsSynced;
+		});
 	}
 
 	// Models kubernetes/pkg/kubelet/pod_workers.go IsPodForMirrorPodTerminatingByFullName.
-	isPodForMirrorPodTerminatingByFullName(_podFullname: string): boolean {
-		// Static pods are not implemented end to end in this simulator, so there is
-		// no local startedStaticPodsByFullname equivalent to consult yet.
-		return false;
+	async isPodForMirrorPodTerminatingByFullName(_podFullname: string): Promise<boolean> {
+		return await this.podLock.withLock(() => {
+			// Static pods are not implemented end to end in this simulator, so there is
+			// no local startedStaticPodsByFullname equivalent to consult yet.
+			return false;
+		});
 	}
 
 	// Models kubernetes/pkg/kubelet/pod_workers.go removeTerminatedWorker.
@@ -965,14 +1028,18 @@ export class PodWorkersImpl implements PodWorkers {
 
 	async close(): Promise<void> {
 		this.stopped = true;
-		for (const status of this.podSyncStatuses.values()) {
-			status.cancelFn?.();
-		}
-		for (const uid of [...this.podUpdates.keys()]) {
-			this.cleanupPodUpdates(uid);
-		}
+		await this.podLock.withLock(() => {
+			for (const status of this.podSyncStatuses.values()) {
+				status.cancelFn?.();
+			}
+			for (const uid of [...this.podUpdates.keys()]) {
+				this.cleanupPodUpdates(uid);
+			}
+		});
 		await Promise.all(this.workerRuns.values());
-		this.podSyncStatuses.clear();
+		await this.podLock.withLock(() => {
+			this.podSyncStatuses.clear();
+		});
 	}
 }
 

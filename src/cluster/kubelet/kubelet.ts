@@ -570,15 +570,16 @@ export class Kubelet implements RuntimeHelper {
 				}),
 			);
 		}
-		this.probeManager = new ProbeManagerImpl({
-			clock: this.clock,
-			runner: this.runner,
-			network: kubeDeps.network,
-			statusManager: this.statusManager,
+		this.probeManager = new ProbeManagerImpl(
+			this.statusManager,
 			livenessManager,
 			readinessManager,
 			startupManager,
-		});
+			this.runner,
+			this.recorder,
+			this.clock,
+			kubeDeps.network,
+		);
 		this.workQueue = new BasicWorkQueue(this.clock);
 		this.pleg = new GenericPLEG(
 			this.containerRuntime,
@@ -1358,7 +1359,7 @@ export class Kubelet implements RuntimeHelper {
 			this.podManager.getPodsAndMirrorPods();
 
 		// Stop the workers for terminated pods not in the config source
-		const workingPods = this.podWorkers.syncKnownPods(allPods);
+		const workingPods = await this.podWorkers.syncKnownPods(allPods);
 
 		// Identify the set of pods that have workers, which should be all pods
 		// from config that are not terminated, as well as any terminating pods
@@ -1400,13 +1401,13 @@ export class Kubelet implements RuntimeHelper {
 		// current scope.
 
 		for (const podFullname of orphanedMirrorPodFullnames) {
-			if (this.podWorkers.isPodForMirrorPodTerminatingByFullName(podFullname)) {
+			if (await this.podWorkers.isPodForMirrorPodTerminatingByFullName(podFullname)) {
 				continue;
 			}
 			// Mirror pod API deletion is not supported end to end in the simulator.
 		}
 
-		const activePods = this.filterOutInactivePods(allPods);
+		const activePods = await this.filterOutInactivePods(allPods);
 
 		// At this point, the pod worker is aware of which pods are not desired (SyncKnownPods).
 		// We now look through the set of active pods for those that the pod worker is not aware of
@@ -1476,10 +1477,10 @@ export class Kubelet implements RuntimeHelper {
 	}
 
 	// Models kubernetes/pkg/kubelet/kubelet_pods.go filterOutInactivePods.
-	filterOutInactivePods(pods: V1Pod[]): V1Pod[] {
+	async filterOutInactivePods(pods: V1Pod[]): Promise<V1Pod[]> {
 		const filteredPods: V1Pod[] = [];
 		for (const pod of pods) {
-			if (this.isPodInactive(pod)) {
+			if (await this.isPodInactive(pod)) {
 				continue;
 			}
 			filteredPods.push(pod);
@@ -1488,12 +1489,15 @@ export class Kubelet implements RuntimeHelper {
 	}
 
 	// Models kubernetes/pkg/kubelet/kubelet_pods.go isPodInactive.
-	private isPodInactive(pod: V1Pod): boolean {
+	private async isPodInactive(pod: V1Pod): Promise<boolean> {
 		const uid = pod.metadata?.uid ?? "";
-		if (this.podWorkers.isPodKnownTerminated(uid)) {
+		if (await this.podWorkers.isPodKnownTerminated(uid)) {
 			return true;
 		}
-		if (this.isAdmittedPodTerminal(pod) && !this.podWorkers.isPodTerminationRequested(uid)) {
+		if (
+			this.isAdmittedPodTerminal(pod) &&
+			!(await this.podWorkers.isPodTerminationRequested(uid))
+		) {
 			return true;
 		}
 		return false;
@@ -1622,13 +1626,13 @@ export class Kubelet implements RuntimeHelper {
 			];
 		}
 
-		if (!this.podWorkers.isPodTerminationRequested(pod.metadata?.uid ?? "")) {
+		if (!(await this.podWorkers.isPodTerminationRequested(pod.metadata?.uid ?? ""))) {
 			// Kubernetes registers referenced secrets and configmaps here. The
 			// simulator keeps image credential and configmap/secret resolution out
 			// of kubelet sync scope for now.
 		}
 
-		if (!this.podWorkers.isPodTerminationRequested(pod.metadata?.uid ?? "")) {
+		if (!(await this.podWorkers.isPodTerminationRequested(pod.metadata?.uid ?? ""))) {
 			// Kubernetes creates and updates pod cgroups/QOS hierarchy here. The
 			// simulator does not model cgroups, resource requests, or limits.
 		}
@@ -2355,7 +2359,7 @@ export class Kubelet implements RuntimeHelper {
 		exitedContainerID: string,
 	): Promise<void> {
 		const [podStatus, podStatusErr] = await this.podCache.get(podID);
-		if (podStatusErr) {
+		if (podStatusErr || !podStatus) {
 			return;
 		}
 		for (const container of getContainersToDeleteInPod(exitedContainerID, podStatus, 1)) {

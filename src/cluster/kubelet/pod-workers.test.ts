@@ -11,6 +11,7 @@ import {
 	newBackoffError,
 	newPod,
 	newPodStatus,
+	type ROCache,
 	type PodStatus as PodRuntimeStatus,
 } from "./container";
 import { networkNotReadyErrorMsg } from "./errors";
@@ -99,7 +100,7 @@ class timeIncrementingWorkers {
 	// Models kubernetes/pkg/kubelet/pod_workers_test.go timeIncrementingWorkers.SyncKnownPods.
 	async syncKnownPods(desiredPods: V1Pod[]): Promise<Map<string, PodWorkerSync>> {
 		this.tick();
-		return this.w.syncKnownPods(desiredPods);
+		return await this.w.syncKnownPods(desiredPods);
 	}
 
 	// Models kubernetes/pkg/kubelet/pod_workers_test.go timeIncrementingWorkers.PauseWorkers.
@@ -321,7 +322,7 @@ browser.describe("completeWork_Enqueue", () => {
 			podWorkers.resyncIntervalMs = resyncInterval;
 			podWorkers.backOffPeriodMs = defaultBackoff;
 			podWorkers.podSyncStatuses.set(podUID, newPodSyncStatus({}));
-			podWorkers.completeWork(podUID, tc.phaseTransition ?? false, tc.syncErr);
+			await podWorkers.completeWork(podUID, tc.phaseTransition ?? false, tc.syncErr);
 
 			expect(fakeQueue.empty()).toBe(false);
 			const items = fakeQueue.items();
@@ -347,7 +348,7 @@ browser.describe("completeWork_PendingUpdate", () => {
 		try {
 			p.podSyncStatuses.set(podUID, newPodSyncStatus({ working: true }));
 
-			p.completeWork(podUID, false, undefined);
+			await p.completeWork(podUID, false, undefined);
 
 			expect(p.podSyncStatuses.get(podUID)?.working).toBe(false);
 		} finally {
@@ -369,10 +370,75 @@ browser.describe("completeWork_PendingUpdate", () => {
 				}),
 			);
 
-			p.completeWork(podUID, false, undefined);
+			await p.completeWork(podUID, false, undefined);
 
 			const queued = p.podUpdates.get(podUID)?.tryReceive();
 			expect(queued?.ok).toBe(true);
+		} finally {
+			await p.close();
+		}
+	});
+});
+
+browser.describe("updatePod locking", () => {
+	it("serializes updates while first-time terminal status checks await the pod cache", async () => {
+		const tCtx = context.background();
+		const clock = newFakePassiveClock(new Date(1_000));
+		let releaseGet: (() => void) | undefined;
+		let getStarted = false;
+		const cache: ROCache = {
+			async get(id) {
+				getStarted = true;
+				await new Promise<void>((resolve) => {
+					releaseGet = resolve;
+				});
+				return [newPodStatus({ id }), undefined];
+			},
+			async getNewerThan(_ctx, id) {
+				return [newPodStatus({ id }), undefined];
+			},
+		};
+		const p = new PodWorkersImpl(
+			clock,
+			new FakeQueue(),
+			60 * 1000,
+			1000,
+			{
+				async syncPod() {
+					return [false, undefined, undefined];
+				},
+				async syncTerminatingPod() {
+					return undefined;
+				},
+				async syncTerminatingRuntimePod() {
+					return undefined;
+				},
+				async syncTerminatedPod() {
+					return undefined;
+				},
+			},
+			cache,
+		);
+		try {
+			const pod = newPodWithPhase("pod-with-lock", "pod-with-lock", "Failed");
+			const first = p.updatePod(tCtx, newUpdatePodOptions({ pod, updateType: "update" }));
+			await wait(0);
+			expect(getStarted).toBe(true);
+
+			let secondDone = false;
+			const second = (async () => {
+				await p.updatePod(tCtx, newUpdatePodOptions({ pod, updateType: "kill" }));
+				secondDone = true;
+			})();
+			await wait(0);
+			expect(secondDone).toBe(false);
+
+			releaseGet?.();
+			await first;
+			await second;
+
+			expect(p.podSyncStatuses.size).toBe(1);
+			expect(secondDone).toBe(true);
 		} finally {
 			await p.close();
 		}
@@ -803,7 +869,7 @@ browser.describe("updatePod", () => {
 
 			await podWorkers.updatePod(tCtx, tc.update, ...fns);
 
-			expect(podWorkers.w.isPodKnownTerminated(uid)).toBe(tc.expectKnownTerminated ?? false);
+			expect(await podWorkers.w.isPodKnownTerminated(uid)).toBe(tc.expectKnownTerminated ?? false);
 			expectPodSyncStatus(tc.expect, podWorkers.w.podSyncStatuses.get(uid));
 		} finally {
 			await podWorkers.w.close();
@@ -921,35 +987,35 @@ browser.describe("syncKnownPods", () => {
 			}
 			await drainWorkers(podWorkers, numPods);
 
-			expect(podWorkers.shouldPodContainersBeTerminating("0")).toBe(true);
-			expect(podWorkers.shouldPodContainersBeTerminating("1")).toBe(true);
-			expect(podWorkers.shouldPodContainersBeTerminating("2")).toBe(false);
-			expect(podWorkers.isPodTerminationRequested("0")).toBe(true);
-			expect(podWorkers.isPodTerminationRequested("2")).toBe(false);
+			expect(await podWorkers.shouldPodContainersBeTerminating("0")).toBe(true);
+			expect(await podWorkers.shouldPodContainersBeTerminating("1")).toBe(true);
+			expect(await podWorkers.shouldPodContainersBeTerminating("2")).toBe(false);
+			expect(await podWorkers.isPodTerminationRequested("0")).toBe(true);
+			expect(await podWorkers.isPodTerminationRequested("2")).toBe(false);
 
-			expect(podWorkers.couldHaveRunningContainers("0")).toBe(false);
-			expect(podWorkers.couldHaveRunningContainers("1")).toBe(false);
-			expect(podWorkers.couldHaveRunningContainers("2")).toBe(true);
+			expect(await podWorkers.couldHaveRunningContainers("0")).toBe(false);
+			expect(await podWorkers.couldHaveRunningContainers("1")).toBe(false);
+			expect(await podWorkers.couldHaveRunningContainers("2")).toBe(true);
 
-			expect(podWorkers.shouldPodContentBeRemoved("0")).toBe(true);
-			expect(podWorkers.shouldPodContentBeRemoved("1")).toBe(false);
-			expect(podWorkers.shouldPodContentBeRemoved("2")).toBe(false);
+			expect(await podWorkers.shouldPodContentBeRemoved("0")).toBe(true);
+			expect(await podWorkers.shouldPodContentBeRemoved("1")).toBe(false);
+			expect(await podWorkers.shouldPodContentBeRemoved("2")).toBe(false);
 
-			expect(podWorkers.shouldPodContainersBeTerminating("abc")).toBe(false);
-			expect(podWorkers.couldHaveRunningContainers("abc")).toBe(true);
-			expect(podWorkers.shouldPodContentBeRemoved("abc")).toBe(false);
+			expect(await podWorkers.shouldPodContainersBeTerminating("abc")).toBe(false);
+			expect(await podWorkers.couldHaveRunningContainers("abc")).toBe(true);
+			expect(await podWorkers.shouldPodContentBeRemoved("abc")).toBe(false);
 
-			podWorkers.syncKnownPods(desiredPodList);
+			await podWorkers.syncKnownPods(desiredPodList);
 			expect(podWorkers.podUpdates.size).toBe(2);
 			expect(podWorkers.podUpdates.has("2")).toBe(true);
 			expect(podWorkers.podUpdates.has("14")).toBe(true);
-			expect(podWorkers.isPodTerminationRequested("2")).toBe(false);
+			expect(await podWorkers.isPodTerminationRequested("2")).toBe(false);
 
-			expect(podWorkers.shouldPodContainersBeTerminating("abc")).toBe(true);
-			expect(podWorkers.couldHaveRunningContainers("abc")).toBe(false);
-			expect(podWorkers.shouldPodContentBeRemoved("abc")).toBe(true);
+			expect(await podWorkers.shouldPodContainersBeTerminating("abc")).toBe(true);
+			expect(await podWorkers.couldHaveRunningContainers("abc")).toBe(false);
+			expect(await podWorkers.shouldPodContentBeRemoved("abc")).toBe(true);
 
-			podWorkers.syncKnownPods([]);
+			await podWorkers.syncKnownPods([]);
 			await drainAllWorkers(podWorkers);
 			expect(podWorkers.podUpdates.size).toBe(0);
 			expect(podWorkers.podSyncStatuses.size).toBe(2);
@@ -965,7 +1031,7 @@ browser.describe("syncKnownPods", () => {
 			}
 			await drainWorkers(podWorkers, numPods);
 
-			podWorkers.syncKnownPods([]);
+			await podWorkers.syncKnownPods([]);
 			expect(podWorkers.podUpdates.size).toBe(0);
 			expect(podWorkers.podSyncStatuses.size).toBe(0);
 		} finally {
