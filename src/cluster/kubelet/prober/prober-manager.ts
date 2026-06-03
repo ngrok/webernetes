@@ -1,4 +1,5 @@
 import type { V1Container, V1ContainerStatus, V1Pod, V1PodStatus } from "../../../client";
+import type { EventRecorder } from "../../../client-go/tools/record/event";
 import type { Clock } from "../../../clock";
 import { KeyFnMap } from "../../../collections";
 import type { Context } from "../../../go/context";
@@ -8,16 +9,6 @@ import type { StatusManager } from "../status";
 import { Prober } from "./prober";
 import { ProbeWorker } from "./worker";
 import { ResultsManager, type ProbeType } from "./results";
-
-export interface ProbeManagerOptions {
-	clock: Clock;
-	runner: CommandRunner;
-	network: ClusterNetwork;
-	statusManager: StatusManager;
-	livenessManager?: ResultsManager;
-	readinessManager?: ResultsManager;
-	startupManager?: ResultsManager;
-}
 
 // Models kubernetes/pkg/kubelet/prober/prober_manager.go Manager.
 export interface ProbeManager {
@@ -41,7 +32,7 @@ export class ProbeManagerImpl implements ProbeManager {
 	readonly prober: Prober;
 	readonly statusManager: StatusManager;
 	readonly clock: Clock;
-	private readonly workers = new KeyFnMap<ProbeKey, ProbeWorker>(probeKeyString);
+	readonly workers = new KeyFnMap<ProbeKey, ProbeWorker>(probeKeyString);
 	// Go starts probe workers as goroutines and does not retain join handles.
 	// This simulator keeps the returned promises so close() can stop workers
 	// through their stop channel and then wait for their async cleanup to finish
@@ -49,14 +40,23 @@ export class ProbeManagerImpl implements ProbeManager {
 	private readonly workerRuns = new Map<ProbeWorker, Promise<void>>();
 	readonly startedAt: Date;
 
-	constructor(options: ProbeManagerOptions) {
-		this.clock = options.clock;
-		this.livenessManager = options.livenessManager ?? new ResultsManager();
-		this.readinessManager = options.readinessManager ?? new ResultsManager();
-		this.startupManager = options.startupManager ?? new ResultsManager();
-		this.prober = new Prober(options.runner, options.network);
-		this.statusManager = options.statusManager;
-		this.startedAt = options.clock.now();
+	constructor(
+		statusManager: StatusManager,
+		livenessManager: ResultsManager,
+		readinessManager: ResultsManager,
+		startupManager: ResultsManager,
+		runner: CommandRunner | undefined,
+		recorder: EventRecorder | undefined,
+		clock: Clock,
+		network: ClusterNetwork,
+	) {
+		this.clock = clock;
+		this.livenessManager = livenessManager;
+		this.readinessManager = readinessManager;
+		this.startupManager = startupManager;
+		this.prober = new Prober(runner, network, recorder);
+		this.statusManager = statusManager;
+		this.startedAt = clock.now();
 	}
 
 	// Models kubernetes/pkg/kubelet/prober/prober_manager.go AddPod.
@@ -285,11 +285,7 @@ export class ProbeManagerImpl implements ProbeManager {
 		return ready;
 	}
 
-	private getWorker(
-		podUid: string,
-		containerName: string,
-		probeType: ProbeType,
-	): ProbeWorker | undefined {
+	getWorker(podUid: string, containerName: string, probeType: ProbeType): ProbeWorker | undefined {
 		return this.workers.get({ podUid, containerName, probeType });
 	}
 }

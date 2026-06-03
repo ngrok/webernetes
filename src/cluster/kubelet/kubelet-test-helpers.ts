@@ -135,6 +135,9 @@ export class FakePodWorkers implements PodWorkers {
 					this.triggeredDeletion.push(uid);
 					break;
 				default: {
+					if (!status) {
+						throw new Error(`pod status cache returned no status for ${uid}`);
+					}
 					const [isTerminal, , syncErr] = await this.syncPodFn(
 						ctx,
 						options.updateType,
@@ -154,37 +157,37 @@ export class FakePodWorkers implements PodWorkers {
 	}
 
 	// Models kubernetes/pkg/kubelet/pod_workers_test.go fakePodWorkers.SyncKnownPods.
-	syncKnownPods(_desiredPods: V1Pod[]): Map<string, PodWorkerSync> {
+	async syncKnownPods(_desiredPods: V1Pod[]): Promise<Map<string, PodWorkerSync>> {
 		return new Map<string, PodWorkerSync>();
 	}
 
 	// Models kubernetes/pkg/kubelet/pod_workers_test.go fakePodWorkers.IsPodKnownTerminated.
-	isPodKnownTerminated(uid: string): boolean {
+	async isPodKnownTerminated(uid: string): Promise<boolean> {
 		return this.terminated.get(uid) ?? false;
 	}
 
 	// Models kubernetes/pkg/kubelet/pod_workers_test.go fakePodWorkers.CouldHaveRunningContainers.
-	couldHaveRunningContainers(uid: string): boolean {
+	async couldHaveRunningContainers(uid: string): Promise<boolean> {
 		return this.running.get(uid) ?? false;
 	}
 
 	// Models kubernetes/pkg/kubelet/pod_workers_test.go fakePodWorkers.ShouldPodBeFinished.
-	shouldPodBeFinished(uid: string): boolean {
+	async shouldPodBeFinished(uid: string): Promise<boolean> {
 		return this.finished.get(uid) ?? false;
 	}
 
 	// Models kubernetes/pkg/kubelet/pod_workers_test.go fakePodWorkers.IsPodTerminationRequested.
-	isPodTerminationRequested(uid: string): boolean {
+	async isPodTerminationRequested(uid: string): Promise<boolean> {
 		return this.terminationRequested.get(uid) ?? false;
 	}
 
 	// Models kubernetes/pkg/kubelet/pod_workers_test.go fakePodWorkers.ShouldPodContainersBeTerminating.
-	shouldPodContainersBeTerminating(uid: string): boolean {
+	async shouldPodContainersBeTerminating(uid: string): Promise<boolean> {
 		return this.terminating.get(uid) ?? false;
 	}
 
 	// Models kubernetes/pkg/kubelet/pod_workers_test.go fakePodWorkers.ShouldPodRuntimeBeRemoved.
-	shouldPodRuntimeBeRemoved(uid: string): boolean {
+	async shouldPodRuntimeBeRemoved(uid: string): Promise<boolean> {
 		return this.removeRuntime.get(uid) ?? false;
 	}
 
@@ -195,12 +198,12 @@ export class FakePodWorkers implements PodWorkers {
 	}
 
 	// Models kubernetes/pkg/kubelet/pod_workers_test.go fakePodWorkers.ShouldPodContentBeRemoved.
-	shouldPodContentBeRemoved(uid: string): boolean {
+	async shouldPodContentBeRemoved(uid: string): Promise<boolean> {
 		return this.removeContent.get(uid) ?? false;
 	}
 
 	// Models kubernetes/pkg/kubelet/pod_workers_test.go fakePodWorkers.IsPodForMirrorPodTerminatingByFullName.
-	isPodForMirrorPodTerminatingByFullName(podFullname: string): boolean {
+	async isPodForMirrorPodTerminatingByFullName(podFullname: string): Promise<boolean> {
 		return this.terminatingStaticPods.get(podFullname) ?? false;
 	}
 

@@ -42,6 +42,7 @@ import {
 	newBackoffError,
 	newSyncResult,
 	PodSyncResult,
+	ContainerCommandExitError,
 	type ContainerID,
 	type GCPolicy,
 	type Image,
@@ -1038,7 +1039,7 @@ export class KubeGenericRuntimeManager implements Runtime, CommandRunner {
 		}
 		const output = response.stdout + response.stderr;
 		if (response.exitCode !== 0) {
-			return [output, new Error(`command terminated with exit code ${response.exitCode}`)];
+			return [output, new ContainerCommandExitError(response.exitCode)];
 		}
 		return [output, undefined];
 	}

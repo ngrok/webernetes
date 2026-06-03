@@ -46,7 +46,7 @@ import {
 	newUpdatePodOptions,
 	PodWorkersImpl,
 } from "./pod-workers";
-import { ProbeManagerImpl } from "./prober";
+import { ProbeManagerImpl, ResultsManager } from "./prober";
 import * as kubetypes from "./types";
 
 interface ConvertToAPIContainerStatusesUpstreamTestCase {
@@ -2480,12 +2480,16 @@ browser.describe("probeManagerUpdatePodStatus", () => {
 				),
 			],
 		};
-		const probeManager = new ProbeManagerImpl({
-			clock: testKubelet.fakeClock,
-			runner: new FakeContainerCommandRunner(),
-			network: new ClusterNetwork(),
-			statusManager: testKubelet.kubelet.statusManager,
-		});
+		const probeManager = new ProbeManagerImpl(
+			testKubelet.kubelet.statusManager,
+			new ResultsManager(),
+			new ResultsManager(),
+			new ResultsManager(),
+			new FakeContainerCommandRunner(),
+			testKubelet.kubelet.recorder,
+			testKubelet.fakeClock,
+			new ClusterNetwork(),
+		);
 
 		try {
 			probeManager.addPod(tCtx, pod);

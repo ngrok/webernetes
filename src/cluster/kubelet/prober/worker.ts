@@ -3,25 +3,25 @@ import { Channel, select } from "../../../go/channel";
 import type { Context } from "../../../go/context";
 import * as time from "../../../go/time";
 import * as podutil from "../../api/v1/pod/util";
-import { type ContainerID, parseContainerID } from "../container";
+import { type ContainerID, parseContainerID, shouldAllContainersRestart } from "../container";
 import type { ProbeManagerImpl } from "./prober-manager";
 import type { ProberResult, ProbeType, ResultsManager } from "./results";
 
 export class ProbeWorker {
-	private readonly pod: V1Pod;
-	private readonly container: V1Container;
-	private readonly spec: V1Probe;
-	private readonly probeType: ProbeType;
-	private readonly initialValue: ProberResult;
-	private readonly resultsManager: ResultsManager;
-	private readonly probeManager: ProbeManagerImpl;
+	readonly pod: V1Pod;
+	readonly container: V1Container;
+	spec: V1Probe;
+	readonly probeType: ProbeType;
+	readonly initialValue: ProberResult;
+	readonly resultsManager: ResultsManager;
+	readonly probeManager: ProbeManagerImpl;
 	private readonly intervalMs: number;
 	private readonly stopCh = new Channel<void>(1);
 	private readonly manualTriggerCh = new Channel<void>(1);
-	private containerId: ContainerID | undefined;
-	private lastResult: ProberResult | undefined;
-	private resultRun = 0;
-	private onHold = false;
+	containerId: ContainerID | undefined;
+	lastResult: ProberResult | undefined;
+	resultRun = 0;
+	onHold = false;
 
 	// Models kubernetes/pkg/kubelet/prober/worker.go newWorker.
 	constructor(
@@ -99,7 +99,7 @@ export class ProbeWorker {
 	}
 
 	// Models kubernetes/pkg/kubelet/prober/worker.go doProbe.
-	private async doProbe(ctx: Context): Promise<boolean> {
+	async doProbe(ctx: Context): Promise<boolean> {
 		if (ctx.err()) {
 			return false;
 		}
@@ -112,7 +112,9 @@ export class ProbeWorker {
 			return false;
 		}
 
-		const c = podutil.getContainerStatus(status.containerStatuses, this.container.name);
+		const c =
+			podutil.getContainerStatus(status.containerStatuses, this.container.name) ??
+			podutil.getContainerStatus(status.initContainerStatuses, this.container.name);
 		if (!c?.containerID) {
 			return true;
 		}
@@ -132,7 +134,17 @@ export class ProbeWorker {
 
 		if (!c.state?.running) {
 			await this.resultsManager.set(this.containerId, "failure", this.pod);
-			return !c.state?.terminated || this.pod.spec?.restartPolicy !== "Never";
+			if (!c.state?.terminated) {
+				return true;
+			}
+			if (shouldAllContainersRestart(this.pod, undefined, status)) {
+				return true;
+			}
+			return podutil.containerShouldRestart(
+				this.container,
+				this.pod.spec,
+				c.state.terminated.exitCode,
+			);
 		}
 
 		if (
@@ -157,17 +169,15 @@ export class ProbeWorker {
 			return true;
 		}
 
-		let result: ProberResult;
-		try {
-			result = await this.probeManager.prober.probe(
-				ctx,
-				this.probeType,
-				this.pod,
-				status,
-				this.container,
-				this.containerId,
-			);
-		} catch {
+		const [result, err] = await this.probeManager.prober.probe(
+			ctx,
+			this.probeType,
+			this.pod,
+			status,
+			this.container,
+			this.containerId,
+		);
+		if (err) {
 			return true;
 		}
 

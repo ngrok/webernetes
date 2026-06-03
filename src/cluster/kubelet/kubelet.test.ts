@@ -426,7 +426,12 @@ browser.describe("filterOutInactivePods", () => {
 			]);
 
 			kubelet.podManager.setPods(pods);
-			expect(kubelet.filterOutInactivePods(pods)).toEqual([pods[2], pods[3], pods[4], pods[7]]);
+			await expect(kubelet.filterOutInactivePods(pods)).resolves.toEqual([
+				pods[2],
+				pods[3],
+				pods[4],
+				pods[7],
+			]);
 		} finally {
 			await testKubelet.cleanup();
 		}
