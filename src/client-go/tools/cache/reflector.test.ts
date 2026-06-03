@@ -510,7 +510,8 @@ browser.describe("Reflector simulator behavior", () => {
 
 		const watchPromise = reflector.watchWithResync(context.background(), watcher);
 		await Promise.resolve();
-		await clock.wait(10);
+		clock.step(10);
+		await Promise.resolve();
 
 		const err = await watchPromise;
 
