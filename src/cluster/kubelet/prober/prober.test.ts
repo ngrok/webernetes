@@ -18,7 +18,8 @@ import { ClusterNetwork } from "../../cni";
 import { buildContainerID } from "../container";
 import { FakeContainerCommandRunner } from "../container/testing";
 import { FakeExecProber } from "./common.test";
-import { Prober, probeTypeString } from "./prober";
+import { Prober } from "./prober";
+import { probeTypeString } from "./prober-manager";
 import type { ProbeType, ProberResult } from "./results";
 
 // Models kubernetes/pkg/kubelet/prober/prober_test.go TestGetURLParts.

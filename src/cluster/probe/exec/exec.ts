@@ -3,7 +3,18 @@ import type * as context from "../../../go/context";
 import { isExitError, type CommandRunner, type ContainerID } from "../../kubelet/container";
 import type { ProbeResult } from "../probe";
 
-export class ExecProber {
+// Models kubernetes/pkg/probe/exec/exec.go Prober.
+export interface ExecProbe {
+	probe(
+		ctx: context.Context,
+		containerId: ContainerID,
+		container: V1Container,
+		action: V1ExecAction,
+		timeoutMs: number,
+	): Promise<[ProbeResult, string, Error | undefined]>;
+}
+
+export class ExecProber implements ExecProbe {
 	constructor(private readonly runner: CommandRunner) {}
 
 	// Models kubernetes/pkg/probe/exec/exec.go Probe.

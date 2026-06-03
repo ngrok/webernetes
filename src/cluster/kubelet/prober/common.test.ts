@@ -7,14 +7,13 @@ import {
 } from "../../../client";
 import { FakeRecorder } from "../../../client-go/tools/record/fake";
 import { Clock } from "../../../clock";
-import type { ProbeResult } from "../../probe";
+import type { ExecProbe, ProbeResult } from "../../probe";
 import { ClusterNetwork } from "../../cni";
 import { Etcd } from "../../etcd";
 import { KubeClient } from "../../cluster";
 import { buildContainerID } from "../container";
 import { PodManager } from "../pod";
 import { StatusManager } from "../status";
-import type { ExecProbe } from "./prober";
 import { ProbeManagerImpl } from "./prober-manager";
 import { ResultsManager, type ProbeType } from "./results";
 import { ProbeWorker } from "./worker";

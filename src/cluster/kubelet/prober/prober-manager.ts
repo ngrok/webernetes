@@ -294,6 +294,18 @@ function probeKeyString(key: ProbeKey): string {
 	return `${key.podUid}:${key.containerName}:${key.probeType}`;
 }
 
+// Models kubernetes/pkg/kubelet/prober/prober_manager.go probeType.String.
+export function probeTypeString(probeType: ProbeType): string {
+	switch (probeType) {
+		case "readiness":
+			return "Readiness";
+		case "liveness":
+			return "Liveness";
+		case "startup":
+			return "Startup";
+	}
+}
+
 // Models kubernetes/pkg/kubelet/prober/prober_manager.go kubeletRestartGracePeriod.
 function kubeletRestartGracePeriod(start: Date): Date {
 	return new Date(start.getTime() - 10_000);
