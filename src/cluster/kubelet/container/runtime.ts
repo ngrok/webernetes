@@ -485,6 +485,36 @@ export function findContainerStatusByName(
 	);
 }
 
+// Models kubernetes/pkg/kubelet/container/runtime.go PodStatus.GetRunningContainerStatuses.
+export function getRunningContainerStatuses(podStatus: PodStatus): Status[] {
+	return podStatus.containerStatuses.filter(
+		(containerStatus) => containerStatus.state === "Running",
+	);
+}
+
+// Models kubernetes/pkg/kubelet/container/runtime.go Pods.FindPodByID.
+export function findPodByID(pods: Pod[], podUID: string): Pod {
+	return pods.find((pod) => pod.id === podUID) ?? newPod();
+}
+
+// Models kubernetes/pkg/kubelet/container/runtime.go Pods.FindPodByFullName.
+export function findPodByFullName(pods: Pod[], podFullName: string): Pod {
+	return pods.find((pod) => buildPodFullName(pod.name, pod.namespace) === podFullName) ?? newPod();
+}
+
+// Models kubernetes/pkg/kubelet/container/runtime.go Pods.FindPod.
+export function findPod(pods: Pod[], podFullName: string, podUID: string): Pod {
+	if (podFullName.length > 0) {
+		return findPodByFullName(pods, podFullName);
+	}
+	return findPodByID(pods, podUID);
+}
+
+// Models kubernetes/pkg/kubelet/container/runtime.go Pod.FindContainerByName.
+export function findContainerByName(pod: Pod, containerName: string): Container | undefined {
+	return pod.containers.find((container) => container.name === containerName);
+}
+
 // Models kubernetes/pkg/kubelet/container/runtime.go Pod.FindContainerByID.
 export function findContainerByID(pod: Pod, id: ContainerID): Container | undefined {
 	return pod.containers.find(
@@ -495,6 +525,19 @@ export function findContainerByID(pod: Pod, id: ContainerID): Container | undefi
 // Models kubernetes/pkg/kubelet/container/runtime.go Pod.FindSandboxByID.
 export function findSandboxByID(pod: Pod, id: ContainerID): Container | undefined {
 	return pod.sandboxes.find((sandbox) => sandbox.id.type === id.type && sandbox.id.id === id.id);
+}
+
+// Models kubernetes/pkg/kubelet/container/runtime.go Pod.IsEmpty.
+export function podIsEmpty(pod: Pod): boolean {
+	return (
+		pod.id === "" &&
+		pod.name === "" &&
+		pod.namespace === "" &&
+		pod.createdAt === 0 &&
+		pod.containers.length === 0 &&
+		pod.sandboxes.length === 0 &&
+		pod.timestamp.getTime() === 0
+	);
 }
 
 // Models kubernetes/pkg/kubelet/container/runtime.go BuildContainerID.
@@ -515,7 +558,7 @@ export function parseContainerID(containerID: string | undefined): ContainerID {
 export function getPodFullName(pod: V1Pod): string {
 	// Use underscore as the delimiter because it is not allowed in pod name
 	// (DNS subdomain format), while allowed in the container name format.
-	return `${pod.metadata?.name ?? ""}_${pod.metadata?.namespace ?? "default"}`;
+	return `${pod.metadata?.name ?? ""}_${pod.metadata?.namespace ?? ""}`;
 }
 
 // Models kubernetes/pkg/kubelet/container/runtime.go BuildPodFullName.
@@ -524,12 +567,12 @@ export function buildPodFullName(name: string, namespace: string): string {
 }
 
 // Models kubernetes/pkg/kubelet/container/runtime.go ParsePodFullName.
-export function parsePodFullName(podFullName: string): [string, string] {
+export function parsePodFullName(podFullName: string): [string, string, Error | undefined] {
 	const parts = podFullName.split("_");
 	if (parts.length !== 2 || parts[0] === "" || parts[1] === "") {
-		throw new Error(`failed to parse the pod full name "${podFullName}"`);
+		return ["", "", new Error(`failed to parse the pod full name "${podFullName}"`)];
 	}
-	return [parts[0] ?? "", parts[1] ?? ""];
+	return [parts[0] ?? "", parts[1] ?? "", undefined];
 }
 
 // Models kubernetes/pkg/kubelet/container/runtime.go Pod.ToAPIPod.
