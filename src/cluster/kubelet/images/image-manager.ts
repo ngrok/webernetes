@@ -7,6 +7,8 @@ import type { PodSandboxConfig } from "../../cri";
 import type { EventRecorder } from "../../../client-go/tools/record/event";
 import { parseImageName } from "../../../util/parsers/parsers";
 import type { ImageService, ImageSpec } from "../container";
+import { throttleImagePulling } from "./helpers";
+import { NoopImagePullManager, type ImagePullManager } from "./pullmanager";
 import { newParallelImagePuller, type ImagePuller, type PullResult } from "./puller";
 import { ImagePullError, type ImageManager } from "./types";
 
@@ -17,62 +19,16 @@ export interface NewImageManagerOptions {
 	imageBackOff: Backoff;
 	imagePullManager?: ImagePullManager;
 	puller?: ImagePuller;
-	podPullingTimeRecorder?: ImagePodPullingTimeRecorder;
+	podPullingTimeRecorder: ImagePodPullingTimeRecorder;
 	maxParallelImagePulls?: number;
+	qps?: number;
+	burst?: number;
 }
 
 // Models kubernetes/pkg/kubelet/images/image_manager.go ImagePodPullingTimeRecorder.
 export interface ImagePodPullingTimeRecorder {
 	recordImageStartedPulling(podUID: string): void;
 	recordImageFinishedPulling(podUID: string): void;
-}
-
-interface ImagePullManager {
-	recordPullIntent(image: string): Promise<Error | undefined>;
-	recordImagePulled(
-		ctx: context.Context,
-		image: string,
-		imageRef: string,
-		credentials: unknown | undefined,
-	): Promise<void>;
-	recordImagePullFailed(ctx: context.Context, image: string): Promise<void>;
-	mustAttemptImagePull(
-		ctx: context.Context,
-		image: string,
-		imageRef: string,
-		getPodCredentials: () => Promise<[pullCredentials: unknown[], err: Error | undefined]>,
-	): Promise<[pullRequired: boolean, err: Error | undefined]>;
-}
-
-// Models kubernetes/pkg/kubelet/images/pullmanager/noop_pull_manager.go NoopImagePullManager.
-class NoopImagePullManager implements ImagePullManager {
-	async recordPullIntent(_image: string): Promise<Error | undefined> {
-		return undefined;
-	}
-
-	async recordImagePulled(
-		_ctx: context.Context,
-		_image: string,
-		_imageRef: string,
-		_credentials: unknown | undefined,
-	): Promise<void> {}
-
-	async recordImagePullFailed(_ctx: context.Context, _image: string): Promise<void> {}
-
-	// Models kubernetes/pkg/kubelet/images/pullmanager/noop_pull_manager.go NoopImagePullManager.MustAttemptImagePull.
-	async mustAttemptImagePull(
-		_ctx: context.Context,
-		_image: string,
-		_imageRef: string,
-		_getPodCredentials: () => Promise<[pullCredentials: unknown[], err: Error | undefined]>,
-	): Promise<[pullRequired: boolean, err: Error | undefined]> {
-		return [false, undefined];
-	}
-}
-
-class NoopImagePodPullingTimeRecorder implements ImagePodPullingTimeRecorder {
-	recordImageStartedPulling(_podUID: string): void {}
-	recordImageFinishedPulling(_podUID: string): void {}
 }
 
 // Models kubernetes/pkg/kubelet/images/image_manager.go imageManager.
@@ -87,16 +43,21 @@ export class KubeletImageManager implements ImageManager {
 	private readonly podPullingTimeRecorder: ImagePodPullingTimeRecorder;
 
 	constructor(options: NewImageManagerOptions) {
+		const imageService = throttleImagePulling(
+			options.imageService,
+			options.qps,
+			options.burst,
+			options.clock,
+		);
 		this.recorder = options.recorder;
-		this.imageService = options.imageService;
+		this.imageService = imageService;
 		this.imagePullManager = options.imagePullManager ?? new NoopImagePullManager();
 		this.clock = options.clock;
 		this.backOff = options.imageBackOff;
 		this.puller =
 			options.puller ??
-			newParallelImagePuller(this.clock, this.imageService, options.maxParallelImagePulls);
-		this.podPullingTimeRecorder =
-			options.podPullingTimeRecorder ?? new NoopImagePodPullingTimeRecorder();
+			newParallelImagePuller(this.clock, imageService, options.maxParallelImagePulls);
+		this.podPullingTimeRecorder = options.podPullingTimeRecorder;
 	}
 
 	// Models kubernetes/pkg/kubelet/images/image_manager.go EnsureImageExists.
