@@ -47,6 +47,7 @@ import { StatusManager } from "./status";
 import { ContainerDied, ContainerRemoved, GenericPLEG, type PodLifecycleEvent } from "./pleg";
 import { networkNotReadyErrorMsg } from "./errors";
 import * as podutil from "../api/v1/pod/util";
+import { isServiceIPSet } from "../apis/core/v1/helper/helpers";
 import { getPodQOS } from "../apis/core/v1/helper/qos/qos";
 import { BasicWorkQueue } from "./util/queue/work-queue";
 import type { WorkQueue } from "./util/queue/work-queue";
@@ -150,11 +151,6 @@ export interface KubeletDependencies {
 }
 
 const masterServices = new Set(["kubernetes"]);
-
-function isServiceIPSet(service: V1Service): boolean {
-	const clusterIP = service.spec?.clusterIP ?? "";
-	return clusterIP !== "" && clusterIP !== "None";
-}
 
 function makeEnvVariableName(...parts: string[]): string {
 	return parts.join("_").replaceAll("-", "_").toUpperCase();
