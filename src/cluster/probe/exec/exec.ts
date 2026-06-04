@@ -1,60 +1,95 @@
-import type { V1Container, V1ExecAction } from "../../../client";
-import type * as context from "../../../go/context";
-import { isExitError, type CommandRunner, type ContainerID } from "../../kubelet/container";
+import { errCommandTimedOut } from "../../cri-client/pkg";
+import { isExitError } from "../../kubelet/container";
 import type { ProbeResult } from "../probe";
+
+// Models kubernetes/pkg/probe/exec/exec.go maxReadLength.
+const maxReadLength = (10 * 1) << 10;
+
+export interface ByteWriter {
+	write(chunk: string): [written: number, err: Error | undefined];
+}
+
+export interface ExecCmd {
+	run(): Error | undefined;
+	combinedOutput(): Promise<[string, Error | undefined]>;
+	output(): [string, Error | undefined];
+	setDir(dir: string): void;
+	setStdin(input: unknown): void;
+	setStdout(out: ByteWriter): void;
+	setStderr(out: ByteWriter): void;
+	setEnv(env: string[]): void;
+	stop(): void;
+	start(): Promise<Error | undefined>;
+	wait(): Promise<Error | undefined>;
+	stdoutPipe(): [unknown, Error | undefined];
+	stderrPipe(): [unknown, Error | undefined];
+}
 
 // Models kubernetes/pkg/probe/exec/exec.go Prober.
 export interface ExecProbe {
-	probe(
-		ctx: context.Context,
-		containerId: ContainerID,
-		container: V1Container,
-		action: V1ExecAction,
-		timeoutMs: number,
-	): Promise<[ProbeResult, string, Error | undefined]>;
+	probe(e: ExecCmd): Promise<[ProbeResult, string, Error | undefined]>;
 }
 
 export class ExecProber implements ExecProbe {
-	constructor(private readonly runner: CommandRunner) {}
-
 	// Models kubernetes/pkg/probe/exec/exec.go Probe.
-	async probe(
-		ctx: context.Context,
-		containerId: ContainerID,
-		container: V1Container,
-		action: V1ExecAction,
-		timeoutMs: number,
-	): Promise<[ProbeResult, string, Error | undefined]> {
-		// TODO(samwho): the way timeouts come back to us here is that they return
-		// an error code 124. That doesn't seem to be how upstream does it they
-		// return a remote.ErrCommandTimedOut. In fact, the structure of exec.go is
-		// quite different to this and this class needs revisiting at some point.
-		const [output, err] = await this.runner.runInContainer(
-			ctx,
-			containerId,
-			expandCommand(action.command ?? [], container.env ?? []),
-			timeoutMs / 1000,
-		);
+	async probe(e: ExecCmd): Promise<[ProbeResult, string, Error | undefined]> {
+		const dataBuffer = new LimitedStringWriter(maxReadLength);
+
+		e.setStderr(dataBuffer);
+		e.setStdout(dataBuffer);
+		let err = await e.start();
+		if (!err) {
+			err = await e.wait();
+		}
+		const data = dataBuffer.toString();
+
 		if (isExitError(err)) {
-			return [err.exitStatus() === 0 ? "success" : "failure", output, undefined];
+			if (err.exitStatus() === 0) {
+				return ["success", data, undefined];
+			}
+			return ["failure", data, undefined];
 		}
 		if (err) {
+			if (isCommandTimedOut(err)) {
+				return ["failure", err.message, undefined];
+			}
 			return ["unknown", "", err];
 		}
-		return ["success", output, undefined];
+		return ["success", data, undefined];
 	}
 }
 
-function expandCommand(command: readonly string[], env: NonNullable<V1Container["env"]>): string[] {
-	const values = new Map(
-		env
-			.filter((entry) => entry.value !== undefined)
-			.map((entry) => [entry.name, entry.value ?? ""]),
-	);
-	return command.map((arg) =>
-		arg.replace(
-			/\$\(([-._a-zA-Z][-._a-zA-Z0-9]*)\)/g,
-			(match, name: string) => values.get(name) ?? match,
-		),
-	);
+class LimitedStringWriter implements ByteWriter {
+	private value = "";
+
+	constructor(private readonly limit: number) {}
+
+	write(chunk: string): [written: number, err: Error | undefined] {
+		const remaining = this.limit - this.value.length;
+		if (remaining <= 0) {
+			return [0, undefined];
+		}
+		const written = chunk.slice(0, remaining);
+		this.value += written;
+		return [written.length, undefined];
+	}
+
+	toString(): string {
+		return this.value;
+	}
+}
+
+// Models kubernetes/pkg/probe/exec/exec.go errors.Is(err, remote.ErrCommandTimedOut).
+function isCommandTimedOut(err: Error): boolean {
+	let current: unknown = err;
+	while (current) {
+		if (current === errCommandTimedOut) {
+			return true;
+		}
+		if (!(current instanceof Error)) {
+			return false;
+		}
+		current = (current as Error & { cause?: unknown }).cause;
+	}
+	return false;
 }
