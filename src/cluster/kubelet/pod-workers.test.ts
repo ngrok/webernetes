@@ -1,9 +1,11 @@
+// oxlint-disable jest/no-conditional-expect
 import { expect, it } from "vitest";
 import type { V1Pod } from "../../client";
 import { newAggregate } from "../../apimachinery/pkg/util/errors/errors";
 import { deepEqual } from "../../deep-equal";
 import { Channel, type ReadOnlyChannel } from "../../go/channel";
 import * as context from "../../go/context";
+import { Mutex } from "../../go/sync/mutex";
 import { wait } from "../../promise";
 import { browser } from "../../test/describe";
 import { newFakePassiveClock, type FakePassiveClock } from "../../utils/clock/testing/fake-clock";
@@ -23,11 +25,16 @@ import {
 	type syncPodRecord,
 } from "./kubelet-test-helpers";
 import {
+	calculateEffectiveGracePeriod,
+	isTerminated,
+	isTerminationRequested,
 	newPodSyncStatus,
 	newUpdatePodOptions,
 	PodWorkersImpl,
+	type PodSyncer,
 	type PodSyncStatus,
 	type PodWorkerSync,
+	type SyncPodResult,
 	type UpdatePodOptions,
 } from "./pod-workers";
 
@@ -71,6 +78,156 @@ function newPodWithPhase(
 	const pod = newNamedPod(uid, "ns", name, false);
 	pod.status = { phase };
 	return pod;
+}
+
+// Models kubernetes/pkg/kubelet/pod_workers_test.go terminalPhaseSync.
+class terminalPhaseSync {
+	readonly lock = new Mutex();
+	readonly terminal = new Set<string>();
+
+	constructor(readonly fn: PodSyncer["syncPod"]) {}
+
+	// Models kubernetes/pkg/kubelet/pod_workers_test.go terminalPhaseSync.SyncPod.
+	async syncPod(
+		ctx: context.Context,
+		updateType: UpdatePodOptions["updateType"],
+		pod: V1Pod | undefined,
+		mirrorPod: V1Pod | undefined,
+		podStatus: PodRuntimeStatus,
+	): Promise<SyncPodResult> {
+		const [isTerminal, , err] = await this.fn(ctx, updateType, pod, mirrorPod, podStatus);
+		if (err) {
+			return [false, undefined, err];
+		}
+		let terminal = isTerminal;
+		if (!terminal) {
+			await this.lock.lock();
+			try {
+				terminal = this.terminal.has(pod?.metadata?.uid ?? "");
+			} finally {
+				this.lock.unlock();
+			}
+		}
+		return [terminal, undefined, undefined];
+	}
+
+	// Models kubernetes/pkg/kubelet/pod_workers_test.go terminalPhaseSync.SetTerminal.
+	async setTerminal(uid: string): Promise<void> {
+		await this.lock.lock();
+		try {
+			this.terminal.add(uid);
+		} finally {
+			this.lock.unlock();
+		}
+	}
+}
+
+// Models kubernetes/pkg/kubelet/pod_workers_test.go newTerminalPhaseSync.
+function newTerminalPhaseSync(fn: PodSyncer["syncPod"]): terminalPhaseSync {
+	return new terminalPhaseSync(fn);
+}
+
+// Models kubernetes/pkg/kubelet/pod_workers_test.go WorkChannelItem.
+class WorkChannelItem {
+	readonly out = new Channel<void>(1);
+	readonly lock = new Mutex();
+	pause = false;
+	queue = 0;
+
+	// Models kubernetes/pkg/kubelet/pod_workers_test.go WorkChannelItem.Handle.
+	async handle(): Promise<void> {
+		await this.lock.lock();
+		try {
+			if (this.pause) {
+				this.queue++;
+				return;
+			}
+			this.out.trySend(undefined);
+		} finally {
+			this.lock.unlock();
+		}
+	}
+
+	// Models kubernetes/pkg/kubelet/pod_workers_test.go WorkChannelItem.Hold.
+	async hold(): Promise<void> {
+		await this.lock.lock();
+		try {
+			this.pause = true;
+		} finally {
+			this.lock.unlock();
+		}
+	}
+
+	// Models kubernetes/pkg/kubelet/pod_workers_test.go WorkChannelItem.Close.
+	async close(): Promise<void> {
+		await this.lock.lock();
+		try {
+			this.out.close();
+		} finally {
+			this.lock.unlock();
+		}
+	}
+
+	// Models kubernetes/pkg/kubelet/pod_workers_test.go WorkChannelItem.Release.
+	async release(): Promise<void> {
+		await this.lock.lock();
+		try {
+			this.pause = false;
+			for (let i = 0; i < this.queue; i++) {
+				this.out.trySend(undefined);
+			}
+			this.queue = 0;
+		} finally {
+			this.lock.unlock();
+		}
+	}
+}
+
+// Models kubernetes/pkg/kubelet/pod_workers_test.go WorkChannel.
+class WorkChannel {
+	readonly lock = new Mutex();
+	readonly channels = new Map<string, WorkChannelItem>();
+
+	// Models kubernetes/pkg/kubelet/pod_workers_test.go WorkChannel.Channel.
+	async channel(uid: string): Promise<WorkChannelItem> {
+		await this.lock.lock();
+		try {
+			let channel = this.channels.get(uid);
+			if (!channel) {
+				channel = new WorkChannelItem();
+				this.channels.set(uid, channel);
+			}
+			return channel;
+		} finally {
+			this.lock.unlock();
+		}
+	}
+
+	// Models kubernetes/pkg/kubelet/pod_workers_test.go WorkChannel.Intercept.
+	async intercept(uid: string, ch: ReadOnlyChannel<void>): Promise<ReadOnlyChannel<void>> {
+		const channel = await this.channel(uid);
+		await this.lock.lock();
+		try {
+			void (async () => {
+				try {
+					for await (const _ of ch) {
+						await channel.handle();
+					}
+				} finally {
+					await channel.close();
+					await this.lock.lock();
+					try {
+						this.channels.delete(uid);
+					} finally {
+						this.lock.unlock();
+					}
+				}
+			})();
+			return channel.out.readOnly();
+		} finally {
+			this.lock.unlock();
+		}
+	}
 }
 
 // Models kubernetes/pkg/kubelet/pod_workers_test.go timeIncrementingWorkers.
@@ -208,6 +365,45 @@ async function drainWorkers(podWorkers: PodWorkersImpl, numPods: number): Promis
 		await wait(50);
 	}
 }
+
+// Models kubernetes/pkg/kubelet/pod_workers_test.go TestUpdatePodParallel.
+browser.describe("TestUpdatePodParallel", () => {
+	it("runs", async () => {
+		const tCtx = context.background();
+		const [podWorkers, , processed] = createPodWorkers();
+		try {
+			const numPods = 20;
+			for (let i = 0; i < numPods; i++) {
+				for (let j = i; j < numPods; j++) {
+					await podWorkers.updatePod(
+						tCtx,
+						newUpdatePodOptions({
+							pod: newNamedPod(String(j), "ns", String(i), false),
+							updateType: "create",
+						}),
+					);
+				}
+			}
+			await drainWorkers(podWorkers, numPods);
+
+			expect(processed.size).toBe(numPods);
+			for (let i = 0; i < numPods; i++) {
+				const uid = String(i);
+				const events = processed.get(uid) ?? [];
+				if (events.length < 1 || events.length > i + 1) {
+					expect.fail(`Pod ${i} processed ${events.length} times`);
+				}
+
+				const last = events.length - 1;
+				if (events[last]?.name !== String(i)) {
+					expect.fail(`Pod ${i}: incorrect order ${last}, ${JSON.stringify(events)}`);
+				}
+			}
+		} finally {
+			await podWorkers.close();
+		}
+	});
+});
 
 // Models kubernetes/pkg/kubelet/pod_workers_test.go TestCompleteWork_Enqueue.
 browser.describe("completeWork_Enqueue", () => {
@@ -877,6 +1073,66 @@ browser.describe("updatePod", () => {
 	});
 });
 
+// Models kubernetes/pkg/kubelet/pod_workers_test.go TestTerminalPhaseTransition.
+browser.describe("TestTerminalPhaseTransition", () => {
+	it("runs", async () => {
+		const tCtx = context.background();
+		const [podWorkers] = createPodWorkers();
+		const channels = new WorkChannel();
+		podWorkers.workerChannelFn = channels.intercept.bind(channels);
+		const terminalPhaseSyncer = newTerminalPhaseSync(
+			podWorkers.podSyncer.syncPod.bind(podWorkers.podSyncer),
+		);
+		podWorkers.podSyncer.syncPod = terminalPhaseSyncer.syncPod.bind(terminalPhaseSyncer);
+		try {
+			await podWorkers.updatePod(
+				tCtx,
+				newUpdatePodOptions({
+					pod: newNamedPod("1", "test1", "pod1", false),
+					updateType: "update",
+				}),
+			);
+			await drainAllWorkers(podWorkers);
+
+			let pod1 = podWorkers.podSyncStatuses.get("1");
+			if (!pod1 || isTerminated(pod1)) {
+				expect.fail(`unexpected pod state: ${JSON.stringify(pod1)}`);
+			}
+
+			await podWorkers.updatePod(
+				tCtx,
+				newUpdatePodOptions({
+					pod: newNamedPod("1", "test1", "pod1", false),
+					updateType: "update",
+				}),
+			);
+			await drainAllWorkers(podWorkers);
+
+			pod1 = podWorkers.podSyncStatuses.get("1");
+			if (!pod1 || isTerminated(pod1)) {
+				expect.fail(`unexpected pod state: ${JSON.stringify(pod1)}`);
+			}
+
+			await terminalPhaseSyncer.setTerminal("1");
+			await podWorkers.updatePod(
+				tCtx,
+				newUpdatePodOptions({
+					pod: newNamedPod("1", "test1", "pod1", false),
+					updateType: "update",
+				}),
+			);
+			await drainAllWorkers(podWorkers);
+
+			pod1 = podWorkers.podSyncStatuses.get("1");
+			if (!pod1 || !isTerminationRequested(pod1) || !isTerminated(pod1)) {
+				expect.fail(`unexpected pod state: ${JSON.stringify(pod1)}`);
+			}
+		} finally {
+			await podWorkers.close();
+		}
+	});
+});
+
 // Models kubernetes/pkg/kubelet/pod_workers_test.go TestUpdatePodDoesNotForgetSyncPodKill.
 browser.describe("updatePodDoesNotForgetSyncPodKill", () => {
 	it("preserves kill update when a later update is received", async () => {
@@ -938,6 +1194,278 @@ browser.describe("updatePodDoesNotForgetSyncPodKill", () => {
 			}
 		} finally {
 			await podWorkers.close();
+		}
+	});
+});
+
+// Models kubernetes/pkg/kubelet/pod_workers_test.go Test_removeTerminatedWorker.
+browser.describe("Test_removeTerminatedWorker", () => {
+	const podUID = "pod-uid";
+
+	const testCases: Array<{
+		desc: string;
+		orphan: boolean;
+		podSyncStatus: PodSyncStatus;
+		removed: boolean;
+		expectGracePeriod: number;
+		expectPending?: UpdatePodOptions;
+	}> = [
+		{
+			desc: "finished worker",
+			podSyncStatus: newPodSyncStatus({
+				finished: true,
+			}),
+			removed: true,
+			orphan: false,
+			expectGracePeriod: 0,
+		},
+		{
+			desc: "orphaned not started worker",
+			podSyncStatus: newPodSyncStatus({
+				finished: false,
+				fullname: "fake-fullname",
+			}),
+			orphan: true,
+			removed: true,
+			expectGracePeriod: 0,
+		},
+		{
+			desc: "orphaned started worker",
+			podSyncStatus: newPodSyncStatus({
+				startedAt: new Date(1_000),
+				finished: false,
+				fullname: "fake-fullname",
+			}),
+			orphan: true,
+			removed: false,
+			expectGracePeriod: 0,
+		},
+		{
+			desc: "orphaned terminating worker with no activeUpdate",
+			podSyncStatus: newPodSyncStatus({
+				startedAt: new Date(1_000),
+				terminatingAt: new Date(2_000),
+				finished: false,
+				fullname: "fake-fullname",
+			}),
+			orphan: true,
+			removed: false,
+			expectGracePeriod: 0,
+		},
+		{
+			desc: "orphaned terminating worker",
+			podSyncStatus: newPodSyncStatus({
+				startedAt: new Date(1_000),
+				terminatingAt: new Date(2_000),
+				finished: false,
+				fullname: "fake-fullname",
+				activeUpdate: {
+					pod: { metadata: { uid: podUID, name: "1" } },
+				},
+			}),
+			orphan: true,
+			removed: false,
+			expectGracePeriod: 0,
+			expectPending: newUpdatePodOptions({
+				pod: { metadata: { uid: podUID, name: "1" } },
+			}),
+		},
+		{
+			desc: "orphaned terminating worker with pendingUpdate",
+			podSyncStatus: newPodSyncStatus({
+				startedAt: new Date(1_000),
+				terminatingAt: new Date(2_000),
+				finished: false,
+				fullname: "fake-fullname",
+				working: true,
+				pendingUpdate: {
+					pod: { metadata: { uid: podUID, name: "2" } },
+				},
+				activeUpdate: {
+					pod: { metadata: { uid: podUID, name: "1" } },
+				},
+			}),
+			orphan: true,
+			removed: false,
+			expectGracePeriod: 0,
+			expectPending: newUpdatePodOptions({
+				pod: { metadata: { uid: podUID, name: "2" } },
+			}),
+		},
+		{
+			desc: "orphaned terminated worker with no activeUpdate",
+			podSyncStatus: newPodSyncStatus({
+				startedAt: new Date(1_000),
+				terminatingAt: new Date(2_000),
+				terminatedAt: new Date(3_000),
+				finished: false,
+				fullname: "fake-fullname",
+			}),
+			orphan: true,
+			removed: false,
+			expectGracePeriod: 0,
+		},
+		{
+			desc: "orphaned terminated worker",
+			podSyncStatus: newPodSyncStatus({
+				startedAt: new Date(1_000),
+				terminatingAt: new Date(2_000),
+				terminatedAt: new Date(3_000),
+				finished: false,
+				fullname: "fake-fullname",
+				activeUpdate: {
+					pod: { metadata: { uid: podUID, name: "1" } },
+				},
+			}),
+			orphan: true,
+			removed: false,
+			expectGracePeriod: 0,
+			expectPending: newUpdatePodOptions({
+				pod: { metadata: { uid: podUID, name: "1" } },
+			}),
+		},
+		{
+			desc: "orphaned terminated worker with pendingUpdate",
+			podSyncStatus: newPodSyncStatus({
+				startedAt: new Date(1_000),
+				terminatingAt: new Date(2_000),
+				terminatedAt: new Date(3_000),
+				finished: false,
+				working: true,
+				fullname: "fake-fullname",
+				pendingUpdate: {
+					pod: { metadata: { uid: podUID, name: "2" } },
+				},
+				activeUpdate: {
+					pod: { metadata: { uid: podUID, name: "1" } },
+				},
+			}),
+			orphan: true,
+			removed: false,
+			expectGracePeriod: 0,
+			expectPending: newUpdatePodOptions({
+				pod: { metadata: { uid: podUID, name: "2" } },
+			}),
+		},
+	];
+
+	it.each(testCases)("$desc", async (tc) => {
+		const normalizeUpdatePodOptions = (
+			opts: UpdatePodOptions | undefined,
+		): UpdatePodOptions | undefined => {
+			if (!opts) {
+				return undefined;
+			}
+			return { ...opts };
+		};
+
+		const [podWorkers] = createPodWorkers();
+		try {
+			podWorkers.podSyncStatuses.set(podUID, tc.podSyncStatus);
+			podWorkers.podUpdates.set(podUID, new Channel<void>(1));
+			if (tc.podSyncStatus.working) {
+				podWorkers.podUpdates.get(podUID)?.trySend(undefined);
+			}
+
+			const podSyncStatus = podWorkers.podSyncStatuses.get(podUID);
+			if (!podSyncStatus) {
+				expect.fail("Expected pod worker status to exist");
+			}
+
+			podWorkers.removeTerminatedWorker(podUID, podSyncStatus, tc.orphan);
+			const status = podWorkers.podSyncStatuses.get(podUID);
+			const exists = status !== undefined;
+			if (tc.removed && exists) {
+				expect.fail("Expected pod worker to be removed");
+			}
+			if (!tc.removed && !exists) {
+				expect.fail("Expected pod worker to not be removed");
+			}
+			if (tc.removed) {
+				return;
+			}
+			if (!status) {
+				expect.fail("Expected pod worker status to exist");
+			}
+			if (tc.expectGracePeriod > 0 && status.gracePeriod !== tc.expectGracePeriod) {
+				expect.fail(`Unexpected grace period ${status.gracePeriod}`);
+			}
+			const expectedPending = normalizeUpdatePodOptions(tc.expectPending);
+			const actualPending = normalizeUpdatePodOptions(status.pendingUpdate);
+			if (!deepEqual(expectedPending, actualPending)) {
+				expect.fail(`Unexpected pending: ${JSON.stringify(actualPending)}`);
+			}
+			if (tc.expectPending) {
+				if (!status.working) {
+					expect.fail("Should be working");
+				}
+				if (podWorkers.podUpdates.get(podUID)?.tryReceive()?.ok !== true) {
+					expect.fail("Should have one entry in podUpdates");
+				}
+			}
+		} finally {
+			await podWorkers.close();
+		}
+	});
+});
+
+// Models kubernetes/pkg/kubelet/pod_workers_test.go Test_calculateEffectiveGracePeriod.
+browser.describe("Test_calculateEffectiveGracePeriod", () => {
+	const zero = 0;
+	const two = 2;
+	const five = 5;
+	const thirty = 30;
+	const testCases: Array<{
+		desc: string;
+		podSpecTerminationGracePeriodSeconds?: number;
+		podDeletionGracePeriodSeconds?: number;
+		gracePeriodOverride?: number;
+		expectedGracePeriod: number;
+	}> = [
+		{
+			desc: "use termination grace period from the spec when no overrides",
+			podSpecTerminationGracePeriodSeconds: thirty,
+			expectedGracePeriod: thirty,
+		},
+		{
+			desc: "use pod DeletionGracePeriodSeconds when set",
+			podSpecTerminationGracePeriodSeconds: thirty,
+			podDeletionGracePeriodSeconds: five,
+			expectedGracePeriod: five,
+		},
+		{
+			desc: "use grace period override when set",
+			podSpecTerminationGracePeriodSeconds: thirty,
+			podDeletionGracePeriodSeconds: five,
+			gracePeriodOverride: two,
+			expectedGracePeriod: two,
+		},
+		{
+			desc: "use 1 when pod DeletionGracePeriodSeconds is zero",
+			podSpecTerminationGracePeriodSeconds: thirty,
+			podDeletionGracePeriodSeconds: zero,
+			expectedGracePeriod: 1,
+		},
+		{
+			desc: "use 1 when grace period override is zero",
+			podSpecTerminationGracePeriodSeconds: thirty,
+			podDeletionGracePeriodSeconds: five,
+			gracePeriodOverride: zero,
+			expectedGracePeriod: 1,
+		},
+	];
+
+	it.each(testCases)("$desc", (tc) => {
+		const pod = newNamedPod("1", "ns", "running-pod", false);
+		pod.spec ??= { containers: [] };
+		pod.spec.terminationGracePeriodSeconds = tc.podSpecTerminationGracePeriodSeconds;
+		pod.metadata ??= {};
+		pod.metadata.deletionGracePeriodSeconds = tc.podDeletionGracePeriodSeconds;
+		const [gracePeriod] = calculateEffectiveGracePeriod(newPodSyncStatus({}), pod, {
+			podTerminationGracePeriodSecondsOverride: tc.gracePeriodOverride,
+		});
+		if (gracePeriod !== tc.expectedGracePeriod) {
+			expect.fail(`Expected a grace period of ${tc.expectedGracePeriod}, but was ${gracePeriod}`);
 		}
 	});
 });
