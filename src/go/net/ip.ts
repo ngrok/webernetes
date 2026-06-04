@@ -60,6 +60,14 @@ export function formatIP(ip: number[]): string {
 	return `${before.join(":")}::${after.join(":")}`;
 }
 
+// Models go stdlib net.JoinHostPort.
+export function joinHostPort(host: string, port: string): string {
+	if (host.includes(":")) {
+		return `[${host}]:${port}`;
+	}
+	return `${host}:${port}`;
+}
+
 function parseIPv4Sloppy(value: string): number[] | undefined {
 	const parts = value.split(".");
 	if (parts.length !== 4) {

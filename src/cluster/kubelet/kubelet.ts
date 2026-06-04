@@ -49,6 +49,7 @@ import { networkNotReadyErrorMsg } from "./errors";
 import * as podutil from "../api/v1/pod/util";
 import { isServiceIPSet } from "../apis/core/v1/helper/helpers";
 import { getPodQOS } from "../apis/core/v1/helper/qos/qos";
+import { fromServices } from "./envvars";
 import { BasicWorkQueue } from "./util/queue/work-queue";
 import type { WorkQueue } from "./util/queue/work-queue";
 import { apiserverSource, isStaticPod, type PodUpdate, type SyncPodType } from "./types/pod-update";
@@ -152,46 +153,6 @@ export interface KubeletDependencies {
 
 const masterServices = new Set(["kubernetes"]);
 
-function makeEnvVariableName(...parts: string[]): string {
-	return parts.join("_").replaceAll("-", "_").toUpperCase();
-}
-
-function fromServices(services: V1Service[]): EnvVar[] {
-	const result: EnvVar[] = [];
-	for (const service of services) {
-		const name = service.metadata?.name ?? "";
-		const clusterIP = service.spec?.clusterIP ?? "";
-		const ports = service.spec?.ports ?? [];
-		for (const port of ports) {
-			const protocol = port.protocol ?? "TCP";
-			const protocolLower = protocol.toLowerCase();
-			const portString = String(port.port);
-			const hostPort = `${protocolLower}://${clusterIP}:${portString}`;
-			const prefix = makeEnvVariableName(name);
-			result.push({ name: `${prefix}_SERVICE_HOST`, value: clusterIP });
-			result.push({ name: `${prefix}_SERVICE_PORT`, value: portString });
-			result.push({ name: makeEnvVariableName(name, "PORT"), value: hostPort });
-			result.push({
-				name: makeEnvVariableName(name, "PORT", portString, protocol),
-				value: hostPort,
-			});
-			result.push({
-				name: makeEnvVariableName(name, "PORT", portString, protocol, "PROTO"),
-				value: protocolLower,
-			});
-			result.push({
-				name: makeEnvVariableName(name, "PORT", portString, protocol, "PORT"),
-				value: portString,
-			});
-			result.push({
-				name: makeEnvVariableName(name, "PORT", portString, protocol, "ADDR"),
-				value: clusterIP,
-			});
-		}
-	}
-	return result;
-}
-
 // Models kubernetes/pkg/kubelet/kubelet.go makePodSourceConfig.
 function makePodSourceConfig(
 	ctx: context.Context,
@@ -214,7 +175,12 @@ function makePodSourceConfig(
 			cfg.channel(ctx, apiserverSource),
 			clock,
 		);
+	} else {
+		// For now we will throw an error here to make it easier to identify
+		// when things are not configured correctly.
+		throw new Error("kubeClient and podListWatchClient are required");
 	}
+
 	return [cfg, undefined];
 }
 

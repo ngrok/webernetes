@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 
 import { browser } from "../../test/describe";
-import { parseIP } from "./ip";
+import { joinHostPort, parseIP } from "./ip";
 
 // Mirrors Go TestParseIP and parseIPTests from:
 // https://github.com/golang/go/blob/go1.16.15/src/net/ip_test.go#L15-L57
@@ -44,6 +44,30 @@ browser.describe("parseIP", () => {
 			expect(parseIP(tt.in)).toEqual(tt.out);
 		});
 	}
+});
+
+browser.describe("joinHostPort", () => {
+	/*
+	package main
+
+	import (
+		"fmt"
+		"net"
+	)
+
+	func main() {
+		fmt.Println(net.JoinHostPort("1.2.3.4", "8080"))
+		fmt.Println(net.JoinHostPort("2001:DB8::", "8084"))
+	}
+
+	Output:
+	1.2.3.4:8080
+	[2001:DB8::]:8084
+	*/
+	it("joins IPv4 and IPv6 hosts using Go net.JoinHostPort formatting", () => {
+		expect(joinHostPort("1.2.3.4", "8080")).toBe("1.2.3.4:8080");
+		expect(joinHostPort("2001:DB8::", "8084")).toBe("[2001:DB8::]:8084");
+	});
 });
 
 function ipv4(a: number, b: number, c: number, d: number): number[] {

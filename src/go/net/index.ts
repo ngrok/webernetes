@@ -1,1 +1,1 @@
-export { formatIP, parseIP } from "./ip";
+export { formatIP, joinHostPort, parseIP } from "./ip";
