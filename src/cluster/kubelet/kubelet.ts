@@ -153,10 +153,42 @@ export interface KubeletDependencies {
 	nodeIPs?: string[];
 }
 
-interface TestRuntimeDependencies {
-	containerRuntime: KubeletRuntime;
+interface KubeletOptions {
+	ctx: context.Context;
+	cancelContext: context.CancelFunc;
+	hostname: string;
+	nodeName: string;
+	kubeClient: KubeClient;
+	resyncIntervalMs: number;
+	dnsConfigurer: Configurer;
+	serviceLister: ServiceLister | undefined;
+	serviceHasSynced: () => boolean;
+	nodeLister: NodeLister;
+	nodeHasSynced: () => boolean;
+	cachedNode: V1Node | undefined;
+	podConfig: PodConfig;
+	sourcesReady: SourcesReady;
+	runtimeService: RuntimeService | undefined;
+	imageService: ImageManagerService | undefined;
+	containerRuntime?: KubeletRuntime;
 	runtimeCache?: RuntimeCache;
-	commandRunner: CommandRunner;
+	runtimeState: RuntimeState;
+	runner?: CommandRunner;
+	podManager: PodManager;
+	probeManager?: ProbeManager;
+	livenessManager: ResultsManager;
+	readinessManager: ResultsManager;
+	startupManager: ResultsManager;
+	podWorkers?: PodWorkers & { close(): Promise<void> };
+	podCache: PodStatusCache;
+	pleg?: GenericPLEG;
+	statusManager: StatusManager;
+	recorder: EventRecorder;
+	workQueue: WorkQueue;
+	crashLoopBackOff: Backoff;
+	clock: Clock;
+	nodeIPs: string[];
+	nodeAddresses: V1NodeAddress[] | undefined;
 }
 
 const masterServices = new Set(["kubernetes"]);
@@ -204,7 +236,172 @@ export function newMainKubelet(
 	hostname: string,
 	nodeName: string,
 ): Kubelet {
-	return new Kubelet(ctx, kubeCfg, kubeDeps, hostname, nodeName);
+	if (!kubeDeps.kubeClient) {
+		throw new Error("standalone kubelet mode is not implemented");
+	}
+	const kubeClient = kubeDeps.kubeClient;
+	const nodeHasSynced = kubeDeps.nodeHasSynced ?? (() => true);
+	if (!kubeDeps.podConfig) {
+		const [podConfig, podConfigErr] = makePodSourceConfig(
+			ctx,
+			kubeCfg,
+			kubeDeps,
+			nodeName,
+			nodeHasSynced,
+			kubeDeps.clock,
+		);
+		if (podConfigErr) {
+			throw podConfigErr;
+		}
+		kubeDeps.podConfig = podConfig;
+	}
+	const podConfig = kubeDeps.podConfig;
+	const serviceLister =
+		kubeDeps.serviceLister ??
+		({
+			list: async () => {
+				try {
+					const services = await kubeClient.corev1.listServiceForAllNamespaces();
+					return [services.items, undefined];
+				} catch (error) {
+					return [[], error instanceof Error ? error : new Error(String(error))];
+				}
+			},
+		} satisfies ServiceLister);
+	const serviceHasSynced = kubeDeps.serviceHasSynced ?? (() => true);
+	const nodeLister = kubeDeps.nodeLister ?? newAPINodeLister(kubeClient);
+	const nodeIPs = kubeDeps.nodeIPs ? [...kubeDeps.nodeIPs] : ["127.0.0.1", "::1"];
+	const clusterDNS = kubeCfg.clusterDNS.flatMap((ipEntry) => {
+		const ip = parseIPSloppy(ipEntry);
+		return ip ? [formatIP(ip)] : [];
+	});
+	const dnsConfigurer = new Configurer({
+		recorder: kubeDeps.recorder,
+		nodeRef: {
+			kind: "Node",
+			name: nodeName,
+			uid: nodeName,
+			namespace: "",
+		},
+		nodeIPs,
+		clusterDNS,
+		clusterDomain: kubeCfg.clusterDomain,
+		resolverConfig: "",
+	});
+	const [kubeletCtx, cancelContext] = context.withCancel(ctx);
+	if (!kubeDeps.remoteRuntimeService || !kubeDeps.remoteImageService) {
+		throw new Error("remote runtime and image services are required");
+	}
+	const podManager = new PodManager();
+	const statusManager = new StatusManager({
+		clock: kubeDeps.clock,
+		kubeClient,
+		podManager,
+	});
+	const livenessManager = new ResultsManager();
+	const readinessManager = new ResultsManager();
+	const startupManager = new ResultsManager();
+	const runtimeState = newRuntimeState(maxWaitForContainerRuntimeMs, kubeDeps.clock);
+	const workQueue = new BasicWorkQueue(kubeDeps.clock);
+	const podCache = new PodStatusCache();
+	const kubelet = new Kubelet({
+		ctx: kubeletCtx,
+		cancelContext,
+		hostname,
+		nodeName,
+		kubeClient,
+		resyncIntervalMs: kubeCfg.syncFrequencyMs,
+		dnsConfigurer,
+		serviceLister,
+		serviceHasSynced,
+		nodeLister,
+		nodeHasSynced,
+		cachedNode: kubeDeps.node,
+		podConfig,
+		sourcesReady: newSourcesReady(podConfig.seenAllSources.bind(podConfig)),
+		runtimeService: kubeDeps.remoteRuntimeService,
+		imageService: kubeDeps.remoteImageService,
+		runtimeState,
+		podManager,
+		livenessManager,
+		readinessManager,
+		startupManager,
+		podCache,
+		statusManager,
+		recorder: kubeDeps.recorder,
+		workQueue,
+		crashLoopBackOff: newBackOff(initialCrashLoopBackOffMs, maxCrashLoopBackOffMs, kubeDeps.clock),
+		clock: kubeDeps.clock,
+		nodeIPs,
+		nodeAddresses: kubeDeps.node.status?.addresses,
+	});
+	kubelet.podWorkers = new PodWorkersImpl(
+		kubeDeps.clock,
+		kubelet.workQueue,
+		kubeCfg.syncFrequencyMs,
+		backOffPeriodMs,
+		kubelet,
+		kubelet.podCache,
+	);
+	const containerRuntime = new KubeGenericRuntimeManager({
+		ctx: kubeletCtx,
+		runtimeService: kubeDeps.remoteRuntimeService,
+		imageService: kubeDeps.remoteImageService,
+		runtimeHelper: kubelet,
+		events: kubeDeps.recorder,
+		livenessManager,
+		imageBackOff: newBackOff(imageBackOffPeriodMs, maxImageBackOffMs, kubeDeps.clock),
+		maxParallelImagePulls: kubeCfg.serializeImagePulls ? 1 : kubeCfg.maxParallelImagePulls,
+		network: kubeDeps.network,
+		startupManager,
+		clock: kubeDeps.clock,
+	});
+	kubelet.containerRuntime = containerRuntime;
+	kubelet.runtimeCache = newRuntimeCache(
+		kubelet.containerRuntime,
+		runtimeCacheRefreshPeriodMs,
+		kubeDeps.clock,
+	);
+	kubelet.runner = containerRuntime;
+	kubelet.probeManager = new ProbeManagerImpl(
+		kubeletCtx,
+		statusManager,
+		livenessManager,
+		readinessManager,
+		startupManager,
+		kubelet.runner,
+		kubeDeps.recorder,
+		kubeDeps.clock,
+		kubeDeps.network,
+	);
+	kubelet.pleg = new GenericPLEG(
+		kubelet.containerRuntime,
+		new Channel<PodLifecycleEvent>(100),
+		{
+			relistPeriodMs: 1000,
+			relistThresholdMs: 3 * 60 * 1000,
+		},
+		kubelet.podCache,
+		kubeDeps.clock,
+		kubeletCtx,
+	);
+	runtimeState.addHealthCheck("PLEG", () => {
+		const health = kubelet.pleg.healthy();
+		return [health.ok, health.error];
+	});
+	const [activeDeadlineHandler, activeDeadlineHandlerErr] = newActiveDeadlineHandler(
+		kubelet.statusManager,
+		kubelet.recorder,
+		kubelet.clock,
+	);
+	if (activeDeadlineHandlerErr) {
+		throw activeDeadlineHandlerErr;
+	}
+	if (activeDeadlineHandler) {
+		kubelet.addPodSyncLoopHandler(activeDeadlineHandler);
+		kubelet.addPodSyncHandler(activeDeadlineHandler);
+	}
+	return kubelet;
 }
 
 // Models kubernetes/pkg/kubelet/kubelet.go serviceLister.
@@ -263,25 +460,27 @@ export class Kubelet implements RuntimeHelper {
 	private readonly runtimeService: RuntimeService | undefined;
 	private readonly imageService: ImageManagerService | undefined;
 	// Package-visible for upstream-parity tests and Server wiring that mirror kubelet_test.go.
-	readonly containerRuntime: KubeletRuntime;
+	containerRuntime!: KubeletRuntime;
 	// Package-visible for upstream-parity tests that mirror kubelet_test.go.
-	readonly runtimeCache: RuntimeCache;
+	runtimeCache!: RuntimeCache;
 	// Package-visible for upstream-parity tests that mirror kubelet_test.go.
 	readonly runtimeState: RuntimeState;
-	private readonly runner: CommandRunner;
+	// Package-visible for upstream-parity tests that mirror kubelet_test.go.
+	runner!: CommandRunner;
 	// Package-visible for upstream-parity tests that mirror kubelet_test.go.
 	readonly podManager: PodManager;
 	// Package-visible for upstream-parity tests that mirror kubelet_test.go.
-	probeManager: ProbeManager;
+	probeManager!: ProbeManager;
 	private readonly livenessManager: ResultsManager;
 	// Package-visible for upstream-parity tests that mirror kubelet_test.go.
 	readonly readinessManager: ResultsManager;
 	private readonly startupManager: ResultsManager;
 	// Package-visible for upstream-parity tests that mirror kubelet_test.go.
-	podWorkers: PodWorkers & { close(): Promise<void> };
+	podWorkers!: PodWorkers & { close(): Promise<void> };
 	// Package-visible for upstream-parity tests that mirror kubelet_test.go.
 	readonly podCache = new PodStatusCache();
-	private readonly pleg: GenericPLEG;
+	// Package-visible for upstream-parity tests that mirror kubelet_test.go.
+	pleg!: GenericPLEG;
 	// Package-visible for upstream-parity tests that mirror kubelet_test.go.
 	readonly statusManager: StatusManager;
 	// Package-visible for upstream-parity tests that mirror kubelet_pods_test.go.
@@ -311,186 +510,53 @@ export class Kubelet implements RuntimeHelper {
 	private syncLoopExited = false;
 	private stopped = false;
 
-	public constructor(
-		ctx: context.Context,
-		kubeletConfiguration: KubeletConfiguration,
-		kubeDeps: KubeletDependencies,
-		hostname: string,
-		nodeName: string,
-		// Mirrors upstream newTestKubelet's direct fake runtime field assignment
-		// without making fake runtimes part of production KubeletDependencies.
-		testRuntimeDeps?: TestRuntimeDependencies,
-	) {
-		this.hostname = hostname;
-		this.nodeName = nodeName;
-		if (!kubeDeps.kubeClient) {
-			throw new Error("standalone kubelet mode is not implemented");
+	public constructor(options: KubeletOptions) {
+		this.hostname = options.hostname;
+		this.nodeName = options.nodeName;
+		this.kubeClient = options.kubeClient;
+		this.resyncIntervalMs = options.resyncIntervalMs;
+		this.dnsConfigurer = options.dnsConfigurer;
+		this.serviceLister = options.serviceLister;
+		this.serviceHasSynced = options.serviceHasSynced;
+		this.nodeIPs = [...options.nodeIPs];
+		this.cachedNode = options.cachedNode;
+		this.nodeLister = options.nodeLister;
+		this.nodeHasSynced = options.nodeHasSynced;
+		this.podConfig = options.podConfig;
+		this.nodeAddresses = options.nodeAddresses;
+		this.sourcesReady = options.sourcesReady;
+		this.clock = options.clock;
+		this.ctx = options.ctx;
+		this.cancelContext = options.cancelContext;
+		this.runtimeService = options.runtimeService;
+		this.imageService = options.imageService;
+		this.podManager = options.podManager;
+		this.recorder = options.recorder;
+		this.statusManager = options.statusManager;
+		this.livenessManager = options.livenessManager;
+		this.readinessManager = options.readinessManager;
+		this.startupManager = options.startupManager;
+		this.crashLoopBackOff = options.crashLoopBackOff;
+		if (options.containerRuntime) {
+			this.containerRuntime = options.containerRuntime;
 		}
-		if (!kubeDeps.podConfig) {
-			const [podConfig, podConfigErr] = makePodSourceConfig(
-				ctx,
-				kubeletConfiguration,
-				kubeDeps,
-				nodeName,
-				kubeDeps.nodeHasSynced ?? (() => true),
-				kubeDeps.clock,
-			);
-			if (podConfigErr) {
-				throw podConfigErr;
-			}
-			kubeDeps.podConfig = podConfig;
+		if (options.runtimeCache) {
+			this.runtimeCache = options.runtimeCache;
 		}
-		this.kubeClient = kubeDeps.kubeClient;
-		this.resyncIntervalMs = kubeletConfiguration.syncFrequencyMs;
-		this.serviceLister =
-			kubeDeps.serviceLister ??
-			({
-				list: async () => {
-					try {
-						const services = await this.kubeClient.corev1.listServiceForAllNamespaces();
-						return [services.items, undefined];
-					} catch (error) {
-						return [[], error instanceof Error ? error : new Error(String(error))];
-					}
-				},
-			} satisfies ServiceLister);
-		this.serviceHasSynced = kubeDeps.serviceHasSynced ?? (() => true);
-		this.nodeIPs = kubeDeps.nodeIPs ? [...kubeDeps.nodeIPs] : ["127.0.0.1", "::1"];
-		this.cachedNode = kubeDeps.node;
-		this.nodeLister = kubeDeps.nodeLister ?? newAPINodeLister(this.kubeClient);
-		this.nodeHasSynced = kubeDeps.nodeHasSynced ?? (() => true);
-		this.podConfig = kubeDeps.podConfig;
-		this.nodeAddresses = this.cachedNode.status?.addresses;
-		this.sourcesReady = newSourcesReady(this.podConfig.seenAllSources.bind(this.podConfig));
-		this.clock = kubeDeps.clock;
-		const clusterDNS = kubeletConfiguration.clusterDNS.flatMap((ipEntry) => {
-			const ip = parseIPSloppy(ipEntry);
-			return ip ? [formatIP(ip)] : [];
-		});
-		this.dnsConfigurer = new Configurer({
-			recorder: kubeDeps.recorder,
-			nodeRef: {
-				kind: "Node",
-				name: this.nodeName,
-				uid: this.nodeName,
-				namespace: "",
-			},
-			nodeIPs: this.nodeIPs,
-			clusterDNS,
-			clusterDomain: kubeletConfiguration.clusterDomain,
-			resolverConfig: "",
-		});
-		this.runtimeState = newRuntimeState(maxWaitForContainerRuntimeMs, this.clock);
-		[this.ctx, this.cancelContext] = context.withCancel(ctx);
-		this.runtimeService = kubeDeps.remoteRuntimeService;
-		this.imageService = kubeDeps.remoteImageService;
-		this.podManager = new PodManager();
-		this.recorder = kubeDeps.recorder;
-		this.statusManager = new StatusManager({
-			clock: this.clock,
-			kubeClient: this.kubeClient,
-			podManager: this.podManager,
-		});
-		const livenessManager = new ResultsManager();
-		const readinessManager = new ResultsManager();
-		const startupManager = new ResultsManager();
-		this.livenessManager = livenessManager;
-		this.readinessManager = readinessManager;
-		this.startupManager = startupManager;
-		this.crashLoopBackOff = newBackOff(
-			initialCrashLoopBackOffMs,
-			maxCrashLoopBackOffMs,
-			this.clock,
-		);
-		if (testRuntimeDeps) {
-			this.containerRuntime = testRuntimeDeps.containerRuntime;
-			this.runtimeCache =
-				testRuntimeDeps.runtimeCache ??
-				newRuntimeCache(this.containerRuntime, runtimeCacheRefreshPeriodMs, this.clock);
-			this.runner = testRuntimeDeps.commandRunner;
-		} else {
-			if (!this.runtimeService || !this.imageService) {
-				throw new Error("remote runtime and image services are required");
-			}
-			const runtime = new KubeGenericRuntimeManager({
-				ctx: this.ctx,
-				runtimeService: this.runtimeService,
-				imageService: this.imageService,
-				runtimeHelper: this,
-				events: this.recorder,
-				livenessManager,
-				imageBackOff: newBackOff(imageBackOffPeriodMs, maxImageBackOffMs, this.clock),
-				maxParallelImagePulls: kubeletConfiguration.serializeImagePulls
-					? 1
-					: kubeletConfiguration.maxParallelImagePulls,
-				network: kubeDeps.network,
-				startupManager,
-				clock: this.clock,
-			});
-			this.containerRuntime = runtime;
-			this.runtimeCache = newRuntimeCache(
-				this.containerRuntime,
-				runtimeCacheRefreshPeriodMs,
-				this.clock,
-			);
-			this.runner = runtime;
+		this.runtimeState = options.runtimeState;
+		if (options.runner) {
+			this.runner = options.runner;
 		}
-		this.probeManager = new ProbeManagerImpl(
-			this.ctx,
-			this.statusManager,
-			livenessManager,
-			readinessManager,
-			startupManager,
-			this.runner,
-			this.recorder,
-			this.clock,
-			kubeDeps.network,
-		);
-		this.workQueue = new BasicWorkQueue(this.clock);
-		this.pleg = new GenericPLEG(
-			this.containerRuntime,
-			new Channel<PodLifecycleEvent>(100),
-			{
-				relistPeriodMs: 1000,
-				relistThresholdMs: 3 * 60 * 1000,
-			},
-			this.podCache,
-			this.clock,
-			this.ctx,
-		);
-		if (!testRuntimeDeps) {
-			this.runtimeState.addHealthCheck("PLEG", () => {
-				const health = this.pleg.healthy();
-				return [health.ok, health.error];
-			});
+		if (options.probeManager) {
+			this.probeManager = options.probeManager;
 		}
-		this.podWorkers = new PodWorkersImpl(
-			this.clock,
-			this.workQueue,
-			this.resyncIntervalMs,
-			backOffPeriodMs,
-			{
-				syncPod: (ctx, updateType, pod, mirrorPod, podStatus) =>
-					this.syncPod(ctx, updateType, pod, mirrorPod, podStatus),
-				syncTerminatingPod: (ctx, pod, podStatus, gracePeriod, podStatusFn) =>
-					this.syncTerminatingPod(ctx, pod, podStatus, gracePeriod, podStatusFn),
-				syncTerminatingRuntimePod: (ctx, runningPod) =>
-					this.syncTerminatingRuntimePod(ctx, runningPod),
-				syncTerminatedPod: (ctx, pod, podStatus) => this.syncTerminatedPod(ctx, pod, podStatus),
-			},
-			this.podCache,
-		);
-		const [activeDeadlineHandler, activeDeadlineHandlerErr] = newActiveDeadlineHandler(
-			this.statusManager,
-			this.recorder,
-			this.clock,
-		);
-		if (activeDeadlineHandlerErr) {
-			throw activeDeadlineHandlerErr;
+		this.workQueue = options.workQueue;
+		this.podCache = options.podCache;
+		if (options.pleg) {
+			this.pleg = options.pleg;
 		}
-		if (activeDeadlineHandler) {
-			this.addPodSyncLoopHandler(activeDeadlineHandler);
-			this.addPodSyncHandler(activeDeadlineHandler);
+		if (options.podWorkers) {
+			this.podWorkers = options.podWorkers;
 		}
 	}
 
@@ -793,7 +859,7 @@ export class Kubelet implements RuntimeHelper {
 	}
 
 	// Models kubernetes/pkg/kubelet/kubelet.go SyncTerminatingRuntimePod.
-	private async syncTerminatingRuntimePod(
+	async syncTerminatingRuntimePod(
 		ctx: context.Context,
 		runningPod: RuntimePod,
 	): Promise<Error | undefined> {
@@ -830,7 +896,7 @@ export class Kubelet implements RuntimeHelper {
 	}
 
 	// Models kubernetes/pkg/kubelet/kubelet.go SyncTerminatedPod.
-	private async syncTerminatedPod(
+	async syncTerminatedPod(
 		ctx: context.Context,
 		pod: V1Pod,
 		podStatus: PodRuntimeStatus,

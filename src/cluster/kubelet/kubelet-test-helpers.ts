@@ -1,11 +1,12 @@
 import type { V1Node, V1Pod, V1PodSpec } from "../../client";
 import { KubeConfig } from "../../client";
 import { Clock } from "../../clock";
+import { Channel } from "../../go/channel";
 import * as context from "../../go/context";
 import { Mutex } from "../../go/sync/mutex";
+import { newBackOff } from "../../client-go/util/flowcontrol/backoff";
 import { newFakePassiveClock, type FakePassiveClock } from "../../utils/clock/testing/fake-clock";
 import { KubeClient } from "../cluster";
-import { ClusterNetwork } from "../cni";
 import { Etcd } from "../etcd";
 import { EventRecorderImpl } from "../events";
 import {
@@ -14,6 +15,7 @@ import {
 	RuntimeStatus,
 	runtimeReady,
 	type Image,
+	PodStatusCache,
 	type Pod,
 	type PodStatus as PodRuntimeStatus,
 	type ROCache,
@@ -24,9 +26,10 @@ import {
 	newFakeCache,
 	newFakeRuntimeCache,
 } from "./container/testing";
-import type { KubeletConfiguration } from "./apis/config";
-import { newPodConfig } from "./config";
+import { newPodConfig, newSourcesReady } from "./config";
 import { Kubelet, NoopPodStartupSLIObserver } from "./kubelet";
+import { Configurer } from "./network/dns";
+import { GenericPLEG, type PodLifecycleEvent } from "./pleg";
 import {
 	PodWorkersImpl,
 	type PodWorkers,
@@ -34,10 +37,15 @@ import {
 	type SyncPodResult,
 	type UpdatePodOptions,
 } from "./pod-workers";
+import { PodManager } from "./pod";
+import { ResultsManager } from "./prober";
 import { FakeManager } from "./prober/testing/fake-manager";
+import { newRuntimeState } from "./runtime";
+import { StatusManager } from "./status";
 import { wait } from "../../promise";
 import type { SyncPodType } from "./types/pod-update";
-import type { WorkQueue } from "./util/queue/work-queue";
+import { BasicWorkQueue, type WorkQueue } from "./util/queue/work-queue";
+import { newActiveDeadlineHandler } from "./active-deadline";
 
 const testServiceCIDR = "10.96.0.0/12";
 const testNodePortRange = { from: 30000, to: 32767 };
@@ -398,7 +406,6 @@ export function newTestKubeletWithImageList(
 		nodePortRange: testNodePortRange,
 	});
 	const fakeKubeClient = new KubeClient(kubeConfig);
-	const network = new ClusterNetwork();
 	const fakeRuntime = new FakeRuntime();
 	fakeRuntime.imageList = imageList;
 	fakeRuntime.runtimeStatus = new RuntimeStatus({
@@ -430,38 +437,104 @@ export function newTestKubeletWithImageList(
 			],
 		},
 	};
-	const kubeletConfiguration: KubeletConfiguration = {
-		syncFrequencyMs: 60 * 1000,
-		clusterDNS: ["10.96.0.10"],
-		serializeImagePulls: true,
-		maxParallelImagePulls: undefined,
-		clusterDomain: "cluster.local",
-	};
-	const kubelet = new Kubelet(
-		tCtx,
-		kubeletConfiguration,
-		{
-			kubeClient: fakeKubeClient,
-			podListWatchClient: undefined,
-			recorder,
-			podStartupLatencyTracker,
-			network,
-			clock: fakeClock,
-			podConfig: newPodConfig(recorder, podStartupLatencyTracker, fakeClock),
-			node,
-		},
-		testKubeletHostname,
-		testKubeletHostname,
-		{
-			containerRuntime: fakeRuntime,
-			runtimeCache: newFakeRuntimeCache(fakeRuntime),
-			commandRunner,
-		},
+	const [kubeletCtx, cancelContext] = context.withCancel(tCtx);
+	const podConfig = newPodConfig(recorder, podStartupLatencyTracker, fakeClock);
+	const podManager = new PodManager();
+	const statusManager = new StatusManager({
+		clock: fakeClock,
+		kubeClient: fakeKubeClient,
+		podManager,
+	});
+	const livenessManager = new ResultsManager();
+	const readinessManager = new ResultsManager();
+	const startupManager = new ResultsManager();
+	const runtimeState = newRuntimeState(30 * 1000, fakeClock);
+	runtimeState.setNetworkState(undefined);
+	const podCache = new PodStatusCache();
+	const workQueue = new BasicWorkQueue(fakeClock);
+	let kubelet: Kubelet;
+	const fakePodWorkers = new FakePodWorkers(
+		podCache,
+		(ctx, updateType, pod, mirrorPod, podStatus) =>
+			kubelet.syncPod(ctx, updateType, pod, mirrorPod, podStatus),
 	);
-	kubelet.probeManager = new FakeManager();
-	const fakePodWorkers = new FakePodWorkers(kubelet.podCache, kubelet.syncPod.bind(kubelet));
-	kubelet.podWorkers = fakePodWorkers;
-	kubelet.runtimeState.setNetworkState(undefined);
+	const pleg = new GenericPLEG(
+		fakeRuntime,
+		new Channel<PodLifecycleEvent>(100),
+		{
+			relistPeriodMs: 1000,
+			relistThresholdMs: 3 * 60 * 1000,
+		},
+		podCache,
+		fakeClock,
+		kubeletCtx,
+	);
+	kubelet = new Kubelet({
+		ctx: kubeletCtx,
+		cancelContext,
+		hostname: testKubeletHostname,
+		nodeName: testKubeletHostname,
+		kubeClient: fakeKubeClient,
+		resyncIntervalMs: 60 * 1000,
+		dnsConfigurer: new Configurer({
+			recorder,
+			nodeRef: {
+				kind: "Node",
+				name: testKubeletHostname,
+				uid: testKubeletHostname,
+				namespace: "",
+			},
+			nodeIPs: ["127.0.0.1", "::1"],
+			clusterDNS: ["10.96.0.10"],
+			clusterDomain: "cluster.local",
+			resolverConfig: "",
+		}),
+		serviceLister: {
+			list: async () => [[], undefined],
+		},
+		serviceHasSynced: () => true,
+		nodeLister: {
+			get: async (name) => [name === testKubeletHostname ? node : undefined, undefined],
+			list: async () => [[node], undefined],
+		},
+		nodeHasSynced: () => true,
+		cachedNode: node,
+		podConfig,
+		sourcesReady: newSourcesReady(podConfig.seenAllSources.bind(podConfig)),
+		runtimeService: undefined,
+		imageService: undefined,
+		containerRuntime: fakeRuntime,
+		runtimeCache: newFakeRuntimeCache(fakeRuntime),
+		runtimeState,
+		runner: commandRunner,
+		podManager,
+		probeManager: new FakeManager(),
+		livenessManager,
+		readinessManager,
+		startupManager,
+		podWorkers: fakePodWorkers,
+		podCache,
+		pleg,
+		statusManager,
+		recorder,
+		workQueue,
+		crashLoopBackOff: newBackOff(10 * 1000, 300 * 1000, fakeClock),
+		clock: fakeClock,
+		nodeIPs: ["127.0.0.1", "::1"],
+		nodeAddresses: node.status?.addresses,
+	});
+	const [activeDeadlineHandler, activeDeadlineHandlerErr] = newActiveDeadlineHandler(
+		kubelet.statusManager,
+		kubelet.recorder,
+		kubelet.clock,
+	);
+	if (activeDeadlineHandlerErr) {
+		throw activeDeadlineHandlerErr;
+	}
+	if (activeDeadlineHandler) {
+		kubelet.addPodSyncLoopHandler(activeDeadlineHandler);
+		kubelet.addPodSyncHandler(activeDeadlineHandler);
+	}
 
 	// The simulator does not model the upstream test kubelet's host filesystem,
 	// volume/CSI/DRA, cadvisor/stats, allocation/resizing, eviction/shutdown,
