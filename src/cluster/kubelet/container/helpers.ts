@@ -8,6 +8,7 @@ import type {
 import type * as context from "../../../go/context";
 import * as fnv from "../../../fnv";
 import * as hashutil from "../../../hashutil";
+import * as expansion from "../../../third_party/forked/golang/expansion";
 import type { ContainerPort, DnsConfig, PodSandboxState, PortMapping } from "../../cri";
 import { containerShouldRestart, findMatchingContainerRestartRule } from "../../api/v1/pod/util";
 import {
@@ -162,40 +163,34 @@ export function expandContainerCommandAndArgs(
 	envs: EnvVar[],
 ): [command: string[] | undefined, args: string[] | undefined] {
 	const envMap = new Map(envs.map((env) => [env.name, env.value]));
-	const command = container.command?.map((cmd) => expandEnvironment(cmd, envMap));
-	const args = container.args?.map((arg) => expandEnvironment(arg, envMap));
+	const mapping = expansion.mappingFuncFor(envMap);
+	const command = container.command?.map((cmd) => expansion.expand(cmd, mapping));
+	const args = container.args?.map((arg) => expansion.expand(arg, mapping));
 	return [command, args];
 }
 
-function expandEnvironment(input: string, envMap: Map<string, string>): string {
-	let output = "";
-	let checkpoint = 0;
-	for (let cursor = 0; cursor < input.length; cursor++) {
-		if (input[cursor] !== "$" || cursor + 1 >= input.length) {
-			continue;
+// Models kubernetes/pkg/kubelet/container/helpers.go ExpandContainerCommandOnlyStatic.
+export function expandContainerCommandOnlyStatic(
+	containerCommand: string[] | undefined,
+	envs: NonNullable<V1Container["env"]>,
+): string[] {
+	const mapping = expansion.mappingFuncFor(v1EnvVarsToMap(envs));
+	const command: string[] = [];
+	if ((containerCommand?.length ?? 0) !== 0) {
+		for (const cmd of containerCommand ?? []) {
+			command.push(expansion.expand(cmd, mapping));
 		}
-		output += input.slice(checkpoint, cursor);
-		const [read, isVar, advance] = tryReadVariableName(input.slice(cursor + 1));
-		output += isVar ? (envMap.get(read) ?? `$(${read})`) : read;
-		cursor += advance;
-		checkpoint = cursor + 1;
 	}
-	return output + input.slice(checkpoint);
+	return command;
 }
 
-function tryReadVariableName(input: string): [read: string, isVar: boolean, advance: number] {
-	const first = input[0];
-	if (first === "$") {
-		return ["$", false, 1];
+// Models kubernetes/pkg/kubelet/container/helpers.go v1EnvVarsToMap.
+function v1EnvVarsToMap(envs: NonNullable<V1Container["env"]>): Map<string, string> {
+	const result = new Map<string, string>();
+	for (const env of envs) {
+		result.set(env.name, env.value ?? "");
 	}
-	if (first !== "(") {
-		return [`$${first ?? ""}`, false, first === undefined ? 0 : 1];
-	}
-	const closer = input.indexOf(")", 1);
-	if (closer === -1) {
-		return ["$(", false, 1];
-	}
-	return [input.slice(1, closer), true, closer + 1];
+	return result;
 }
 
 // Models kubernetes/pkg/kubelet/container/helpers.go GetContainerSpec.

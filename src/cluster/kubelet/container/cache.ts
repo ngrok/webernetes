@@ -1,7 +1,8 @@
 import { Channel, select, type ChannelReceive } from "../../../go/channel";
 import * as context from "../../../go/context";
-import type { PodStatus } from "./runtime";
+import { newPodStatus, type PodStatus } from "./runtime";
 
+// Models kubernetes/pkg/kubelet/container/cache.go ROCache.
 export interface ROCache {
 	get(id: string): Promise<PodStatusResult>;
 	// Upstream GetNewerThan does not take a context because goroutine cancellation
@@ -10,6 +11,7 @@ export interface ROCache {
 	getNewerThan(ctx: context.Context, id: string, minTime: Date): Promise<PodStatusResult>;
 }
 
+// Models kubernetes/pkg/kubelet/container/cache.go Cache.
 export interface Cache extends ROCache {
 	set(
 		id: string,
@@ -22,15 +24,17 @@ export interface Cache extends ROCache {
 	updateTime(timestamp: Date): void;
 }
 
-export type PodStatusResult = [status: PodStatus, err: Error | undefined];
+export type PodStatusResult = [status: PodStatus | undefined, err: Error | undefined];
 
+// Models kubernetes/pkg/kubelet/container/cache.go data.
 interface Data {
-	status: PodStatus;
+	status: PodStatus | undefined;
 	error: Error | undefined;
 	modified: Date;
 	observedTime: Date;
 }
 
+// Models kubernetes/pkg/kubelet/container/cache.go subRecord.
 interface SubRecord {
 	time: Date;
 	ch: Channel<Data>;
@@ -76,7 +80,7 @@ export class PodStatusCache implements Cache {
 		// Kubernetes has Evented PLEG timestamp conflict handling here. The simulator
 		// currently models Generic PLEG only.
 		this.pods.set(id, {
-			status: status ?? makeDefaultStatus(id),
+			status,
 			error,
 			modified: timestamp,
 			observedTime: timestamp,
@@ -107,10 +111,12 @@ export class PodStatusCache implements Cache {
 		}
 	}
 
+	// Models kubernetes/pkg/kubelet/container/cache.go get.
 	private getData(id: string): Data {
 		return this.pods.get(id) ?? makeDefaultData(id);
 	}
 
+	// Models kubernetes/pkg/kubelet/container/cache.go getIfNewerThan.
 	private getIfNewerThan(id: string, minTime: Date): Data | undefined {
 		const data = this.pods.get(id);
 		const globalTimestampIsNewer = this.timestamp !== undefined && after(this.timestamp, minTime);
@@ -126,6 +132,7 @@ export class PodStatusCache implements Cache {
 		return undefined;
 	}
 
+	// Models kubernetes/pkg/kubelet/container/cache.go notify.
 	private notify(id: string, timestamp: Date): void {
 		const list = this.subscribers.get(id);
 		if (!list) {
@@ -147,6 +154,7 @@ export class PodStatusCache implements Cache {
 		}
 	}
 
+	// Models kubernetes/pkg/kubelet/container/cache.go subscribe.
 	private subscribe(id: string, timestamp: Date): { ch: Channel<Data>; record?: SubRecord } {
 		const ch = new Channel<Data>(1);
 		const data = this.getIfNewerThan(id, timestamp);
@@ -162,6 +170,7 @@ export class PodStatusCache implements Cache {
 		return { ch, record };
 	}
 
+	// Simulator cancellation cleanup for GetNewerThan.
 	private unsubscribe(id: string, record: SubRecord): void {
 		const list = this.subscribers.get(id);
 		if (!list) {
@@ -176,6 +185,7 @@ export class PodStatusCache implements Cache {
 	}
 }
 
+// Simulator adapter for cancellable channel receive.
 function cacheResultFromReceive(id: string, result: ChannelReceive<Data>): PodStatusResult {
 	if (!result.ok) {
 		return [makeDefaultStatus(id), undefined];
@@ -183,6 +193,7 @@ function cacheResultFromReceive(id: string, result: ChannelReceive<Data>): PodSt
 	return [result.value.status, result.value.error];
 }
 
+// Models kubernetes/pkg/kubelet/container/cache.go makeDefaultData.
 function makeDefaultData(id: string): Data {
 	return {
 		status: makeDefaultStatus(id),
@@ -192,22 +203,17 @@ function makeDefaultData(id: string): Data {
 	};
 }
 
+// Models kubernetes/pkg/kubelet/container/cache.go makeDefaultData PodStatus literal.
 function makeDefaultStatus(id: string): PodStatus {
-	return {
-		id,
-		name: "",
-		namespace: "default",
-		ips: [],
-		timestamp: new Date(0),
-		containerStatuses: [],
-		sandboxStatuses: [],
-	};
+	return newPodStatus({ id });
 }
 
+// Models time.Time.After.
 function after(left: Date, right: Date): boolean {
 	return left.getTime() > right.getTime();
 }
 
+// Models time.Time.Before.
 function before(left: Date, right: Date): boolean {
 	return left.getTime() < right.getTime();
 }

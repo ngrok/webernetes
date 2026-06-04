@@ -1,7 +1,11 @@
 import { expect, it } from "vitest";
 import { browser } from "../../../test/describe";
 import type { V1Container, V1Pod, V1PodCondition, V1PodStatus } from "../../../client";
-import { hashContainer, shouldAllContainersRestart } from "./helpers";
+import {
+	expandContainerCommandOnlyStatic,
+	hashContainer,
+	shouldAllContainersRestart,
+} from "./helpers";
 import { buildContainerID, type PodStatus, type Status } from "./runtime";
 
 browser.describe("hashContainer", () => {
@@ -107,6 +111,21 @@ browser.describe("hashContainer", () => {
 				],
 			}),
 		).toBe(base);
+	});
+});
+
+// Simulator-only test, upstream doesn't test this function.
+browser.describe("expandContainerCommandOnlyStatic", () => {
+	it("expands only static container env values", () => {
+		expect(
+			expandContainerCommandOnlyStatic(
+				["some $(A) $(B) $(MISSING) $$(ESCAPED)"],
+				[
+					{ name: "A", value: "script" },
+					{ name: "B", valueFrom: { fieldRef: { fieldPath: "metadata.name" } } },
+				],
+			),
+		).toEqual(["some script  $(MISSING) $(ESCAPED)"]);
 	});
 });
 
