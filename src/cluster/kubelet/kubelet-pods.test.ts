@@ -35,8 +35,7 @@ import {
 	podWithUIDNameNs,
 	type syncPodRecord,
 } from "./kubelet-test-helpers";
-import { truncatePodHostnameIfNeeded } from "./kubelet";
-import { getPhase } from "./kubelet-pods";
+import { getPhase, truncatePodHostnameIfNeeded } from "./kubelet-pods";
 import type { ServiceLister } from "./kubelet";
 import {
 	isDeleted,

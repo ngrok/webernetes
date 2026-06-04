@@ -2,6 +2,24 @@ import type { V1ContainerStatus, V1Pod, V1PodStatus } from "../../client";
 import { containerShouldRestart, getContainerStatus } from "../api/v1/pod/util";
 import { isStaticPod } from "./types/pod-update";
 
+// Models kubernetes/pkg/kubelet/kubelet_pods.go truncatePodHostnameIfNeeded hostnameMaxLen.
+const hostnameMaxLen = 63;
+
+// Models kubernetes/pkg/kubelet/kubelet_pods.go truncatePodHostnameIfNeeded.
+export function truncatePodHostnameIfNeeded(
+	podName: string,
+	hostname: string,
+): [hostname: string, err: Error | undefined] {
+	if (hostname.length <= hostnameMaxLen) {
+		return [hostname, undefined];
+	}
+	const truncated = hostname.slice(0, hostnameMaxLen).replace(/[-.]+$/u, "");
+	if (truncated.length === 0) {
+		return [truncated, new Error(`hostname for pod "${podName}" was invalid: "${hostname}"`)];
+	}
+	return [truncated, undefined];
+}
+
 // Models kubernetes/pkg/kubelet/kubelet_pods.go getPhase.
 export function getPhase(
 	pod: V1Pod,

@@ -55,7 +55,7 @@ import { KubeGenericRuntimeManager } from "./kuberuntime";
 import { newFakeInternalContainerLifecycle } from "./cm";
 import { newHandlerRunner } from "./lifecycle";
 import { KubeletImageManager } from "./images";
-import { getPhase } from "./kubelet-pods";
+import { getPhase, truncatePodHostnameIfNeeded } from "./kubelet-pods";
 import { newActiveDeadlineHandler } from "./active-deadline";
 import {
 	PodSyncHandlers,
@@ -120,24 +120,6 @@ const syncLoopRuntimeBackoffBaseMs = 100;
 const syncLoopRuntimeBackoffMaxMs = 5 * 1000;
 // Models kubernetes/pkg/kubelet/kubelet.go syncLoop runtime readiness backoff factor.
 const syncLoopRuntimeBackoffFactor = 2;
-// Models kubernetes/pkg/kubelet/kubelet_pods.go truncatePodHostnameIfNeeded hostnameMaxLen.
-const hostnameMaxLen = 63;
-
-// Models kubernetes/pkg/kubelet/kubelet_pods.go truncatePodHostnameIfNeeded.
-export function truncatePodHostnameIfNeeded(
-	podName: string,
-	hostname: string,
-): [hostname: string, err: Error | undefined] {
-	if (hostname.length <= hostnameMaxLen) {
-		return [hostname, undefined];
-	}
-	const truncated = hostname.slice(0, hostnameMaxLen).replace(/[-.]+$/u, "");
-	if (truncated.length === 0) {
-		return [truncated, new Error(`hostname for pod "${podName}" was invalid: "${hostname}"`)];
-	}
-	return [truncated, undefined];
-}
-
 // Models kubernetes/pkg/kubelet/kubelet.go SyncHandler.
 export interface SyncHandler {
 	handlePodAdditions(ctx: context.Context, pods: V1Pod[]): Promise<void>;
