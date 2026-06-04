@@ -1,10 +1,18 @@
 import type { V1Container, V1Pod, V1PodStatus, V1Probe } from "../../../client";
 import type { EventRecorder } from "../../../client-go/tools/record/event";
+import type { Clock } from "../../../clock";
 import type * as context from "../../../go/context";
 import type { ClusterNetwork } from "../../cni";
-import { generateContainerRef, type CommandRunner, type ContainerID } from "../container";
+import {
+	expandContainerCommandOnlyStatic,
+	generateContainerRef,
+	type CommandRunner,
+	type ContainerID,
+} from "../container";
 import { ExecProber, HTTPProber, TCPProber } from "../../probe";
-import type { ExecProbe, ProbeResult } from "../../probe";
+import type { ByteWriter, ExecCmd, ExecProbe, ProbeResult } from "../../probe";
+import { newRequestForHTTPGetAction } from "../../probe/http/request";
+import { resolveContainerPort } from "../../probe/util";
 import { probeTypeString } from "./prober-manager";
 import type { ProbeType, ProberResult } from "./results";
 
@@ -19,12 +27,14 @@ export class Prober {
 
 	// Models kubernetes/pkg/kubelet/prober/prober.go newProber.
 	constructor(
+		ctx: context.Context,
 		readonly runner: CommandRunner | undefined,
+		clock: Clock,
 		network: ClusterNetwork,
 		readonly recorder: EventRecorder | undefined,
 	) {
-		this.exec = new ExecProber(runner ?? new MissingCommandRunner());
-		this.http = new HTTPProber(network);
+		this.exec = new ExecProber();
+		this.http = new HTTPProber(ctx, clock, network);
 		this.tcp = new TCPProber(network);
 	}
 
@@ -46,8 +56,8 @@ export class Prober {
 		}
 
 		const [result, output, err] = await this.runProbeWithRetries(
-			probeType,
 			ctx,
+			probeType,
 			probeSpec,
 			pod,
 			status,
@@ -104,9 +114,9 @@ export class Prober {
 
 	// Models kubernetes/pkg/kubelet/prober/prober.go runProbeWithRetries.
 	private async runProbeWithRetries(
-		probeType: ProbeType,
 		ctx: context.Context,
-		probe: V1Probe,
+		probeType: ProbeType,
+		p: V1Probe,
 		pod: V1Pod,
 		status: V1PodStatus,
 		container: V1Container,
@@ -118,9 +128,9 @@ export class Prober {
 		let output = "";
 		for (let i = 0; i < retries; i++) {
 			[result, output, err] = await this.runProbe(
-				probeType,
 				ctx,
-				probe,
+				probeType,
+				p,
 				pod,
 				status,
 				container,
@@ -135,8 +145,8 @@ export class Prober {
 
 	// Models kubernetes/pkg/kubelet/prober/prober.go runProbe.
 	private async runProbe(
-		_probeType: ProbeType,
 		ctx: context.Context,
+		_probeType: ProbeType,
 		probe: V1Probe,
 		pod: V1Pod,
 		status: V1PodStatus,
@@ -145,19 +155,36 @@ export class Prober {
 	): Promise<[ProbeResult, string, Error | undefined]> {
 		const timeoutMs = (probe.timeoutSeconds ?? 1) * 1000;
 		if (probe.exec) {
-			// TODO(samwho): the call signature we have here is very different to
-			// upstream, we should fix it.
-			return await this.exec.probe(ctx, containerId, container, probe.exec, timeoutMs);
+			const command = expandContainerCommandOnlyStatic(
+				probe.exec.command ?? [],
+				container.env ?? [],
+			);
+			return await this.exec.probe(
+				this.newExecInContainer(ctx, pod, container, containerId, command, timeoutMs),
+			);
 		}
 		if (probe.httpGet) {
-			// TODO(samwho): the call signature we have here is very different to
-			// upstream, we should fix it.
-			return [await this.http.probe(status.podIP, container, probe.httpGet), "", undefined];
+			const [req, err] = newRequestForHTTPGetAction(
+				probe.httpGet,
+				container,
+				status.podIP ?? "",
+				"probe",
+			);
+			if (err || !req) {
+				return ["unknown", "", err];
+			}
+			return await this.http.probe(req, timeoutMs);
 		}
 		if (probe.tcpSocket) {
-			// TODO(samwho): the call signature we have here is very different to
-			// upstream, we should fix it.
-			return [this.tcp.probe(status.podIP, container, probe.tcpSocket), "", undefined];
+			const [port, err] = resolveContainerPort(probe.tcpSocket.port, container);
+			if (err) {
+				return ["unknown", "", err];
+			}
+			let host = probe.tcpSocket.host ?? "";
+			if (host === "") {
+				host = status.podIP ?? "";
+			}
+			return this.tcp.probe(host, port, timeoutMs);
 		}
 		return [
 			"unknown",
@@ -203,10 +230,90 @@ export class Prober {
 		}
 		await this.recorder.eventf(ref, eventType, reason, message, ...args);
 	}
+
+	// Models kubernetes/pkg/kubelet/prober/prober.go newExecInContainer.
+	private newExecInContainer(
+		ctx: context.Context,
+		pod: V1Pod,
+		container: V1Container,
+		containerID: ContainerID,
+		cmd: string[],
+		timeoutMs: number,
+	): ExecCmd {
+		return new ExecInContainer(
+			async () =>
+				await (this.runner ?? new MissingCommandRunner()).runInContainer(
+					ctx,
+					containerID,
+					cmd,
+					timeoutMs / 1000,
+				),
+			pod,
+			container,
+		);
+	}
 }
 
 class MissingCommandRunner implements CommandRunner {
 	async runInContainer(): Promise<[string, Error | undefined]> {
 		return ["", new Error("exec probe command runner is not configured")];
+	}
+}
+
+class ExecInContainer implements ExecCmd {
+	private writer: ByteWriter | undefined;
+
+	constructor(
+		private readonly runCommand: () => Promise<[string, Error | undefined]>,
+		readonly _pod: V1Pod,
+		readonly _container: V1Container,
+	) {}
+
+	run(): Error | undefined {
+		return undefined;
+	}
+
+	async combinedOutput(): Promise<[string, Error | undefined]> {
+		return await this.runCommand();
+	}
+
+	output(): [string, Error | undefined] {
+		return ["", new Error("unimplemented")];
+	}
+
+	setDir(_dir: string): void {}
+
+	setStdin(_input: unknown): void {}
+
+	setStdout(out: ByteWriter): void {
+		this.writer = out;
+	}
+
+	setStderr(out: ByteWriter): void {
+		this.writer = out;
+	}
+
+	setEnv(_env: string[]): void {}
+
+	stop(): void {}
+
+	async start(): Promise<Error | undefined> {
+		const [data, err] = await this.runCommand();
+		if (this.writer) {
+			this.writer.write(data);
+		}
+		return err;
+	}
+
+	async wait(): Promise<Error | undefined> {
+		return undefined;
+	}
+
+	stdoutPipe(): [unknown, Error | undefined] {
+		return [undefined, new Error("unimplemented")];
+	}
+
+	stderrPipe(): [unknown, Error | undefined] {
+		return [undefined, new Error("unimplemented")];
 	}
 }
