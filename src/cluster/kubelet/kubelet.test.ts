@@ -1,6 +1,11 @@
-// oxlint-disable jest/no-standalone-expect
 import { expect, it } from "vitest";
-import type { V1Container, V1ContainerStatus, V1Pod } from "../../client";
+import {
+	newContainerStatus,
+	type V1Container,
+	type V1ContainerStatus,
+	type V1Pod,
+	type V1PodStatus,
+} from "../../client";
 import { Channel } from "../../go/channel";
 import * as context from "../../go/context";
 import { browser } from "../../test/describe";
@@ -9,11 +14,13 @@ import {
 	PodSyncResult,
 	type PodStatus as PodRuntimeStatus,
 	type Status as ContainerRuntimeStatus,
+	newPodStatus,
 	newSyncResult,
 } from "./container";
 import { newFakePod, type FakePod } from "./container/testing";
 import {
 	FakePodWorkers,
+	type TestKubelet,
 	newTestPods,
 	newTestKubelet,
 	podWithUIDNameNs,
@@ -23,16 +30,7 @@ import type { PodLifecycleEvent } from "./pleg";
 import { newReasonCache } from "./reason-cache";
 import { configSourceAnnotationKey } from "./types";
 import type { PodUpdate } from "./types/pod-update";
-
-function containerStatusZero(cName: string): V1ContainerStatus {
-	return {
-		name: cName,
-		image: "",
-		imageID: "",
-		ready: false,
-		restartCount: 0,
-	};
-}
+import type { ShouldEvictResponse } from "./lifecycle";
 
 function runtimeStatus(
 	name: string,
@@ -70,6 +68,13 @@ function verifyContainerStatuses(
 
 function podsByUID(a: V1Pod, b: V1Pod): number {
 	return (a.metadata?.uid ?? "").localeCompare(b.metadata?.uid ?? "");
+}
+
+// Models kubernetes/pkg/kubelet/kubelet_test.go checkPodStatus.
+function checkPodStatus(kl: TestKubelet["kubelet"], pod: V1Pod, phase: V1PodStatus["phase"]): void {
+	const status = kl.statusManager.getPodStatus(pod.metadata?.uid ?? "");
+	expect(status).toBeDefined();
+	expect(status?.phase).toBe(phase);
 }
 
 // Models kubernetes/pkg/kubelet/kubelet_test.go TestSyncLoopAbort.
@@ -118,6 +123,150 @@ browser.describe("syncPodsStartPod", () => {
 			kubelet.podManager.setPods(pods);
 			await kubelet.handlePodSyncs(tCtx, pods);
 			expect(fakeRuntime.assertStartedPods([pods[0].metadata?.uid ?? ""])).toBe(true);
+		} finally {
+			await testKubelet.cleanup();
+		}
+	});
+});
+
+// Models kubernetes/pkg/kubelet/kubelet_test.go TestDispatchWorkOfCompletedPod.
+browser.describe("dispatchWorkOfCompletedPod", () => {
+	it("does not skip completed pods when dispatching pod worker sync work", async () => {
+		expect.hasAssertions();
+		const tCtx = context.background();
+		const testKubelet = newTestKubelet(false);
+		const kubelet = testKubelet.kubelet;
+		try {
+			let got = false;
+			kubelet.podWorkers = new FakePodWorkers(
+				kubelet.podCache,
+				async (_ctx, _updateType, _pod, _mirrorPod, _podStatus) => {
+					got = true;
+					return [false, undefined, undefined];
+				},
+			);
+			const now = kubelet.clock.now();
+			const pods: V1Pod[] = [
+				{
+					metadata: {
+						uid: "1",
+						name: "completed-pod1",
+						namespace: "ns",
+						annotations: {},
+					},
+					status: {
+						phase: "Failed",
+						containerStatuses: [
+							newContainerStatus({
+								state: { terminated: { exitCode: 0 } },
+							}),
+						],
+					},
+				},
+				{
+					metadata: {
+						uid: "2",
+						name: "completed-pod2",
+						namespace: "ns",
+						annotations: {},
+					},
+					status: {
+						phase: "Succeeded",
+						containerStatuses: [
+							newContainerStatus({
+								state: { terminated: { exitCode: 0 } },
+							}),
+						],
+					},
+				},
+				{
+					metadata: {
+						uid: "3",
+						name: "completed-pod3",
+						namespace: "ns",
+						annotations: {},
+						deletionTimestamp: now,
+					},
+					status: {
+						containerStatuses: [
+							newContainerStatus({
+								state: { terminated: { exitCode: 0 } },
+							}),
+						],
+					},
+				},
+			];
+
+			for (const pod of pods) {
+				await kubelet.podWorkers.updatePod(tCtx, {
+					pod,
+					updateType: "sync",
+					startTime: kubelet.clock.now(),
+				});
+				expect(got).toBe(true);
+				got = false;
+			}
+		} finally {
+			await testKubelet.cleanup();
+		}
+	});
+});
+
+// Models kubernetes/pkg/kubelet/kubelet_test.go TestDispatchWorkOfActivePod.
+browser.describe("dispatchWorkOfActivePod", () => {
+	it("does not skip active pods when dispatching pod worker sync work", async () => {
+		expect.hasAssertions();
+		const tCtx = context.background();
+		const testKubelet = newTestKubelet(false);
+		const kubelet = testKubelet.kubelet;
+		try {
+			let got = false;
+			kubelet.podWorkers = new FakePodWorkers(
+				kubelet.podCache,
+				async (_ctx, _updateType, _pod, _mirrorPod, _podStatus) => {
+					got = true;
+					return [false, undefined, undefined];
+				},
+			);
+			const pods: V1Pod[] = [
+				{
+					metadata: {
+						uid: "1",
+						name: "active-pod1",
+						namespace: "ns",
+						annotations: {},
+					},
+					status: {
+						phase: "Running",
+					},
+				},
+				{
+					metadata: {
+						uid: "2",
+						name: "active-pod2",
+						namespace: "ns",
+						annotations: {},
+					},
+					status: {
+						phase: "Failed",
+						containerStatuses: [
+							newContainerStatus({
+								state: { running: {} },
+							}),
+						],
+					},
+				},
+			];
+
+			for (const pod of pods) {
+				await kubelet.podWorkers.updatePod(tCtx, {
+					pod,
+					updateType: "sync",
+					startTime: kubelet.clock.now(),
+				});
+				expect(got).toBe(true);
+				got = false;
+			}
 		} finally {
 			await testKubelet.cleanup();
 		}
@@ -185,6 +334,24 @@ class testPodSyncLoopHandler {
 	}
 }
 
+class testPodSyncHandler {
+	constructor(
+		private readonly podsToEvict: V1Pod[],
+		private readonly reason: string,
+		private readonly message: string,
+	) {}
+
+	// Models kubernetes/pkg/kubelet/kubelet_test.go testPodSyncHandler.ShouldEvict.
+	shouldEvict(pod: V1Pod): ShouldEvictResponse {
+		for (const podToEvict of this.podsToEvict) {
+			if (podToEvict.metadata?.uid === pod.metadata?.uid) {
+				return { evict: true, reason: this.reason, message: this.message };
+			}
+		}
+		return { evict: false, reason: "", message: "" };
+	}
+}
+
 // Models kubernetes/pkg/kubelet/kubelet_test.go TestGetPodsToSyncInvokesPodSyncLoopHandlers.
 browser.describe("getPodsToSyncInvokesPodSyncLoopHandlers", () => {
 	it("invokes registered sync-loop handlers", async () => {
@@ -199,6 +366,33 @@ browser.describe("getPodsToSyncInvokesPodSyncLoopHandlers", () => {
 
 			const podsToSync = kubelet.getPodsToSync();
 			expect(podsToSync.toSorted(podsByUID)).toEqual(expected.toSorted(podsByUID));
+		} finally {
+			await testKubelet.cleanup();
+		}
+	});
+});
+
+// Models kubernetes/pkg/kubelet/kubelet_test.go TestGenerateAPIPodStatusInvokesPodSyncHandlers.
+browser.describe("generateAPIPodStatusInvokesPodSyncHandlers", () => {
+	it("invokes registered pod sync handlers and reports eviction status", async () => {
+		expect.hasAssertions();
+		const tCtx = context.background();
+		const testKubelet = newTestKubelet(false);
+		const kubelet = testKubelet.kubelet;
+		try {
+			const pod = newTestPods(1)[0];
+			const podsToEvict = [pod];
+			kubelet.addPodSyncHandler(new testPodSyncHandler(podsToEvict, "Evicted", "because"));
+			const status = newPodStatus({
+				id: pod.metadata?.uid ?? "",
+				name: pod.metadata?.name ?? "",
+				namespace: pod.metadata?.namespace ?? "",
+			});
+
+			const apiStatus = kubelet.generateAPIPodStatus(tCtx, pod, status, false);
+			expect(apiStatus.phase).toBe("Failed");
+			expect(apiStatus.reason).toBe("Evicted");
+			expect(apiStatus.message).toBe("because");
 		} finally {
 			await testKubelet.cleanup();
 		}
@@ -488,6 +682,108 @@ browser.describe("networkErrorsWithoutHostNetwork", () => {
 	});
 });
 
+// Models kubernetes/pkg/kubelet/kubelet_test.go TestSyncPodsSetStatusToFailedForPodsThatRunTooLong.
+browser.describe("syncPodsSetStatusToFailedForPodsThatRunTooLong", () => {
+	it("sets pod status to failed after active deadline is exceeded", async () => {
+		expect.hasAssertions();
+		const tCtx = context.background();
+		const testKubelet = newTestKubelet(false);
+		const fakeRuntime = testKubelet.fakeRuntime;
+		const kubelet = testKubelet.kubelet;
+		try {
+			const now = kubelet.clock.now();
+			const startTime = new Date(now.getTime() - 60 * 1000);
+			const exceededActiveDeadlineSeconds = 30;
+			const pods: V1Pod[] = [
+				{
+					metadata: {
+						uid: "12345678",
+						name: "bar",
+						namespace: "new",
+					},
+					spec: {
+						nodeName: "127.0.0.1",
+						containers: [{ name: "foo" }],
+						activeDeadlineSeconds: exceededActiveDeadlineSeconds,
+					},
+					status: {
+						startTime,
+					},
+				},
+			];
+			fakeRuntime.podList = [
+				newFakePod({
+					pod: {
+						id: "12345678",
+						name: "bar",
+						namespace: "new",
+						containers: [{ name: "foo" }],
+					},
+				}),
+			];
+
+			await kubelet.handlePodUpdates(tCtx, pods);
+			const status = kubelet.statusManager.getPodStatus(pods[0].metadata?.uid ?? "");
+			expect(status).toBeDefined();
+			expect(status?.phase).toBe("Failed");
+			expect(status?.containerStatuses).toBeDefined();
+		} finally {
+			await testKubelet.cleanup();
+		}
+	});
+});
+
+// Models kubernetes/pkg/kubelet/kubelet_test.go TestSyncPodsDoesNotSetPodsThatDidNotRunTooLongToFailed.
+browser.describe("syncPodsDoesNotSetPodsThatDidNotRunTooLongToFailed", () => {
+	it("does not set pod status to failed before active deadline is exceeded", async () => {
+		expect.hasAssertions();
+		const tCtx = context.background();
+		const testKubelet = newTestKubelet(false);
+		const fakeRuntime = testKubelet.fakeRuntime;
+		const kubelet = testKubelet.kubelet;
+		try {
+			const now = kubelet.clock.now();
+			const startTime = new Date(now.getTime() - 60 * 1000);
+			const exceededActiveDeadlineSeconds = 300;
+			const pods: V1Pod[] = [
+				{
+					metadata: {
+						uid: "12345678",
+						name: "bar",
+						namespace: "new",
+					},
+					spec: {
+						nodeName: "127.0.0.1",
+						containers: [{ name: "foo" }],
+						activeDeadlineSeconds: exceededActiveDeadlineSeconds,
+					},
+					status: {
+						startTime,
+					},
+				},
+			];
+			fakeRuntime.podList = [
+				newFakePod({
+					pod: {
+						id: "12345678",
+						name: "bar",
+						namespace: "new",
+						containers: [{ name: "foo" }],
+					},
+				}),
+			];
+
+			kubelet.podManager.setPods(pods);
+			await kubelet.handlePodUpdates(tCtx, pods);
+			const status = kubelet.statusManager.getPodStatus(pods[0].metadata?.uid ?? "");
+			expect(status).toBeDefined();
+			expect(status?.phase).not.toBe("Failed");
+		} finally {
+			await testKubelet.cleanup();
+		}
+	});
+});
+
 // Models kubernetes/pkg/kubelet/kubelet_test.go TestSyncPodRestartAllContainersRequeue.
 browser.describe("syncPodRestartAllContainersRequeue", () => {
 	it("requeues immediately after successful restart-all container removal", async () => {
@@ -593,10 +889,10 @@ browser.describe("generateAPIPodStatusWithReasonCache", () => {
 			statuses: [],
 			reasons: {},
 			oldStatuses: [
-				{
-					...containerStatusZero("with-old-record"),
+				newContainerStatus({
+					name: "with-old-record",
 					lastState: { terminated: { exitCode: 0 } },
-				},
+				}),
 			],
 			expectedState: {
 				"without-old-record": { waiting: { reason: "ContainerCreating" } },
@@ -658,10 +954,10 @@ browser.describe("generateAPIPodStatusWithReasonCache", () => {
 			],
 			reasons: {},
 			oldStatuses: [
-				{
-					...containerStatusZero("unknown"),
+				newContainerStatus({
+					name: "unknown",
 					state: { running: {} },
-				},
+				}),
 			],
 			expectedState: {
 				unknown: {
@@ -961,6 +1257,49 @@ browser.describe("generateAPIPodStatusWithContainerRestartPolicies", () => {
 				);
 				pod.spec = { containers: [] };
 			}
+		} finally {
+			await testKubelet.cleanup();
+		}
+	});
+});
+
+// Models kubernetes/pkg/kubelet/kubelet_test.go TestSyncTerminatingPodKillPod.
+browser.describe("syncTerminatingPodKillPod", () => {
+	it("kills the terminating pod and stores the supplied failed status", async () => {
+		expect.hasAssertions();
+		const tCtx = context.background();
+		const testKubelet = newTestKubelet(false);
+		const kl = testKubelet.kubelet;
+		try {
+			const pod: V1Pod = {
+				metadata: {
+					uid: "12345678",
+					name: "bar",
+					namespace: "foo",
+				},
+			};
+			const pods = [pod];
+			kl.podManager.setPods(pods);
+			const podStatus = newPodStatus({
+				id: pod.metadata?.uid ?? "",
+			});
+			const gracePeriodOverride = 0;
+
+			const err = await kl.syncTerminatingPod(
+				tCtx,
+				pod,
+				podStatus,
+				gracePeriodOverride,
+				(podStatusToUpdate: V1PodStatus) => {
+					podStatusToUpdate.phase = "Failed";
+					podStatusToUpdate.reason = "reason";
+					podStatusToUpdate.message = "message";
+				},
+			);
+			expect(err).toBeUndefined();
+
+			// Check pod status stored in the status map.
+			checkPodStatus(kl, pod, "Failed");
 		} finally {
 			await testKubelet.cleanup();
 		}
