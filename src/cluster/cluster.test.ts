@@ -16,6 +16,10 @@ browser.describe("Cluster nodes", () => {
 					...server.ipAddresses.map((address) => ({ type: "InternalIP", address })),
 					{ type: "Hostname", address: server.name },
 				]);
+				const [kubeletNode, kubeletNodeErr] = await server.kubelet.getNode(cluster.ctx);
+				expect(kubeletNodeErr).toBeUndefined();
+				expect(kubeletNode).toEqual(node);
+				expect(server.kubelet.nodeHasSynced()).toBe(true);
 			}
 		} finally {
 			await cluster.close();

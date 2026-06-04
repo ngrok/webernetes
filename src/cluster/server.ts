@@ -12,6 +12,7 @@ import type { Runtime as KubeletRuntime } from "./kubelet/container";
 import type { KubeletConfiguration } from "./kubelet/apis/config";
 import { PodListWatchClient } from "./kubelet/config";
 import * as context from "../go/context";
+import type { V1Node } from "../client";
 
 export interface ServerOptions {
 	name: string;
@@ -25,6 +26,7 @@ export class Server {
 	podCIDR: string;
 	ipAddresses: string[];
 	cluster: Cluster;
+	node: V1Node;
 	kubelet: Kubelet;
 	runtime: InProcessRuntimeService;
 	runtimeService: RuntimeService;
@@ -41,6 +43,18 @@ export class Server {
 		this.podCIDR = options.podCIDR;
 		this.ipAddresses = [...options.ipAddresses];
 		this.cluster = cluster;
+		this.node = {
+			metadata: { name: this.name },
+			spec: {
+				podCIDR: this.podCIDR,
+			},
+			status: {
+				addresses: [
+					...this.ipAddresses.map((address) => ({ type: "InternalIP", address })),
+					{ type: "Hostname", address: this.name },
+				],
+			},
+		};
 		this.runtime = new InProcessRuntimeService({
 			ctx: cluster.ctx,
 			clock: cluster.clock,
@@ -72,6 +86,7 @@ export class Server {
 				network: this.network,
 				clock: cluster.clock,
 				nodeIPs: this.ipAddresses,
+				node: this.node,
 			},
 			this.name,
 			this.name,

@@ -170,20 +170,7 @@ export class Cluster {
 
 		// Create Nodes for the initial servers.
 		for (const server of this.servers) {
-			await this.api.corev1.createNode({
-				body: {
-					metadata: { name: server.name },
-					spec: {
-						podCIDR: server.podCIDR,
-					},
-					status: {
-						addresses: [
-							...server.ipAddresses.map((address) => ({ type: "InternalIP", address })),
-							{ type: "Hostname", address: server.name },
-						],
-					},
-				},
-			});
+			await this.api.corev1.createNode({ body: server.node });
 		}
 
 		for (const server of this.servers) {

@@ -1,6 +1,7 @@
 import type {
 	V1Container,
 	V1ContainerStatus,
+	V1Node,
 	V1NodeAddress,
 	V1Pod,
 	V1PodStatus,
@@ -138,6 +139,9 @@ export interface KubeletDependencies {
 	podListWatchClient: PodListWatchClient | undefined;
 	serviceLister?: ServiceLister;
 	serviceHasSynced?: () => boolean;
+	node: V1Node;
+	nodeLister?: NodeLister;
+	nodeHasSynced?: () => boolean;
 	recorder: EventRecorder;
 	podStartupLatencyTracker: PodStartupSLIObserver;
 	remoteRuntimeService?: RuntimeService;
@@ -202,7 +206,7 @@ export function newMainKubelet(
 			kubeCfg,
 			kubeDeps,
 			nodeName,
-			() => true,
+			kubeDeps.nodeHasSynced ?? (() => true),
 			kubeDeps.clock,
 		);
 		if (podConfigErr) {
@@ -218,6 +222,33 @@ export interface ServiceLister {
 	list(): Promise<[services: V1Service[], err: Error | undefined]>;
 }
 
+// Models kubernetes/pkg/kubelet/kubelet.go nodeLister.
+export interface NodeLister {
+	get(name: string): Promise<[node: V1Node | undefined, err: Error | undefined]>;
+	list(): Promise<[nodes: V1Node[], err: Error | undefined]>;
+}
+
+function newAPINodeLister(kubeClient: KubeClient): NodeLister {
+	return {
+		async get(name) {
+			try {
+				const node = await kubeClient.corev1.readNode({ name });
+				return [node, undefined];
+			} catch (error) {
+				return [undefined, error instanceof Error ? error : new Error(String(error))];
+			}
+		},
+		async list() {
+			try {
+				const nodes = await kubeClient.corev1.listNode();
+				return [nodes.items, undefined];
+			} catch (error) {
+				return [[], error instanceof Error ? error : new Error(String(error))];
+			}
+		},
+	};
+}
+
 // Models kubernetes/pkg/kubelet/kubelet.go Kubelet.
 export class Kubelet implements RuntimeHelper {
 	private readonly hostname: string;
@@ -230,6 +261,11 @@ export class Kubelet implements RuntimeHelper {
 	serviceLister: ServiceLister | undefined;
 	// Package-visible for upstream-parity tests that mirror kubelet_pods_test.go.
 	serviceHasSynced: () => boolean;
+	// Package-visible for upstream-parity tests that mirror kubelet_getters.go.
+	nodeLister: NodeLister;
+	// Package-visible for upstream-parity tests that mirror kubelet.go.
+	nodeHasSynced: () => boolean;
+	cachedNode: V1Node | undefined;
 	private readonly podConfig: PodConfig;
 	// Package-visible for upstream-parity tests that mirror kubelet_test.go.
 	sourcesReady: SourcesReady;
@@ -313,9 +349,12 @@ export class Kubelet implements RuntimeHelper {
 				},
 			} satisfies ServiceLister);
 		this.serviceHasSynced = kubeDeps.serviceHasSynced ?? (() => true);
-		this.podConfig = kubeDeps.podConfig;
 		this.nodeIPs = kubeDeps.nodeIPs ? [...kubeDeps.nodeIPs] : ["127.0.0.1", "::1"];
-		this.nodeAddresses = undefined;
+		this.cachedNode = kubeDeps.node;
+		this.nodeLister = kubeDeps.nodeLister ?? newAPINodeLister(this.kubeClient);
+		this.nodeHasSynced = kubeDeps.nodeHasSynced ?? (() => true);
+		this.podConfig = kubeDeps.podConfig;
+		this.nodeAddresses = this.cachedNode.status?.addresses;
 		this.sourcesReady = newSourcesReady(this.podConfig.seenAllSources.bind(this.podConfig));
 		this.clock = kubeDeps.clock;
 		this.runtimeState = newRuntimeState(maxWaitForContainerRuntimeMs, this.clock);
@@ -1885,19 +1924,32 @@ export class Kubelet implements RuntimeHelper {
 		return status;
 	}
 
+	// Models kubernetes/pkg/kubelet/kubelet_getters.go GetNode.
+	getNode(ctx: context.Context): Promise<[node: V1Node | undefined, err: Error | undefined]> {
+		const err = ctx.err();
+		if (err) {
+			return Promise.resolve([undefined, err]);
+		}
+		return this.nodeLister.get(this.nodeName);
+	}
+
 	// Models kubernetes/pkg/kubelet/kubelet_getters.go getHostIPsAnyWay.
 	private getHostIPsAnyWay(ctx: context.Context): [hostIPs: string[], err: Error | undefined] {
 		const err = ctx.err();
 		if (err) {
 			return [[], err];
 		}
-		const addresses =
-			this.nodeAddresses ??
-			this.nodeIPs.map((address) => ({
-				type: "InternalIP",
-				address,
-			}));
-		return getNodeHostIPs({ status: { addresses } });
+		if (this.nodeAddresses) {
+			return getNodeHostIPs({ status: { addresses: this.nodeAddresses } });
+		}
+		return getNodeHostIPs({
+			status: {
+				addresses: this.nodeIPs.map((address) => ({
+					type: "InternalIP",
+					address,
+				})),
+			},
+		});
 	}
 
 	// Models kubernetes/pkg/kubelet/kubelet_pods.go sortPodIPs.

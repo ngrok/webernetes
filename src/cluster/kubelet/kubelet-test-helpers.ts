@@ -1,4 +1,4 @@
-import type { V1Pod, V1PodSpec } from "../../client";
+import type { V1Node, V1Pod, V1PodSpec } from "../../client";
 import { KubeConfig } from "../../client";
 import { Clock } from "../../clock";
 import * as context from "../../go/context";
@@ -417,6 +417,19 @@ export function newTestKubeletWithImageList(
 		component: "kubelet",
 		host: testKubeletHostname,
 	});
+	const node: V1Node = {
+		metadata: {
+			name: testKubeletHostname,
+			uid: testKubeletHostname,
+		},
+		status: {
+			addresses: [
+				{ type: "InternalIP", address: "127.0.0.1" },
+				{ type: "InternalIP", address: "::1" },
+				{ type: "Hostname", address: testKubeletHostname },
+			],
+		},
+	};
 	const kubeletConfiguration: KubeletConfiguration = {
 		syncFrequencyMs: 60 * 1000,
 		clusterDNS: ["10.96.0.10"],
@@ -438,6 +451,7 @@ export function newTestKubeletWithImageList(
 			network,
 			clock: fakeClock,
 			podConfig: newPodConfig(recorder, podStartupLatencyTracker, fakeClock),
+			node,
 		},
 		testKubeletHostname,
 		testKubeletHostname,
