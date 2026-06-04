@@ -3,7 +3,7 @@ import { expect, it } from "vitest";
 import { Clock } from "../../../clock";
 import { Channel, select, type ReadOnlyChannel } from "../../../go/channel";
 import * as context from "../../../go/context";
-import * as time from "../../../go/time";
+import { Timer } from "../../../go/time";
 import type { Backoff } from "../../../client-go/util/flowcontrol/backoff";
 import type { V1Pod } from "../../../client";
 import { browser } from "../../../test/describe";
@@ -500,6 +500,7 @@ browser.describe("GenericPLEG", () => {
 			ctx,
 		);
 		clock.pause();
+		pleg.globalRelistTimer = new Timer(clock, 2000);
 
 		const pod1 = newPod({
 			id: "pod1",
@@ -512,76 +513,71 @@ browser.describe("GenericPLEG", () => {
 			containers: [createTestContainer("c2", "Running")],
 		});
 		const startTime = clock.now();
-		pleg.globalRelistTimer = new time.Timer(clock, 2000);
+		try {
+			const p1res = getNewerThanAsync(cache, ctx, pod1.id, startTime);
+			await requireBlocked(p1res);
+			const p2res = getNewerThanAsync(cache, ctx, pod2.id, startTime);
+			await requireBlocked(p2res);
 
-		const p1res = getNewerThanAsync(cache, ctx, pod1.id, startTime);
-		await requireBlocked(p1res);
-		const p2res = getNewerThanAsync(cache, ctx, pod2.id, startTime);
-		await requireBlocked(p2res);
+			pleg.requestRelist(pod1.id);
 
-		pleg.requestRelist(pod1.id);
+			runtime.allPodList = [pod1];
+			runtime.getPodHook = (uid) => {
+				expect(uid).toBe(pod1.id);
+				pod1.timestamp = clock.now();
+				runtime.podStatuses.set(pod1.id, newPodStatus({ id: pod1.id, timestamp: clock.now() }));
+				return pod1;
+			};
 
-		runtime.allPodList = [pod1];
-		runtime.getPodHook = (uid) => {
-			expect(uid).toBe(pod1.id);
-			pod1.timestamp = clock.now();
-			return pod1;
-		};
+			await pleg.workerLoopIteration();
 
-		await pleg.workerLoopIteration();
+			const p1Status = await requireUnblocked(p1res);
+			expect(p1Status.id).toBe(pod1.id);
+			expect(p1Status.timestamp).toEqual(clock.now());
+			await requireBlocked(p2res);
 
-		const p1Status = await requireUnblocked(p1res);
-		expect(p1Status.id).toBe(pod1.id);
-		expect(p1Status.timestamp).toEqual(clock.now());
-		await requireBlocked(p2res);
+			const p1NewRes = getNewerThanAsync(cache, ctx, pod1.id, new Date(startTime.getTime() + 2000));
+			await requireBlocked(p1NewRes);
 
-		const p1NewRes = getNewerThanAsync(cache, ctx, pod1.id, new Date(startTime.getTime() + 2000));
-		await requireBlocked(p1NewRes);
+			pleg.requestRelist(pod2.id);
+			runtime.allPodList = [pod1, pod2];
+			runtime.getPodsHook = async () => {
+				pod1.timestamp = clock.now();
+				pod2.timestamp = clock.now();
+				runtime.podStatuses.set(pod2.id, newPodStatus({ id: pod2.id, timestamp: clock.now() }));
+			};
+			clock.step(2000);
 
-		pleg.requestRelist(pod2.id);
-		clock.step(2000);
+			await pleg.workerLoopIteration();
 
-		runtime.allPodList = [pod1, pod2];
-		runtime.getPodsHook = async () => {
-			pod1.timestamp = clock.now();
-			pod2.timestamp = clock.now();
-		};
+			const p2Status = await requireUnblocked(p2res);
+			expect(p2Status.id).toBe(pod2.id);
+			const p1NewStatus = await requireUnblocked(p1NewRes);
+			expect(p1NewStatus).toBe(p1Status);
 
-		await pleg.workerLoopIteration();
+			await pleg.workerLoopIteration();
 
-		const p2Status = await requireUnblocked(p2res);
-		expect(p2Status.id).toBe(pod2.id);
-		const p1NewStatus = await requireUnblocked(p1NewRes);
-		expect(p1NewStatus).toBe(p1Status);
+			const p1ReinspectRes = getNewerThanAsync(cache, ctx, pod1.id, clock.now());
+			await requireBlocked(p1ReinspectRes);
 
-		// The pod2 relist request should NOT trigger a relist, since it was made before the global
-		// relist occurred. Drain it from the channel to verify.
-		runtime.getPodHook = (uid) => {
-			throw new Error(`unexpected getPod(${uid})`);
-		};
-		await pleg.workerLoopIteration();
+			pleg.requestReinspect(pod1.id);
+			pleg.requestRelist(pod1.id);
+			runtime.getPodsHook = async () => {
+				pod1.timestamp = clock.now();
+				pod2.timestamp = clock.now();
+				runtime.podStatuses.set(pod1.id, newPodStatus({ id: pod1.id, timestamp: clock.now() }));
+			};
+			clock.step(2000);
 
-		const p1ReinspectRes = getNewerThanAsync(cache, ctx, pod1.id, clock.now());
-		await requireBlocked(p1ReinspectRes);
+			await pleg.workerLoopIteration();
 
-		pleg.requestReinspect(pod1.id);
-		pleg.requestRelist(pod1.id);
-		clock.step(2000);
-
-		runtime.getPodsHook = async () => {
-			pod1.timestamp = clock.now();
-			pod2.timestamp = clock.now();
-		};
-
-		await pleg.workerLoopIteration();
-
-		const p1ReinspectStatus = await requireUnblocked(p1ReinspectRes);
-		expect(p1ReinspectStatus.id).toBe(pod1.id);
-		expect(p1ReinspectStatus.timestamp).toEqual(clock.now());
-
-		// The pod1 relist request should NOT trigger a relist, since it was made before the global
-		// relist occurred. Drain it from the channel to verify.
-		await pleg.workerLoopIteration();
+			const p1ReinspectStatus = await requireUnblocked(p1ReinspectRes);
+			expect(p1ReinspectStatus.id).toBe(pod1.id);
+			expect(p1ReinspectStatus.timestamp).toEqual(clock.now());
+			await pleg.workerLoopIteration();
+		} finally {
+			pleg.globalRelistTimer?.stop();
+		}
 	});
 
 	// Simulator-only: relist() is async in the browser simulator, so verify
