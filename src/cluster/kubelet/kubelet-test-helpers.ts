@@ -26,7 +26,7 @@ import {
 } from "./container/testing";
 import type { KubeletConfiguration } from "./apis/config";
 import { newPodConfig } from "./config";
-import { newMainKubelet, NoopPodStartupSLIObserver, type Kubelet } from "./kubelet";
+import { Kubelet, NoopPodStartupSLIObserver } from "./kubelet";
 import {
 	PodWorkersImpl,
 	type PodWorkers,
@@ -437,7 +437,7 @@ export function newTestKubeletWithImageList(
 		maxParallelImagePulls: undefined,
 		clusterDomain: "cluster.local",
 	};
-	const kubelet = newMainKubelet(
+	const kubelet = new Kubelet(
 		tCtx,
 		kubeletConfiguration,
 		{
@@ -445,9 +445,6 @@ export function newTestKubeletWithImageList(
 			podListWatchClient: undefined,
 			recorder,
 			podStartupLatencyTracker,
-			containerRuntime: fakeRuntime,
-			runtimeCache: newFakeRuntimeCache(fakeRuntime),
-			commandRunner,
 			network,
 			clock: fakeClock,
 			podConfig: newPodConfig(recorder, podStartupLatencyTracker, fakeClock),
@@ -455,6 +452,11 @@ export function newTestKubeletWithImageList(
 		},
 		testKubeletHostname,
 		testKubeletHostname,
+		{
+			containerRuntime: fakeRuntime,
+			runtimeCache: newFakeRuntimeCache(fakeRuntime),
+			commandRunner,
+		},
 	);
 	kubelet.probeManager = new FakeManager();
 	const fakePodWorkers = new FakePodWorkers(kubelet.podCache, kubelet.syncPod.bind(kubelet));

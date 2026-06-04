@@ -10,6 +10,12 @@ import { browser } from "../../../test/describe";
 import type {
 	ContainerConfig,
 	ContainerStatus as CRIContainerStatus,
+	Image as CRIImage,
+	ImageFilter,
+	ImageFsInfoResponse,
+	ImageSpec as CRIImageSpec,
+	ImageStatusResponse,
+	ImageManagerService,
 	PodSandboxConfig,
 	PodSandboxStatus,
 	RuntimeService,
@@ -41,13 +47,10 @@ import {
 } from "../container";
 import type { InternalContainerLifecycle } from "../cm";
 import { ResultsManager } from "../prober/results";
-import {
-	KubeGenericRuntimeManager,
-	type KubeGenericRuntimeManagerOptions,
-	type PodActions,
-} from "./kuberuntime-manager";
+import { KubeGenericRuntimeManager, type PodActions } from "./kuberuntime-manager";
 import { getBackoffKey } from "./helpers";
 import { newContainerAnnotations, newContainerLabels } from "./labels";
+import { ClusterNetwork } from "../../cni";
 
 // Models kubernetes/pkg/kubelet/kuberuntime/kuberuntime_container_linux_test.go makeExpectedConfig.
 async function makeExpectedConfig(
@@ -1685,9 +1688,8 @@ function createTestRuntimeManager(ctx: context.Context): TestRuntimeManagerFixtu
 	const manager = new KubeGenericRuntimeManager({
 		ctx,
 		runtimeService: fakeRuntime,
-		imageService: {} as KubeGenericRuntimeManagerOptions["imageService"],
+		imageService: fakeImage,
 		runtimeHelper: new TestRuntimeHelper(fakeRuntime),
-		imagePuller: fakeImage,
 		events: {
 			event: async () => undefined,
 			eventf: async () => undefined,
@@ -1695,26 +1697,49 @@ function createTestRuntimeManager(ctx: context.Context): TestRuntimeManagerFixtu
 		},
 		internalLifecycle: testInternalLifecycle(),
 		livenessManager,
-		runner: {
-			run: async () => ["", undefined],
-		} as KubeGenericRuntimeManagerOptions["runner"],
+		network: new ClusterNetwork(),
 		startupManager,
 		clock,
 	});
 	return [fakeRuntime, fakeImage, manager, undefined, clock, livenessManager, startupManager];
 }
 
-class TestImageService {
+class TestImageService implements ImageManagerService {
 	images: string[] = [];
 
-	async ensureImageExists(
+	async imageStatus(
 		_ctx: context.Context,
-		_objRef: unknown,
-		_pod: V1Pod,
-		requestedImage: string,
-	): Promise<[string, string, undefined]> {
-		this.images.push(requestedImage);
-		return [requestedImage, "", undefined];
+		_image: CRIImageSpec,
+		_verbose?: boolean,
+	): Promise<[response: ImageStatusResponse | undefined, err: Error | undefined]> {
+		return [{ image: undefined }, undefined];
+	}
+
+	async pullImage(
+		_ctx: context.Context,
+		image: CRIImageSpec,
+		_credentials: unknown[],
+		_podSandboxConfig?: PodSandboxConfig,
+	): Promise<[imageRef: string, err: Error | undefined]> {
+		this.images.push(image.image);
+		return [image.image, undefined];
+	}
+
+	async listImages(
+		_ctx: context.Context,
+		_filter?: ImageFilter,
+	): Promise<[images: CRIImage[], err: Error | undefined]> {
+		return [[], undefined];
+	}
+
+	async removeImage(_ctx: context.Context, _image: CRIImageSpec): Promise<Error | undefined> {
+		return undefined;
+	}
+
+	async imageFsInfo(
+		_ctx: context.Context,
+	): Promise<[response: ImageFsInfoResponse, err: Error | undefined]> {
+		return [{ imageFilesystems: [], containerFilesystems: [] }, undefined];
 	}
 }
 

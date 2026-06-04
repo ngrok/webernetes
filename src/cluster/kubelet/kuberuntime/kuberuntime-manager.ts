@@ -1,6 +1,7 @@
 import type { V1Container, V1Pod } from "../../../client";
 import type { Clock } from "../../../clock";
 import type { Backoff } from "../../../client-go/util/flowcontrol/backoff";
+import { newBackOff } from "../../../client-go/util/flowcontrol/backoff";
 import { KeyFnMap } from "../../../collections";
 import { Channel, select } from "../../../go/channel";
 import * as context from "../../../go/context";
@@ -58,13 +59,16 @@ import {
 	type SyncResult,
 	type SwapBehavior,
 	type Version,
+	type HandlerRunner,
 } from "../container";
 import type { EventRecorder } from "../../../client-go/tools/record/event";
-import type { ImageManager } from "../images";
+import { KubeletImageManager, type ImageManager } from "../images";
 import type { ResultsManager } from "../prober/results";
 import type { InternalContainerLifecycle } from "../cm";
-import type { HandlerRunner } from "../container";
+import { newFakeInternalContainerLifecycle } from "../cm";
 import { failedCreatePodSandBox, failedStatusPodSandBox, sandboxChanged } from "../events";
+import { newHandlerRunner } from "../lifecycle";
+import type { ClusterNetwork } from "../../cni";
 import * as format from "../util/format";
 import { getNodenameForKernel, podSandboxChanged } from "./util/util";
 import {
@@ -123,17 +127,22 @@ const errPreStartHook = new Error("PreStartHookError");
 const errPostStartHook = new Error("PostStartHookError");
 // Models kubernetes/pkg/kubelet/container/sync_result.go ErrRunContainer.
 const errRunContainer = new Error("RunContainerError");
+// Models kubernetes/pkg/kubelet/kubelet.go MaxImageBackOff.
+const maxImageBackOffMs = 300 * 1000;
+// Models kubernetes/pkg/kubelet/kubelet.go imageBackOffPeriod.
+const imageBackOffPeriodMs = 10 * 1000;
 
 export interface KubeGenericRuntimeManagerOptions {
 	ctx: context.Context;
 	runtimeService: RuntimeService;
 	imageService: ImageManagerService;
 	runtimeHelper: RuntimeHelper;
-	imagePuller: ImageManager;
 	events: EventRecorder;
-	internalLifecycle: InternalContainerLifecycle;
+	internalLifecycle?: InternalContainerLifecycle;
 	livenessManager: ResultsManager;
-	runner?: HandlerRunner;
+	imageBackOff?: Backoff;
+	maxParallelImagePulls?: number;
+	network: ClusterNetwork;
 	startupManager: ResultsManager;
 	clock: Clock;
 }
@@ -148,7 +157,7 @@ export class KubeGenericRuntimeManager implements Runtime, CommandRunner {
 	private readonly events: EventRecorder;
 	private readonly internalLifecycle: InternalContainerLifecycle;
 	private readonly livenessManager: ResultsManager;
-	private runner: HandlerRunner | undefined;
+	private readonly runner: HandlerRunner;
 	private readonly startupManager: ResultsManager;
 	private readonly clock: Clock;
 
@@ -157,24 +166,30 @@ export class KubeGenericRuntimeManager implements Runtime, CommandRunner {
 		this.runtimeService = options.runtimeService;
 		this.imageService = options.imageService;
 		this.runtimeHelper = options.runtimeHelper;
-		this.imagePuller = options.imagePuller;
 		this.events = options.events;
-		this.internalLifecycle = options.internalLifecycle;
+		this.internalLifecycle = options.internalLifecycle ?? newFakeInternalContainerLifecycle();
 		this.livenessManager = options.livenessManager;
-		this.runner = options.runner;
 		this.startupManager = options.startupManager;
 		this.clock = options.clock;
-	}
-
-	setHandlerRunner(runner: HandlerRunner): void {
-		this.runner = runner;
-	}
-
-	private handlerRunner(): HandlerRunner {
-		if (!this.runner) {
-			throw new Error("handler runner is not configured");
-		}
-		return this.runner;
+		this.imagePuller = new KubeletImageManager({
+			recorder: this.events,
+			imageService: this,
+			clock: this.clock,
+			imageBackOff:
+				options.imageBackOff ?? newBackOff(imageBackOffPeriodMs, maxImageBackOffMs, this.clock),
+			maxParallelImagePulls: options.maxParallelImagePulls,
+			podPullingTimeRecorder: {
+				recordImageStartedPulling(_podUID: string): void {},
+				recordImageFinishedPulling(_podUID: string): void {},
+			},
+		});
+		this.runner = newHandlerRunner({
+			clock: this.clock,
+			commandRunner: this,
+			containerManager: this,
+			eventRecorder: this.events,
+			network: options.network,
+		});
 	}
 
 	// Models kubernetes/pkg/kubelet/kuberuntime/kuberuntime_manager.go kubeGenericRuntimeManager.Type.
@@ -1458,7 +1473,7 @@ export class KubeGenericRuntimeManager implements Runtime, CommandRunner {
 
 			if (container.lifecycle?.postStart) {
 				const kubeContainerID = buildContainerID("simulator", containerID);
-				const [msg, handlerErr] = await this.handlerRunner().run(
+				const [msg, handlerErr] = await this.runner.run(
 					ctx,
 					kubeContainerID,
 					pod,
@@ -1503,7 +1518,7 @@ export class KubeGenericRuntimeManager implements Runtime, CommandRunner {
 		void (async () => {
 			let err: Error | undefined;
 			try {
-				[, err] = await this.handlerRunner().run(ctx, containerID, pod, containerSpec, preStop);
+				[, err] = await this.runner.run(ctx, containerID, pod, containerSpec, preStop);
 			} catch (error) {
 				err = error instanceof Error ? error : new Error(String(error));
 			}
