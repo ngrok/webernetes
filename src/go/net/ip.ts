@@ -13,6 +13,53 @@ export function parseIP(value: string): number[] | undefined {
 	return undefined;
 }
 
+// Models go stdlib IP.String.
+export function formatIP(ip: number[]): string {
+	if (isIPv4(ip)) {
+		return `${ip[12]}.${ip[13]}.${ip[14]}.${ip[15]}`;
+	}
+
+	const groups: number[] = [];
+	for (let i = 0; i < ip.length; i += 2) {
+		groups.push((ip[i] << 8) | ip[i + 1]);
+	}
+
+	let bestStart = -1;
+	let bestLength = 0;
+	for (let i = 0; i < groups.length; ) {
+		if (groups[i] !== 0) {
+			i++;
+			continue;
+		}
+		let j = i;
+		while (j < groups.length && groups[j] === 0) {
+			j++;
+		}
+		if (j - i > bestLength && j - i >= 2) {
+			bestStart = i;
+			bestLength = j - i;
+		}
+		i = j;
+	}
+
+	if (bestStart < 0) {
+		return groups.map((group) => group.toString(16)).join(":");
+	}
+
+	const before = groups.slice(0, bestStart).map((group) => group.toString(16));
+	const after = groups.slice(bestStart + bestLength).map((group) => group.toString(16));
+	if (before.length === 0 && after.length === 0) {
+		return "::";
+	}
+	if (before.length === 0) {
+		return `::${after.join(":")}`;
+	}
+	if (after.length === 0) {
+		return `${before.join(":")}::`;
+	}
+	return `${before.join(":")}::${after.join(":")}`;
+}
+
 function parseIPv4Sloppy(value: string): number[] | undefined {
 	const parts = value.split(".");
 	if (parts.length !== 4) {
@@ -31,6 +78,18 @@ function parseIPv4Sloppy(value: string): number[] | undefined {
 		octets.push(octet);
 	}
 	return ipv4(octets[0], octets[1], octets[2], octets[3]);
+}
+
+function isIPv4(ip: number[] | undefined): boolean {
+	if (!ip || ip.length !== 16) {
+		return false;
+	}
+	for (let i = 0; i < 10; i++) {
+		if (ip[i] !== 0) {
+			return false;
+		}
+	}
+	return ip[10] === 0xff && ip[11] === 0xff;
 }
 
 function parseIPv6Sloppy(value: string): number[] | undefined {
