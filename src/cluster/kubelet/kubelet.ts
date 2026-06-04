@@ -10,6 +10,7 @@ import type {
 import { Channel, select, type ReadOnlyChannel } from "../../go/channel";
 import * as context from "../../go/context";
 import { formatIP } from "../../go/net";
+import { Mutex } from "../../go/sync/mutex";
 import * as time from "../../go/time";
 import * as expansion from "../../third_party/forked/golang/expansion";
 import type { Backoff } from "../../client-go/util/flowcontrol/backoff";
@@ -24,7 +25,9 @@ import {
 	convertPodStatusToRunningPod,
 	isHostNetworkPod,
 	newRuntimeCache,
+	networkReady,
 	PodStatusCache,
+	runtimeReady,
 	shouldAllContainersRestart,
 	toAPIPod,
 } from "./container";
@@ -114,6 +117,8 @@ const backOffPeriodMs = 10 * 1000;
 const imageBackOffPeriodMs = 10 * 1000;
 // Models kubernetes/pkg/kubelet/kubelet.go syncLoop's one-second syncTicker.
 const syncTickerPeriodMs = 1000;
+// Models kubernetes/pkg/kubelet/kubelet.go Run's updateRuntimeUp interval.
+const runtimeStatusUpdatePeriodMs = 5 * 1000;
 // Models kubernetes/pkg/kubelet/kubelet.go syncLoop runtime readiness backoff base.
 const syncLoopRuntimeBackoffBaseMs = 100;
 // Models kubernetes/pkg/kubelet/kubelet.go syncLoop runtime readiness backoff max.
@@ -300,6 +305,8 @@ export class Kubelet implements RuntimeHelper {
 	private readonly cancelContext: context.CancelFunc;
 	private syncLoopPromise: Promise<void> | undefined;
 	private statusManagerPromise: Promise<void> | undefined;
+	private runtimeStatusUpdaterPromise: Promise<void> | undefined;
+	private readonly updateRuntimeMux = new Mutex();
 	private closePromise: Promise<void> | undefined;
 	private syncLoopExited = false;
 	private stopped = false;
@@ -374,9 +381,6 @@ export class Kubelet implements RuntimeHelper {
 			resolverConfig: "",
 		});
 		this.runtimeState = newRuntimeState(maxWaitForContainerRuntimeMs, this.clock);
-		// Simulator placeholder for the upstream runtime status updater, which is not
-		// currently modeled as a separate loop.
-		this.runtimeState.setRuntimeSync(this.clock.now());
 		[this.ctx, this.cancelContext] = context.withCancel(ctx);
 		this.runtimeService = kubeDeps.remoteRuntimeService;
 		this.imageService = kubeDeps.remoteImageService;
@@ -454,6 +458,12 @@ export class Kubelet implements RuntimeHelper {
 			this.clock,
 			this.ctx,
 		);
+		if (!testRuntimeDeps) {
+			this.runtimeState.addHealthCheck("PLEG", () => {
+				const health = this.pleg.healthy();
+				return [health.ok, health.error];
+			});
+		}
 		this.podWorkers = new PodWorkersImpl(
 			this.clock,
 			this.workQueue,
@@ -505,6 +515,8 @@ export class Kubelet implements RuntimeHelper {
 	// Models kubernetes/pkg/kubelet/kubelet.go Run.
 	async run(): Promise<void> {
 		this.statusManagerPromise = this.statusManager.start(this.ctx);
+		await this.updateRuntimeUp(this.ctx);
+		this.runtimeStatusUpdaterPromise = this.runRuntimeStatusUpdater(this.ctx);
 		this.pleg.start();
 		this.syncLoopPromise = this.syncLoop(this.ctx, this.podConfig.updates());
 	}
@@ -521,10 +533,62 @@ export class Kubelet implements RuntimeHelper {
 				}
 				await this.podWorkers.close();
 				await this.syncLoopPromise;
+				await this.runtimeStatusUpdaterPromise;
 				await this.statusManagerPromise;
 			})();
 		}
 		return this.closePromise;
+	}
+
+	private async runRuntimeStatusUpdater(ctx: context.Context): Promise<void> {
+		const ticker = new time.Ticker(this.clock, runtimeStatusUpdatePeriodMs);
+		try {
+			for (;;) {
+				const selected = await select()
+					.case(ctx.done(), () => "done" as const)
+					.case(ticker.C, async () => {
+						await this.updateRuntimeUp(ctx);
+						return "tick" as const;
+					});
+				if (selected === "done") {
+					return;
+				}
+			}
+		} finally {
+			ticker.stop();
+		}
+	}
+
+	// Models kubernetes/pkg/kubelet/kubelet.go updateRuntimeUp.
+	async updateRuntimeUp(ctx: context.Context): Promise<void> {
+		await this.updateRuntimeMux.withLock(async () => {
+			const [status, statusErr] = await this.containerRuntime.status(ctx);
+			if (statusErr || !status) {
+				return;
+			}
+
+			const networkReadyCondition = status.getRuntimeCondition(networkReady);
+			if (!networkReadyCondition?.status) {
+				this.runtimeState.setNetworkState(
+					new Error(`container runtime network not ready: ${String(networkReadyCondition)}`),
+				);
+			} else {
+				this.runtimeState.setNetworkState(undefined);
+			}
+
+			const runtimeReadyCondition = status.getRuntimeCondition(runtimeReady);
+			if (!runtimeReadyCondition?.status) {
+				this.runtimeState.setRuntimeState(
+					new Error(`container runtime not ready: ${String(runtimeReadyCondition)}`),
+				);
+				return;
+			}
+
+			this.runtimeState.setRuntimeState(undefined);
+			this.runtimeState.setRuntimeHandlers(status.handlers);
+			this.runtimeState.setRuntimeFeatures(status.features);
+			this.runtimeState.setRuntimeSync(this.clock.now());
+		});
 	}
 
 	isSyncLoopExited(): boolean {
