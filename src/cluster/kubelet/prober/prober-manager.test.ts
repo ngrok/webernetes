@@ -14,11 +14,11 @@ import { Clock } from "../../../clock";
 import { Channel, select } from "../../../go/channel";
 import * as context from "../../../go/context";
 import { browser } from "../../../test/describe";
-import type { ExecProbe, ProbeResult } from "../../probe";
+import type { ExecCmd, ExecProbe, ProbeResult } from "../../probe";
 import { ClusterNetwork } from "../../cni";
 import { Etcd } from "../../etcd";
 import { KubeClient } from "../../cluster";
-import { buildContainerID, type ContainerID, newContainerID, parseContainerID } from "../container";
+import { buildContainerID, newContainerID, parseContainerID } from "../container";
 import { PodManager } from "../pod";
 import { StatusManager } from "../status";
 import { ProbeWorker } from "./worker";
@@ -57,6 +57,7 @@ function newTestManager(): ProbeManagerImpl {
 		podManager,
 	});
 	return new ProbeManagerImpl(
+		context.background(),
 		statusManager,
 		new ResultsManager(),
 		new ResultsManager(),
@@ -80,13 +81,7 @@ class SyncExecProber implements ExecProbe {
 		this.err = err;
 	}
 
-	async probe(
-		_ctx: context.Context,
-		_containerId: ContainerID,
-		_container: V1Container,
-		_action: NonNullable<V1Probe["exec"]>,
-		_timeoutMs: number,
-	): Promise<[ProbeResult, string, Error | undefined]> {
+	async probe(_e: ExecCmd): Promise<[ProbeResult, string, Error | undefined]> {
 		return [this.result, "", this.err];
 	}
 }

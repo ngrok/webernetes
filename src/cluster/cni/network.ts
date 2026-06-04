@@ -2,6 +2,8 @@ import { CIDR, ipToNumber } from "../../net";
 import { type DnsHandler, DnsListener, type DnsRequest, type DnsResponse } from "./dns";
 import { NetworkError } from "./error";
 import { type HttpHandler, HttpListener, type HttpRequest, type HttpResponse } from "./http";
+import { Channel, select } from "../../go/channel";
+import * as context from "../../go/context";
 import type { ServiceEndpoint, ServiceInstance, ServicePort } from "./service";
 import type { PodSandboxInstance } from "../cri/runtime";
 
@@ -179,7 +181,7 @@ export class ClusterNetwork {
 		this.targetListsByServicePort.set(key, targetList);
 	}
 
-	async fetch(target: string, init: HttpRequest = {}): Promise<HttpResponse> {
+	async fetch(ctx: context.Context, target: string, init: HttpRequest = {}): Promise<HttpResponse> {
 		const url = this.parseHttpTarget(target);
 		if (!isIpLiteral(url.hostname)) {
 			throw new NetworkError(`network fetch target ${url.hostname} must be an IP address`);
@@ -188,7 +190,7 @@ export class ClusterNetwork {
 		const service = this.servicesByClusterIp.get(url.hostname);
 		const port = this.parseTargetPort(url, service);
 		const endpoint = this.routeEndpoint({ ip: url.hostname, port });
-		return await this.dispatchHttp(endpoint.ip, endpoint.port, url, init);
+		return await this.dispatchHttp(ctx, endpoint.ip, endpoint.port, url, init);
 	}
 
 	canConnect(host: string, port: number): boolean {
@@ -196,11 +198,15 @@ export class ClusterNetwork {
 		return this.httpListeners.has(listenerKey(endpoint.ip, endpoint.port));
 	}
 
-	async fetchNodePort(nodePort: number, init: HttpRequest = {}): Promise<HttpResponse> {
+	async fetchNodePort(
+		ctx: context.Context,
+		nodePort: number,
+		init: HttpRequest = {},
+	): Promise<HttpResponse> {
 		const route = this.servicesByNodePort.get(nodePort);
 		if (route) {
 			const endpoint = this.selectEndpoint(route.service, route.port);
-			return await this.dispatchHttp(endpoint.ip, endpoint.port, undefined, init);
+			return await this.dispatchHttp(ctx, endpoint.ip, endpoint.port, undefined, init);
 		}
 		throw new NetworkError(`no Service for NodePort ${nodePort}`);
 	}
@@ -301,6 +307,7 @@ export class ClusterNetwork {
 	}
 
 	private async dispatchHttp(
+		ctx: context.Context,
 		ip: string,
 		port: number,
 		url: URL | undefined,
@@ -311,13 +318,32 @@ export class ClusterNetwork {
 			throw new NetworkError(`no HTTP listener on ${ip}:${port}`);
 		}
 		try {
-			return await handler({
+			const responseCh = new Channel<HttpResponse>(1);
+			void handler(ctx, {
 				method: init.method ?? "GET",
 				path: init.path ?? `${url?.pathname ?? "/"}${url?.search ?? ""}`,
 				headers: init.headers,
 				body: init.body,
-			});
+			}).then(
+				(response) => responseCh.trySend(response),
+				(error) => {
+					responseCh.trySend({
+						status: 500,
+						body: error instanceof Error ? error.message : "handler error",
+					});
+				},
+			);
+			const selected = await select()
+				.case(responseCh, ({ value }) => ({ type: "response" as const, response: value }))
+				.case(ctx.done(), () => ({ type: "canceled" as const }));
+			if (selected.type === "canceled") {
+				throw ctx.err() ?? new Error("context canceled");
+			}
+			return selected.response ?? { status: 500, body: "handler error" };
 		} catch (error) {
+			if (ctx.err() && error === ctx.err()) {
+				throw error;
+			}
 			return {
 				status: 500,
 				body: error instanceof Error ? error.message : "handler error",

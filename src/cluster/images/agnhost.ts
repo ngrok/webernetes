@@ -9,7 +9,7 @@ export class AgnhostImage extends BaseImage {
 			return await context.waitUntilKilled();
 		}
 		const port = parsePort(argv.slice(commandIndex + 1)) ?? 8080;
-		context.listenHttp(port, async (request) => {
+		context.listenHttp(port, async (_ctx, request) => {
 			const url = new URL(`http://localhost${request.path ?? "/"}`);
 			switch (url.pathname) {
 				case "/healthz":

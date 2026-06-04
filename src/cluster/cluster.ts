@@ -232,7 +232,7 @@ export class Cluster {
 	}
 
 	public async fetchNodePort(nodePort: number, request: HttpRequest = {}): Promise<HttpResponse> {
-		return await this.network.fetchNodePort(nodePort, request);
+		return await this.network.fetchNodePort(this.ctx, nodePort, request);
 	}
 
 	public async exec(

@@ -150,7 +150,7 @@ class LifecycleHandlerRunner implements HandlerRunner {
 			(httpGet.httpHeaders ?? []).map((header) => [header.name, header.value]),
 		);
 		try {
-			const response = await this.network.fetch(`http://${host}:${port}${path}`, { headers });
+			const response = await this.network.fetch(ctx, `http://${host}:${port}${path}`, { headers });
 			if (response.status < 200 || response.status >= 400) {
 				return new Error(`HTTP probe failed with statuscode: ${response.status}`);
 			}

@@ -41,6 +41,7 @@ export class ProbeManagerImpl implements ProbeManager {
 	readonly startedAt: Date;
 
 	constructor(
+		ctx: Context,
 		statusManager: StatusManager,
 		livenessManager: ResultsManager,
 		readinessManager: ResultsManager,
@@ -54,7 +55,7 @@ export class ProbeManagerImpl implements ProbeManager {
 		this.livenessManager = livenessManager;
 		this.readinessManager = readinessManager;
 		this.startupManager = startupManager;
-		this.prober = new Prober(runner, network, recorder);
+		this.prober = new Prober(ctx, runner, clock, network, recorder);
 		this.statusManager = statusManager;
 		this.startedAt = clock.now();
 	}

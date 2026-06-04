@@ -1,3 +1,5 @@
+import type * as context from "../../go/context";
+
 export interface HttpRequest {
 	method?: string;
 	path?: string;
@@ -11,7 +13,7 @@ export interface HttpResponse {
 	body?: string;
 }
 
-export type HttpHandler = (request: HttpRequest) => Promise<HttpResponse>;
+export type HttpHandler = (ctx: context.Context, request: HttpRequest) => Promise<HttpResponse>;
 
 export class HttpListener {
 	private closed = false;

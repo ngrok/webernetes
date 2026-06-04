@@ -1,9 +1,13 @@
 // oxlint-disable jest/no-conditional-expect
 import { expect, it } from "vitest";
 
+import { Clock } from "../../../clock";
+import * as context from "../../../go/context";
 import { browser } from "../../../test/describe";
+import { ClusterNetwork, type HttpHandler } from "../../cni";
+import { PodSandboxInstance } from "../../cri";
 import type { ProbeResult } from "../probe";
-import { doHTTPProbe, type GetHTTPInterface, type HTTPResponse } from "./http";
+import { doHTTPProbe, HTTPProber, type GetHTTPInterface, type HTTPResponse } from "./http";
 import {
 	formatURL,
 	headerGet,
@@ -42,7 +46,7 @@ class HandlerHTTPClient implements GetHTTPInterface {
 		private readonly followNonLocalRedirects = true,
 	) {}
 
-	async do(req: ProbeHTTPRequest): Promise<HTTPResponse> {
+	async do(_ctx: context.Context, req: ProbeHTTPRequest): Promise<HTTPResponse> {
 		let current = req;
 		for (let redirects = 0; ; redirects++) {
 			const res = await this.doOnce(current);
@@ -112,12 +116,78 @@ function request(path = "/", headers: HTTPHeader = {}): ProbeHTTPRequest {
 	return req;
 }
 
+function networkRequest(host: string, port: number, path = "/"): ProbeHTTPRequest {
+	const [req, err] = newProbeRequest(formatURL("http", host, port, path), {});
+	if (err || !req) {
+		throw err ?? new Error("request was not created");
+	}
+	return req;
+}
+
+function bindTestHTTP(network: ClusterNetwork, port: number, handler: HttpHandler): string {
+	const sandbox = new PodSandboxInstance(
+		"sandbox-id",
+		{
+			metadata: { uid: "pod-uid", name: "pod", namespace: "default", attempt: 0 },
+			dnsConfig: { servers: [], searches: [], options: [] },
+		},
+		0,
+	);
+	const registration = network.setupPodSandbox(sandbox, "10.0.0.0/24");
+	sandbox.setNetworkRegistration(registration);
+	registration.bindHttp(port, handler);
+	return registration.ip;
+}
+
 function handleReq(s: number, body: string): HTTPHandler {
 	return (w) => {
 		w.writeHeader(s);
 		w.write(body);
 	};
 }
+
+browser.describe("HTTPProber cancellation", () => {
+	it("cancels the request context when the probe times out", async () => {
+		const clock = new Clock();
+		clock.pause();
+		const network = new ClusterNetwork();
+		let handlerDone: Promise<unknown> | undefined;
+		const host = bindTestHTTP(network, 8080, async (ctx) => {
+			handlerDone = ctx.done().receive();
+			await handlerDone;
+			return { status: 200, body: "late" };
+		});
+		const prober = new HTTPProber(context.background(), clock, network);
+		const probePromise = prober.probe(networkRequest(host, 8080), 1000);
+
+		await Promise.resolve();
+		clock.step(1000);
+
+		await expect(probePromise).resolves.toEqual(["failure", "request timed out", undefined]);
+		await expect(handlerDone).resolves.toMatchObject({ ok: false });
+	});
+
+	it("cancels the request context when the parent context is canceled", async () => {
+		const clock = new Clock();
+		clock.pause();
+		const [parentCtx, cancel] = context.withCancel(context.background());
+		const network = new ClusterNetwork();
+		let handlerDone: Promise<unknown> | undefined;
+		const host = bindTestHTTP(network, 8080, async (ctx) => {
+			handlerDone = ctx.done().receive();
+			await handlerDone;
+			return { status: 200, body: "late" };
+		});
+		const prober = new HTTPProber(parentCtx, clock, network);
+		const probePromise = prober.probe(networkRequest(host, 8080), 10_000);
+
+		await Promise.resolve();
+		cancel();
+
+		await expect(probePromise).resolves.toEqual(["failure", "context canceled", undefined]);
+		await expect(handlerDone).resolves.toMatchObject({ ok: false });
+	});
+});
 
 // Models kubernetes/pkg/probe/http/http_test.go TestHTTPProbeChecker.
 browser.describe("TestHTTPProbeChecker", () => {
@@ -373,6 +443,7 @@ browser.describe("TestHTTPProbeChecker", () => {
 		for (const test of testCases) {
 			const req = request("/", test.reqHeaders);
 			const [health, output, err] = await doHTTPProbe(
+				context.background(),
 				req,
 				new HandlerHTTPClient(test.handler, followNonLocalRedirects),
 			);
@@ -458,12 +529,16 @@ browser.describe("TestHTTPProbeChecker_NonLocalRedirects", () => {
 		for (const test of Object.values(testCases)) {
 			let target = `/redirect?loc=${encodeURIComponent(test.redirect)}`;
 			let req = request(target);
-			let [result] = await doHTTPProbe(req, new HandlerHTTPClient(handler, false));
+			let [result] = await doHTTPProbe(
+				context.background(),
+				req,
+				new HandlerHTTPClient(handler, false),
+			);
 			expect(result).toBe(test.expectLocalResult);
 
 			target = `/redirect?loc=${encodeURIComponent(test.redirect)}`;
 			req = request(target);
-			[result] = await doHTTPProbe(req, new HandlerHTTPClient(handler, true));
+			[result] = await doHTTPProbe(context.background(), req, new HandlerHTTPClient(handler, true));
 			expect(result).toBe(test.expectNonLocalResult);
 		}
 	});
@@ -500,11 +575,15 @@ browser.describe("TestHTTPProbeChecker_HostHeaderPreservedAfterRedirect", () => 
 		for (const test of Object.values(testCases)) {
 			const headers = { Host: [test.hostHeader] };
 			let req = request("/redirect", headers);
-			let [result] = await doHTTPProbe(req, new HandlerHTTPClient(handler, false));
+			let [result] = await doHTTPProbe(
+				context.background(),
+				req,
+				new HandlerHTTPClient(handler, false),
+			);
 			expect(result).toBe(test.expectedResult);
 
 			req = request("/redirect", headers);
-			[result] = await doHTTPProbe(req, new HandlerHTTPClient(handler, true));
+			[result] = await doHTTPProbe(context.background(), req, new HandlerHTTPClient(handler, true));
 			expect(result).toBe(test.expectedResult);
 		}
 	});
@@ -534,7 +613,11 @@ browser.describe("TestHTTPProbeChecker_PayloadTruncated", () => {
 		};
 
 		const req = request("/success", { Host: [successHostHeader] });
-		const [result, body, err] = await doHTTPProbe(req, new HandlerHTTPClient(handler, false));
+		const [result, body, err] = await doHTTPProbe(
+			context.background(),
+			req,
+			new HandlerHTTPClient(handler, false),
+		);
 		expect(err).toBeUndefined();
 		expect(result).toBe("success");
 		expect(body).toBe(truncatedPayload);
@@ -564,7 +647,11 @@ browser.describe("TestHTTPProbeChecker_PayloadNormal", () => {
 		};
 
 		const req = request("/success", { Host: [successHostHeader] });
-		const [result, body, err] = await doHTTPProbe(req, new HandlerHTTPClient(handler, false));
+		const [result, body, err] = await doHTTPProbe(
+			context.background(),
+			req,
+			new HandlerHTTPClient(handler, false),
+		);
 		expect(err).toBeUndefined();
 		expect(result).toBe("success");
 		expect(body).toBe(normalPayload);

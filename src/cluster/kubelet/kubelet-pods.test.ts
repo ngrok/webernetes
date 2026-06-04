@@ -2481,6 +2481,7 @@ browser.describe("probeManagerUpdatePodStatus", () => {
 			],
 		};
 		const probeManager = new ProbeManagerImpl(
+			tCtx,
 			testKubelet.kubelet.statusManager,
 			new ResultsManager(),
 			new ResultsManager(),

@@ -7,7 +7,8 @@ import {
 } from "../../../client";
 import { FakeRecorder } from "../../../client-go/tools/record/fake";
 import { Clock } from "../../../clock";
-import type { ExecProbe, ProbeResult } from "../../probe";
+import * as context from "../../../go/context";
+import type { ExecCmd, ExecProbe, ProbeResult } from "../../probe";
 import { ClusterNetwork } from "../../cni";
 import { Etcd } from "../../etcd";
 import { KubeClient } from "../../cluster";
@@ -174,6 +175,7 @@ export function newTestManager(): ProbeManagerImpl {
 		podManager,
 	});
 	const manager = new ProbeManagerImpl(
+		context.background(),
 		statusManager,
 		new ResultsManager(),
 		new ResultsManager(),
@@ -210,7 +212,7 @@ export class FakeExecProber implements ExecProbe {
 		this.err = err;
 	}
 
-	async probe(): Promise<[ProbeResult, string, Error | undefined]> {
+	async probe(_e: ExecCmd): Promise<[ProbeResult, string, Error | undefined]> {
 		return [this.result, "", this.err];
 	}
 }

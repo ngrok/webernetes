@@ -9,7 +9,7 @@ export class HttpEchoImage extends BaseImage {
 			return 127;
 		}
 
-		context.listenHttp(options.port, async (request) => {
+		context.listenHttp(options.port, async (_ctx, request) => {
 			if (request.path === "/health") {
 				return {
 					status: 200,

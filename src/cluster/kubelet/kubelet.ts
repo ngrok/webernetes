@@ -571,6 +571,7 @@ export class Kubelet implements RuntimeHelper {
 			);
 		}
 		this.probeManager = new ProbeManagerImpl(
+			this.ctx,
 			this.statusManager,
 			livenessManager,
 			readinessManager,
