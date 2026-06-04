@@ -50,7 +50,12 @@ import { newHandlerRunner } from "./lifecycle";
 import { KubeletImageManager } from "./images";
 import { getPhase } from "./kubelet-pods";
 import { newActiveDeadlineHandler } from "./active-deadline";
-import { PodSyncLoopHandlers, type PodSyncLoopHandler } from "./lifecycle";
+import {
+	PodSyncHandlers,
+	PodSyncLoopHandlers,
+	type PodSyncHandler,
+	type PodSyncLoopHandler,
+} from "./lifecycle";
 import {
 	generateAllContainersRestartingCondition,
 	generateContainersReadyCondition,
@@ -408,6 +413,8 @@ export class Kubelet implements RuntimeHelper {
 	private readonly crashLoopBackOff: Backoff;
 	// Models kubernetes/pkg/kubelet/kubelet.go Kubelet.PodSyncLoopHandlers.
 	readonly podSyncLoopHandlers = new PodSyncLoopHandlers();
+	// Models kubernetes/pkg/kubelet/kubelet.go Kubelet.PodSyncHandlers.
+	readonly podSyncHandlers = new PodSyncHandlers();
 	// Package-visible for upstream-parity tests that mirror kubelet_test.go.
 	syncLoopMonitor: Date | undefined;
 	// Package-visible for upstream-parity tests that mirror kubelet_test.go.
@@ -619,12 +626,18 @@ export class Kubelet implements RuntimeHelper {
 		}
 		if (activeDeadlineHandler) {
 			this.addPodSyncLoopHandler(activeDeadlineHandler);
+			this.addPodSyncHandler(activeDeadlineHandler);
 		}
 	}
 
 	// Models kubernetes/pkg/kubelet/lifecycle/interfaces.go PodSyncLoopHandlers.AddPodSyncLoopHandler.
 	addPodSyncLoopHandler(a: PodSyncLoopHandler): void {
 		this.podSyncLoopHandlers.addPodSyncLoopHandler(a);
+	}
+
+	// Models kubernetes/pkg/kubelet/lifecycle/interfaces.go PodSyncHandlers.AddPodSyncHandler.
+	addPodSyncHandler(a: PodSyncHandler): void {
+		this.podSyncHandlers.addPodSyncHandler(a);
 	}
 
 	// Models kubernetes/pkg/kubelet/kubelet.go Run.
@@ -1730,6 +1743,15 @@ export class Kubelet implements RuntimeHelper {
 			delete status.reason;
 			delete status.message;
 		}
+		for (const handler of this.podSyncHandlers) {
+			const result = handler.shouldEvict(pod);
+			if (result.evict) {
+				status.phase = "Failed";
+				status.reason = result.reason;
+				status.message = result.message;
+				break;
+			}
+		}
 		this.probeManager.updatePodStatus(ctx, pod, status);
 		const conditions = (pod.status?.conditions ?? []).filter(
 			(condition) => !kubetypes.podConditionByKubelet(condition.type),
@@ -2176,7 +2198,8 @@ export class Kubelet implements RuntimeHelper {
 	}
 
 	// Models kubernetes/pkg/kubelet/kubelet.go SyncTerminatingPod.
-	private async syncTerminatingPod(
+	// Package-visible for upstream-parity tests that mirror kubelet_test.go.
+	async syncTerminatingPod(
 		ctx: context.Context,
 		pod: V1Pod,
 		podStatus: PodRuntimeStatus,

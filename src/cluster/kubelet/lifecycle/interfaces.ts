@@ -30,3 +30,17 @@ export interface ShouldEvictResponse {
 export interface PodSyncHandler {
 	shouldEvict(pod: V1Pod): ShouldEvictResponse;
 }
+
+// Models kubernetes/pkg/kubelet/lifecycle/interfaces.go PodSyncHandlers.
+export class PodSyncHandlers {
+	private readonly handlers: PodSyncHandler[] = [];
+
+	// Models kubernetes/pkg/kubelet/lifecycle/interfaces.go PodSyncHandlers.AddPodSyncHandler.
+	addPodSyncHandler(a: PodSyncHandler): void {
+		this.handlers.push(a);
+	}
+
+	[Symbol.iterator](): Iterator<PodSyncHandler> {
+		return this.handlers[Symbol.iterator]();
+	}
+}

@@ -366,7 +366,7 @@ export class KubeletImageManager implements ImageManager {
 }
 
 // Models kubernetes/pkg/kubelet/images/image_manager.go applyDefaultImageTag.
-function applyDefaultImageTag(image: string): [string, Error | undefined] {
+export function applyDefaultImageTag(image: string): [string, Error | undefined] {
 	const [, tag, digest, err] = parseImageName(image);
 	if (err) {
 		return ["", err];

@@ -10,6 +10,7 @@ import type { WorkQueue } from "./util/queue/work-queue";
 import type { PassiveClock } from "../../utils/clock/clock";
 import type { DeepPartial } from "../../utility-types";
 import { Mutex } from "../../go/sync/mutex";
+import type { MaybePromise } from "../../promise";
 
 // Models kubernetes/pkg/kubelet/pod_workers.go workerResyncIntervalJitterFactor.
 const workerResyncIntervalJitterFactor = 0.5;
@@ -253,7 +254,10 @@ export class PodWorkersImpl implements PodWorkers {
 	readonly podSyncStatuses = new Map<string, PodSyncStatus>();
 	private readonly podLock = new Mutex();
 	// Models kubernetes/pkg/kubelet/pod_workers.go podWorkers.workerChannelFn.
-	workerChannelFn?: (uid: string, inCh: ReadOnlyChannel<void>) => ReadOnlyChannel<void>;
+	workerChannelFn?: (
+		uid: string,
+		inCh: ReadOnlyChannel<void>,
+	) => MaybePromise<ReadOnlyChannel<void>>;
 	private podsSynced = false;
 	private stopped = false;
 
@@ -458,7 +462,7 @@ export class PodWorkersImpl implements PodWorkers {
 				podUpdates = new Channel<void>(1);
 				this.podUpdates.set(uid, podUpdates);
 				const workerUpdates =
-					this.workerChannelFn?.(uid, podUpdates.readOnly()) ?? podUpdates.readOnly();
+					(await this.workerChannelFn?.(uid, podUpdates.readOnly())) ?? podUpdates.readOnly();
 				// Mirrors the goroutine defer that observes worker exit upstream; the
 				// map itself is simulator-only bookkeeping for awaitable shutdown.
 				const run = this.podWorkerLoop(ctx, uid, workerUpdates).finally(() => {
@@ -970,7 +974,7 @@ export class PodWorkersImpl implements PodWorkers {
 	}
 
 	// Models kubernetes/pkg/kubelet/pod_workers.go removeTerminatedWorker.
-	private removeTerminatedWorker(uid: string, status: PodSyncStatus, orphaned: boolean): boolean {
+	removeTerminatedWorker(uid: string, status: PodSyncStatus, orphaned: boolean): boolean {
 		if (!status.finished) {
 			if (!orphaned) {
 				return false;
@@ -1118,7 +1122,7 @@ function requiredStatus(status: PodRuntimeStatus | undefined): PodRuntimeStatus 
 }
 
 // Models kubernetes/pkg/kubelet/pod_workers.go calculateEffectiveGracePeriod.
-function calculateEffectiveGracePeriod(
+export function calculateEffectiveGracePeriod(
 	status: PodSyncStatus,
 	pod: V1Pod | undefined,
 	options: KillPodOptions | undefined,
