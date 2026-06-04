@@ -338,6 +338,8 @@ export function newMainKubelet(
 		events: kubeDeps.recorder,
 		livenessManager,
 		imageBackOff: newBackOff(imageBackOffPeriodMs, maxImageBackOffMs, kubeDeps.clock),
+		registryPullQPS: kubeCfg.registryPullQPS,
+		registryBurst: kubeCfg.registryBurst,
 		maxParallelImagePulls: kubeCfg.serializeImagePulls ? 1 : kubeCfg.maxParallelImagePulls,
 		network: kubeDeps.network,
 		startupManager,

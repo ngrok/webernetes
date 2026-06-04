@@ -141,6 +141,8 @@ export interface KubeGenericRuntimeManagerOptions {
 	internalLifecycle?: InternalContainerLifecycle;
 	livenessManager: ResultsManager;
 	imageBackOff?: Backoff;
+	registryPullQPS?: number;
+	registryBurst?: number;
 	maxParallelImagePulls?: number;
 	network: ClusterNetwork;
 	startupManager: ResultsManager;
@@ -177,6 +179,8 @@ export class KubeGenericRuntimeManager implements Runtime, CommandRunner {
 			clock: this.clock,
 			imageBackOff:
 				options.imageBackOff ?? newBackOff(imageBackOffPeriodMs, maxImageBackOffMs, this.clock),
+			qps: options.registryPullQPS,
+			burst: options.registryBurst,
 			maxParallelImagePulls: options.maxParallelImagePulls,
 			podPullingTimeRecorder: {
 				recordImageStartedPulling(_podUID: string): void {},

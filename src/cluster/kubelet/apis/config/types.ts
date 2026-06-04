@@ -3,6 +3,8 @@ export interface KubeletConfiguration {
 	syncFrequencyMs: number;
 	clusterDNS: string[];
 	clusterDomain: string;
+	registryPullQPS: number;
+	registryBurst: number;
 	serializeImagePulls: boolean;
 	maxParallelImagePulls: number | undefined;
 }

@@ -84,6 +84,8 @@ export class Cluster {
 		const kubeletConfiguration: KubeletConfiguration = {
 			syncFrequencyMs: 60 * 1000,
 			clusterDNS: [this.dnsServiceIp],
+			registryPullQPS: 5,
+			registryBurst: 10,
 			serializeImagePulls: true,
 			maxParallelImagePulls: undefined,
 			clusterDomain: "cluster.local",
