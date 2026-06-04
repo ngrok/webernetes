@@ -1,4 +1,11 @@
-import type { V1Container, V1ContainerStatus, V1Pod, V1PodStatus, V1Service } from "../../client";
+import type {
+	V1Container,
+	V1ContainerStatus,
+	V1NodeAddress,
+	V1Pod,
+	V1PodStatus,
+	V1Service,
+} from "../../client";
 import { Channel, select, type ReadOnlyChannel } from "../../go/channel";
 import * as context from "../../go/context";
 import { parseIP } from "../../go/net";
@@ -84,6 +91,7 @@ import {
 	isDNS1123Label,
 	isDNS1123Subdomain,
 } from "../../apimachinery/pkg/util/validation/validation";
+import { getNodeHostIPs } from "../../util/node";
 
 // Models kubernetes/pkg/kubelet/kubelet.go backOffPeriod.
 const backOffPeriodMs = 10 * 1000;
@@ -173,7 +181,7 @@ function formatIP(ip: number[]): string {
 }
 
 // Models kubernetes/pkg/kubelet/kubelet_pods.go truncatePodHostnameIfNeeded.
-function truncatePodHostnameIfNeeded(
+export function truncatePodHostnameIfNeeded(
 	podName: string,
 	hostname: string,
 ): [hostname: string, err: Error | undefined] {
@@ -421,6 +429,8 @@ export class Kubelet implements RuntimeHelper {
 	reasonCache = newReasonCache();
 	// Package-visible for upstream-parity tests that mirror kubelet_pods_test.go.
 	nodeIPs: string[];
+	// Package-visible for upstream-parity tests that mirror kubelet_pods_test.go.
+	nodeAddresses: V1NodeAddress[] | undefined;
 	private readonly ctx: context.Context;
 	private readonly cancelContext: context.CancelFunc;
 	private syncLoopPromise: Promise<void> | undefined;
@@ -461,6 +471,7 @@ export class Kubelet implements RuntimeHelper {
 		this.serviceHasSynced = kubeDeps.serviceHasSynced ?? (() => true);
 		this.podConfig = kubeDeps.podConfig;
 		this.nodeIPs = kubeDeps.nodeIPs ? [...kubeDeps.nodeIPs] : ["127.0.0.1", "::1"];
+		this.nodeAddresses = undefined;
 		this.sourcesReady = newSourcesReady(this.podConfig.seenAllSources.bind(this.podConfig));
 		this.clock = kubeDeps.clock;
 		this.runtimeState = newRuntimeState(maxWaitForContainerRuntimeMs, this.clock);
@@ -1824,7 +1835,13 @@ export class Kubelet implements RuntimeHelper {
 		if (err) {
 			return [[], err];
 		}
-		return [[...this.nodeIPs], undefined];
+		const addresses =
+			this.nodeAddresses ??
+			this.nodeIPs.map((address) => ({
+				type: "InternalIP",
+				address,
+			}));
+		return getNodeHostIPs({ status: { addresses } });
 	}
 
 	// Models kubernetes/pkg/kubelet/kubelet_pods.go convertStatusToAPIStatus.
@@ -1863,7 +1880,7 @@ export class Kubelet implements RuntimeHelper {
 	}
 
 	// Models kubernetes/pkg/kubelet/kubelet_pods.go sortPodIPs.
-	private sortPodIPs(podIPs: string[]): string[] {
+	sortPodIPs(podIPs: string[]): string[] {
 		const ips: string[] = [];
 		const appendFirstMatching = (valid: (ip: number[] | undefined) => boolean): void => {
 			for (const ipString of podIPs) {

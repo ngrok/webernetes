@@ -7,6 +7,7 @@ import { newContainerStatus } from "../../client";
 import type {
 	V1Container,
 	V1ContainerStatus,
+	V1NodeAddress,
 	V1Pod,
 	V1PodCondition,
 	V1PodStatus,
@@ -34,6 +35,7 @@ import {
 	podWithUIDNameNs,
 	type syncPodRecord,
 } from "./kubelet-test-helpers";
+import { truncatePodHostnameIfNeeded } from "./kubelet";
 import { getPhase } from "./kubelet-pods";
 import type { ServiceLister } from "./kubelet";
 import {
@@ -3383,6 +3385,250 @@ browser.describe("generateAPIPodStatusPodIPs", () => {
 
 			expect(status.podIPs).toEqual(test.podIPs);
 			expect(status.podIP).toBe(status.podIPs?.[0]?.ip);
+		} finally {
+			await testKubelet.cleanup();
+		}
+	});
+});
+
+// Models kubernetes/pkg/kubelet/kubelet_pods_test.go TestTruncatePodHostname.
+browser.describe("truncatePodHostname", () => {
+	const testcases: Array<{
+		name: string;
+		input: string;
+		output: string;
+	}> = [
+		{
+			name: "valid hostname",
+			input: "test.pod.hostname",
+			output: "test.pod.hostname",
+		},
+		{
+			name: "too long hostname",
+			input: "1234567.1234567.1234567.1234567.1234567.1234567.1234567.1234567.1234567.",
+			output: "1234567.1234567.1234567.1234567.1234567.1234567.1234567.1234567",
+		},
+		{
+			name: "hostname end with .",
+			input: "1234567.1234567.1234567.1234567.1234567.1234567.1234567.123456.1234567.",
+			output: "1234567.1234567.1234567.1234567.1234567.1234567.1234567.123456",
+		},
+		{
+			name: "hostname end with -",
+			input: "1234567.1234567.1234567.1234567.1234567.1234567.1234567.123456-1234567.",
+			output: "1234567.1234567.1234567.1234567.1234567.1234567.1234567.123456",
+		},
+	];
+
+	it.each(testcases)("$name", (test) => {
+		const [output, err] = truncatePodHostnameIfNeeded("test-pod", test.input);
+
+		expect(err).toBeUndefined();
+		expect(output).toBe(test.output);
+	});
+});
+
+// Models kubernetes/pkg/kubelet/kubelet_pods_test.go TestGenerateAPIPodStatusHostNetworkPodIPs.
+browser.describe("generateAPIPodStatusHostNetworkPodIPs", () => {
+	const testcases: Array<{
+		name: string;
+		nodeAddresses: V1NodeAddress[];
+		criPodIPs?: string[];
+		podIPs: Array<{ ip: string }>;
+	}> = [
+		{
+			name: "Simple",
+			nodeAddresses: [{ type: "InternalIP", address: "10.0.0.1" }],
+			podIPs: [{ ip: "10.0.0.1" }],
+		},
+		{
+			name: "InternalIP is preferred over ExternalIP",
+			nodeAddresses: [
+				{ type: "ExternalIP", address: "192.168.0.1" },
+				{ type: "InternalIP", address: "10.0.0.1" },
+			],
+			podIPs: [{ ip: "10.0.0.1" }],
+		},
+		{
+			name: "Single-stack addresses in dual-stack cluster",
+			nodeAddresses: [{ type: "InternalIP", address: "10.0.0.1" }],
+			podIPs: [{ ip: "10.0.0.1" }],
+		},
+		{
+			name: "Multiple single-stack addresses in dual-stack cluster",
+			nodeAddresses: [
+				{ type: "InternalIP", address: "10.0.0.1" },
+				{ type: "InternalIP", address: "10.0.0.2" },
+				{ type: "ExternalIP", address: "192.168.0.1" },
+			],
+			podIPs: [{ ip: "10.0.0.1" }],
+		},
+		{
+			name: "Dual-stack addresses in dual-stack cluster",
+			nodeAddresses: [
+				{ type: "InternalIP", address: "10.0.0.1" },
+				{ type: "InternalIP", address: "fd01::1234" },
+			],
+			podIPs: [{ ip: "10.0.0.1" }, { ip: "fd01::1234" }],
+		},
+		{
+			name: "CRI PodIPs override NodeAddresses",
+			nodeAddresses: [
+				{ type: "InternalIP", address: "10.0.0.1" },
+				{ type: "InternalIP", address: "fd01::1234" },
+			],
+			criPodIPs: ["192.168.0.1"],
+			podIPs: [{ ip: "192.168.0.1" }, { ip: "fd01::1234" }],
+		},
+		{
+			name: "CRI dual-stack PodIPs override NodeAddresses",
+			nodeAddresses: [
+				{ type: "InternalIP", address: "10.0.0.1" },
+				{ type: "InternalIP", address: "fd01::1234" },
+			],
+			criPodIPs: ["192.168.0.1", "2001:db8::2"],
+			podIPs: [{ ip: "192.168.0.1" }, { ip: "2001:db8::2" }],
+		},
+		{
+			name: "CRI dual-stack PodIPs override NodeAddresses prefer IPv4",
+			nodeAddresses: [
+				{ type: "InternalIP", address: "10.0.0.1" },
+				{ type: "InternalIP", address: "fd01::1234" },
+			],
+			criPodIPs: ["2001:db8::2", "192.168.0.1"],
+			podIPs: [{ ip: "192.168.0.1" }, { ip: "2001:db8::2" }],
+		},
+	];
+
+	it.each(testcases)("$name", async (test) => {
+		const tCtx = context.background();
+		const testKubelet = newTestKubelet(false);
+		try {
+			const kl = testKubelet.kubelet;
+			kl.nodeAddresses = test.nodeAddresses;
+			const pod = podWithUIDNameNs("12345", "test-pod", "test-namespace");
+			pod.spec = {
+				containers: [],
+				hostNetwork: true,
+			};
+			const status = kl.generateAPIPodStatus(
+				tCtx,
+				pod,
+				{
+					id: pod.metadata?.uid ?? "",
+					name: pod.metadata?.name ?? "",
+					namespace: pod.metadata?.namespace ?? "",
+					ips: test.criPodIPs ?? [],
+					containerStatuses: [],
+					sandboxStatuses: [],
+					timestamp: new Date(0),
+				},
+				false,
+			);
+
+			expect(status.podIPs).toEqual(test.podIPs);
+			if (test.criPodIPs === undefined) {
+				expect(status.hostIP).toBe(status.podIPs?.[0]?.ip);
+			}
+		} finally {
+			await testKubelet.cleanup();
+		}
+	});
+});
+
+// Models kubernetes/pkg/kubelet/kubelet_pods_test.go TestSortPodIPs.
+browser.describe("sortPodIPs", () => {
+	const testcases: Array<{
+		name: string;
+		nodeIP: string;
+		podIPs: string[];
+		expectedIPs: string[];
+	}> = [
+		{
+			name: "Simple",
+			nodeIP: "",
+			podIPs: ["10.0.0.1"],
+			expectedIPs: ["10.0.0.1"],
+		},
+		{
+			name: "Dual-stack",
+			nodeIP: "",
+			podIPs: ["10.0.0.1", "fd01::1234"],
+			expectedIPs: ["10.0.0.1", "fd01::1234"],
+		},
+		{
+			name: "Dual-stack with explicit node IP",
+			nodeIP: "192.168.1.1",
+			podIPs: ["10.0.0.1", "fd01::1234"],
+			expectedIPs: ["10.0.0.1", "fd01::1234"],
+		},
+		{
+			name: "Dual-stack with CRI returning wrong family first",
+			nodeIP: "",
+			podIPs: ["fd01::1234", "10.0.0.1"],
+			expectedIPs: ["10.0.0.1", "fd01::1234"],
+		},
+		{
+			name: "Dual-stack with explicit node IP with CRI returning wrong family first",
+			nodeIP: "192.168.1.1",
+			podIPs: ["fd01::1234", "10.0.0.1"],
+			expectedIPs: ["10.0.0.1", "fd01::1234"],
+		},
+		{
+			name: "Dual-stack with IPv6 node IP",
+			nodeIP: "fd00::5678",
+			podIPs: ["10.0.0.1", "fd01::1234"],
+			expectedIPs: ["fd01::1234", "10.0.0.1"],
+		},
+		{
+			name: "Dual-stack with IPv6 node IP, other CRI order",
+			nodeIP: "fd00::5678",
+			podIPs: ["fd01::1234", "10.0.0.1"],
+			expectedIPs: ["fd01::1234", "10.0.0.1"],
+		},
+		{
+			name: "No Pod IP matching Node IP",
+			nodeIP: "fd00::5678",
+			podIPs: ["10.0.0.1"],
+			expectedIPs: ["10.0.0.1"],
+		},
+		{
+			name: "No Pod IP matching (unspecified) Node IP",
+			nodeIP: "",
+			podIPs: ["fd01::1234"],
+			expectedIPs: ["fd01::1234"],
+		},
+		{
+			name: "Multiple IPv4 IPs",
+			nodeIP: "",
+			podIPs: ["10.0.0.1", "10.0.0.2", "10.0.0.3"],
+			expectedIPs: ["10.0.0.1"],
+		},
+		{
+			name: "Multiple Dual-Stack IPs",
+			nodeIP: "",
+			podIPs: ["10.0.0.1", "10.0.0.2", "fd01::1234", "10.0.0.3", "fd01::5678"],
+			expectedIPs: ["10.0.0.1", "fd01::1234"],
+		},
+		{
+			name: "Badly-formatted IPs from CRI",
+			nodeIP: "",
+			podIPs: ["010.000.000.001", "fd01:0:0:0:0:0:0:1234"],
+			expectedIPs: ["10.0.0.1", "fd01::1234"],
+		},
+	];
+
+	it.each(testcases)("$name", async (test) => {
+		const testKubelet = newTestKubelet(false);
+		try {
+			const kl = testKubelet.kubelet;
+			if (test.nodeIP !== "") {
+				kl.nodeIPs = [test.nodeIP];
+			}
+
+			const podIPs = kl.sortPodIPs(test.podIPs);
+
+			expect(podIPs).toEqual(test.expectedIPs);
 		} finally {
 			await testKubelet.cleanup();
 		}
