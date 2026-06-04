@@ -76,6 +76,7 @@ export * from "./V1Node";
 export * from "./V1NodeAffinity";
 export * from "./V1NodeAddress";
 export * from "./V1NodeAllocatableResourceClaimStatus";
+export * from "./V1NodeCondition";
 export * from "./V1NodeList";
 export * from "./V1NodeSelector";
 export * from "./V1NodeSelectorRequirement";
