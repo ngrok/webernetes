@@ -498,6 +498,10 @@ export class Kubelet implements RuntimeHelper {
 					clock: this.clock,
 					imageBackOff: newBackOff(imageBackOffPeriodMs, maxImageBackOffMs, this.clock),
 					maxParallelImagePulls: this.maxParallelImagePulls(),
+					podPullingTimeRecorder: {
+						recordImageStartedPulling(_podUID: string): void {},
+						recordImageFinishedPulling(_podUID: string): void {},
+					},
 				}),
 				events: this.recorder,
 				internalLifecycle: newFakeInternalContainerLifecycle(),

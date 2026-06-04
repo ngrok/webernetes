@@ -3527,6 +3527,7 @@ browser.describe("generateAPIPodStatusHostNetworkPodIPs", () => {
 			);
 
 			expect(status.podIPs).toEqual(test.podIPs);
+			expect(status.podIP).toBe(test.podIPs[0]?.ip);
 			if (test.criPodIPs === undefined) {
 				expect(status.hostIP).toBe(status.podIPs?.[0]?.ip);
 			}

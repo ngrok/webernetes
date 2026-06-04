@@ -9,9 +9,10 @@ import { background } from "../../../go/context";
 import { browser } from "../../../test/describe";
 import { FakeRuntime } from "../container/testing";
 import { KubeletImageManager, applyDefaultImageTag, evalCRIPullErr } from "./image-manager";
+import type { ImagePullManager } from "./pullmanager";
 import { ImagePullError } from "./types";
 import type * as context from "../../../go/context";
-import type { ImagePodPullingTimeRecorder, ImagePullManager } from "./image-manager";
+import type { ImagePodPullingTimeRecorder } from "./image-manager";
 
 // Models kubernetes/pkg/kubelet/images/image_manager_test.go mockPodPullingTimeRecorder.
 class mockPodPullingTimeRecorder implements ImagePodPullingTimeRecorder {
