@@ -89,10 +89,15 @@ function toHTTPRequest(nodePort: number, request?: NodePortRequest): Partial<htt
 	}
 	return {
 		method: request?.method ?? "GET",
-		url: http.formatURL("http", "127.0.0.1", nodePort, request?.path ?? "/"),
+		url: newURL("http", "127.0.0.1", nodePort, request?.path ?? "/"),
 		header,
 		body: request?.body,
 	};
+}
+
+function newURL(scheme: string, host: string, port: number, path: string): URL {
+	const pathname = path.startsWith("/") ? path : `/${path}`;
+	return new URL(`${scheme}://${host}:${port}${pathname}`);
 }
 
 function toNodePortHeaders(header: http.Header | undefined): Record<string, string> | undefined {

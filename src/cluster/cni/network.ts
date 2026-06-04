@@ -364,7 +364,7 @@ export class ClusterNetwork {
 	): http.Request {
 		const requestURL =
 			init.url ??
-			http.formatURL(
+			newURL(
 				url?.protocol.replace(/:$/, "") ?? "http",
 				url?.hostname ?? endpoint.ip,
 				Number(url?.port || endpoint.port),
@@ -378,6 +378,11 @@ export class ClusterNetwork {
 			body: init.body,
 		};
 	}
+}
+
+function newURL(scheme: string, host: string, port: number, path: string): URL {
+	const pathname = path.startsWith("/") ? path : `/${path}`;
+	return new URL(`${scheme}://${host}:${port}${pathname}`);
 }
 
 export class NetworkRegistration {

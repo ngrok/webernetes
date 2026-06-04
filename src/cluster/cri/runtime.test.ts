@@ -3,6 +3,7 @@ import { expect, it } from "vitest";
 import * as context from "../../go/context";
 import { browser } from "../../test/describe";
 import { Cluster } from "../cluster";
+import { errCommandTimedOut } from "../cri-client/pkg";
 import { ImageRegistry } from "./image";
 import { BaseImage } from "../images/base";
 
@@ -47,5 +48,45 @@ browser.describe("InProcessRuntimeService images", () => {
 		expect(first).toBeInstanceOf(BaseImage);
 		expect(second).toBeInstanceOf(BaseImage);
 		expect(first).not.toBe(second);
+	});
+
+	it("returns ErrCommandTimedOut when execSync times out", async () => {
+		const cluster = new Cluster();
+		cluster.clock.pause();
+		try {
+			const runtime = cluster.servers[0].runtime;
+			const ctx = context.background();
+			const sandboxConfig = {
+				metadata: {
+					name: "timeout-pod",
+					namespace: "default",
+					uid: "timeout-pod",
+					attempt: 0,
+				},
+			};
+			const [sandboxId, sandboxErr] = await runtime.runPodSandbox(ctx, sandboxConfig);
+			expect(sandboxErr).toBeUndefined();
+			const [containerId, containerErr] = await runtime.createContainer(
+				ctx,
+				sandboxId,
+				{
+					metadata: { name: "main", attempt: 0 },
+					image: { image: "busybox:1.36" },
+				},
+				sandboxConfig,
+			);
+			expect(containerErr).toBeUndefined();
+
+			const execPromise = runtime.execSync(ctx, containerId, ["sleep", "10"], 1);
+			await Promise.resolve();
+			cluster.clock.step(1000);
+			const [response, err] = await execPromise;
+
+			expect(response).toBeUndefined();
+			expect(err?.message).toBe("command timed out: command sleep 10 timed out");
+			expect((err as (Error & { cause?: unknown }) | undefined)?.cause).toBe(errCommandTimedOut);
+		} finally {
+			await cluster.close();
+		}
 	});
 });

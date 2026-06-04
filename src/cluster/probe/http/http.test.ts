@@ -4,27 +4,21 @@ import { expect, it } from "vitest";
 import { Clock } from "../../../clock";
 import * as context from "../../../go/context";
 import { browser } from "../../../test/describe";
-import { ClusterNetwork, type HttpHandler } from "../../cni";
+import { ClusterNetwork } from "../../cni";
+import * as http from "../../cni/http";
 import { PodSandboxInstance } from "../../cri";
 import type { ProbeResult } from "../probe";
-import { doHTTPProbe, HTTPProber, type GetHTTPInterface, type HTTPResponse } from "./http";
-import {
-	formatURL,
-	headerGet,
-	newProbeRequest,
-	type HTTPHeader,
-	type ProbeHTTPRequest,
-	type ProbeURL,
-} from "./request";
+import { doHTTPProbe, HTTPProber, type GetHTTPInterface } from "./http";
+import { formatURL, newProbeRequest } from "./request";
 
 const failureCode = -1;
 
-type HTTPHandler = (w: ResponseRecorder, r: ProbeHTTPRequest) => void | Promise<void>;
+type HTTPHandler = (w: ResponseRecorder, r: http.Request) => void | Promise<void>;
 
 class ResponseRecorder {
 	statusCode = 200;
 	body = "";
-	header: HTTPHeader = {};
+	header: http.Header = {};
 
 	writeHeader(statusCode: number): void {
 		this.statusCode = statusCode;
@@ -46,11 +40,11 @@ class HandlerHTTPClient implements GetHTTPInterface {
 		private readonly followNonLocalRedirects = true,
 	) {}
 
-	async do(_ctx: context.Context, req: ProbeHTTPRequest): Promise<HTTPResponse> {
+	async do(_ctx: context.Context, req: http.Request): Promise<http.Response> {
 		let current = req;
 		for (let redirects = 0; ; redirects++) {
 			const res = await this.doOnce(current);
-			const location = headerGet(res.header, "Location");
+			const location = http.headerGet(res.header, "Location");
 			if (res.statusCode < 300 || res.statusCode >= 400 || !location) {
 				return { statusCode: res.statusCode, body: res.body };
 			}
@@ -65,15 +59,15 @@ class HandlerHTTPClient implements GetHTTPInterface {
 		}
 	}
 
-	private async doOnce(req: ProbeHTTPRequest): Promise<ResponseRecorder> {
+	private async doOnce(req: http.Request): Promise<ResponseRecorder> {
 		const recorder = new ResponseRecorder();
 		await this.handler(recorder, withEffectiveHeaders(req));
 		return recorder;
 	}
 }
 
-function withEffectiveHeaders(req: ProbeHTTPRequest): ProbeHTTPRequest {
-	const header: HTTPHeader = {};
+function withEffectiveHeaders(req: http.Request): http.Request {
+	const header: http.Header = {};
 	for (const [key, values] of Object.entries(req.header)) {
 		if (key.toLowerCase() === "user-agent" && values[0] === "") {
 			continue;
@@ -86,12 +80,12 @@ function withEffectiveHeaders(req: ProbeHTTPRequest): ProbeHTTPRequest {
 	return { ...req, header };
 }
 
-function headerKey(headers: HTTPHeader, name: string): string | undefined {
+function headerKey(headers: http.Header, name: string): string | undefined {
 	const lowerName = name.toLowerCase();
 	return Object.keys(headers).find((key) => key.toLowerCase() === lowerName);
 }
 
-function resolveURL(base: ProbeURL, location: string): ProbeURL {
+function resolveURL(base: URL, location: string): URL {
 	if (/^https?:\/\//.test(location)) {
 		const url = new URL(location);
 		return formatURL(
@@ -102,13 +96,18 @@ function resolveURL(base: ProbeURL, location: string): ProbeURL {
 		);
 	}
 	if (location.startsWith("/")) {
-		return formatURL(base.scheme, base.hostname, Number(base.port), location);
+		return formatURL(base.protocol.replace(/:$/, ""), base.hostname, Number(base.port), location);
 	}
 	const basePath = base.pathname.replace(/\/?[^/]*$/, "/");
-	return formatURL(base.scheme, base.hostname, Number(base.port), `${basePath}${location}`);
+	return formatURL(
+		base.protocol.replace(/:$/, ""),
+		base.hostname,
+		Number(base.port),
+		`${basePath}${location}`,
+	);
 }
 
-function request(path = "/", headers: HTTPHeader = {}): ProbeHTTPRequest {
+function request(path = "/", headers: http.Header = {}): http.Request {
 	const [req, err] = newProbeRequest(formatURL("http", "10.0.0.1", 8080, path), headers);
 	if (err || !req) {
 		throw err ?? new Error("request was not created");
@@ -116,7 +115,7 @@ function request(path = "/", headers: HTTPHeader = {}): ProbeHTTPRequest {
 	return req;
 }
 
-function networkRequest(host: string, port: number, path = "/"): ProbeHTTPRequest {
+function networkRequest(host: string, port: number, path = "/"): http.Request {
 	const [req, err] = newProbeRequest(formatURL("http", host, port, path), {});
 	if (err || !req) {
 		throw err ?? new Error("request was not created");
@@ -124,7 +123,7 @@ function networkRequest(host: string, port: number, path = "/"): ProbeHTTPReques
 	return req;
 }
 
-function bindTestHTTP(network: ClusterNetwork, port: number, handler: HttpHandler): string {
+function bindTestHTTP(network: ClusterNetwork, port: number, handler: http.Handler): string {
 	const sandbox = new PodSandboxInstance(
 		"sandbox-id",
 		{
@@ -155,7 +154,7 @@ browser.describe("HTTPProber cancellation", () => {
 		const host = bindTestHTTP(network, 8080, async (ctx) => {
 			handlerDone = ctx.done().receive();
 			await handlerDone;
-			return { status: 200, body: "late" };
+			return { statusCode: 200, body: "late" };
 		});
 		const prober = new HTTPProber(context.background(), clock, network);
 		const probePromise = prober.probe(networkRequest(host, 8080), 1000);
@@ -176,7 +175,7 @@ browser.describe("HTTPProber cancellation", () => {
 		const host = bindTestHTTP(network, 8080, async (ctx) => {
 			handlerDone = ctx.done().receive();
 			await handlerDone;
-			return { status: 200, body: "late" };
+			return { statusCode: 200, body: "late" };
 		});
 		const prober = new HTTPProber(parentCtx, clock, network);
 		const probePromise = prober.probe(networkRequest(host, 8080), 10_000);
@@ -238,7 +237,7 @@ browser.describe("TestHTTPProbeChecker", () => {
 		const followNonLocalRedirects = true;
 		const testCases: Array<{
 			handler: HTTPHandler;
-			reqHeaders?: HTTPHeader;
+			reqHeaders?: http.Header;
 			health: ProbeResult;
 			accBody?: string;
 			notBody?: string;

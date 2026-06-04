@@ -4,9 +4,10 @@ import * as context from "../../go/context";
 import * as time from "../../go/time";
 import type { KubeConfig } from "../../client/types";
 import { ipToNumber } from "../../net";
+import { newCommandTimedOutError } from "../cri-client/pkg";
 import type { DnsHandler, DnsListener, DnsRecordType, DnsResponse } from "../cni/dns";
 import { NetworkError } from "../cni/error";
-import type { HttpHandler, HttpListener, HttpRequest, HttpResponse } from "../cni/http";
+import * as http from "../cni/http";
 import { ClusterNetwork, type NetworkRegistration } from "../cni/network";
 import { parseContainerID } from "../kubelet/container/runtime";
 import type { ImageDefinition } from "./image";
@@ -144,12 +145,12 @@ function parseHttpUrl(target: string): URL {
 	return url;
 }
 
-function withHostHeader(request: HttpRequest, host: string): HttpRequest {
-	const headers = { ...request.headers };
-	if (!Object.keys(headers).some((key) => key.toLowerCase() === "host")) {
-		headers.host = host;
+function withHostHeader(request: Partial<http.Request>, host: string): Partial<http.Request> {
+	const header = { ...request.header };
+	if (!Object.keys(header).some((key) => key.toLowerCase() === "host")) {
+		header.Host = [host];
 	}
-	return { ...request, headers };
+	return { ...request, header };
 }
 
 export type ProcessState = "Created" | "Running" | "Exited";
@@ -444,7 +445,7 @@ export class InProcessRuntimeService
 		const timeoutMs = timeoutSeconds === undefined ? undefined : timeoutSeconds * 1000;
 		try {
 			const process = container.exec(cmd, { timeoutMs });
-			const exitCode = await this.waitForProcess(ctx, process, timeoutMs);
+			const exitCode = await this.waitForProcess(ctx, process, timeoutMs, cmd);
 			return [{ exitCode, stdout: process.stdout, stderr: process.stderr }, undefined];
 		} catch (error) {
 			return [undefined, errorFromUnknown(error)];
@@ -592,6 +593,7 @@ export class InProcessRuntimeService
 		ctx: context.Context,
 		process: ProcessInstance,
 		timeoutMs: number | undefined,
+		cmd: readonly string[],
 	): Promise<number> {
 		const waitCh = new Channel<number>(1);
 		void process.wait().then((code) => {
@@ -624,7 +626,10 @@ export class InProcessRuntimeService
 				return selected.code;
 			}
 			await process.kill("SIGKILL");
-			return selected.type === "timeout" ? 124 : process.abortExitCode;
+			if (selected.type === "timeout") {
+				throw newCommandTimedOutError(cmd);
+			}
+			return process.abortExitCode;
 		} finally {
 			if (timeoutHandle !== undefined) {
 				this.clock.clearTimeout(timeoutHandle);
@@ -1081,7 +1086,7 @@ export class ProcessContext implements context.Context {
 		this.process.writeStderr(chunk);
 	}
 
-	listenHttp(port: number, handler: HttpHandler): HttpListener {
+	listenHttp(port: number, handler: http.Handler): http.Listener {
 		const listener = this.pod.networkRegistration().bindHttp(port, handler);
 		this.process.trackListener(listener);
 		return listener;
@@ -1093,11 +1098,11 @@ export class ProcessContext implements context.Context {
 		return listener;
 	}
 
-	async fetch(target: string, init?: HttpRequest): Promise<HttpResponse> {
+	async fetch(target: string, init?: Partial<http.Request>): Promise<http.Response> {
 		const url = parseHttpUrl(target);
 		const request = init ?? {};
 		if (ipToNumber(url.hostname) !== undefined) {
-			return await this.runtime.network.fetch(url.toString(), request);
+			return await this.runtime.network.fetch(this.process.ctx, url.toString(), request);
 		}
 
 		const originalHost = url.host;
@@ -1106,7 +1111,11 @@ export class ProcessContext implements context.Context {
 			throw new NetworkError(`could not resolve ${url.hostname}`);
 		}
 		url.hostname = resolved;
-		return await this.runtime.network.fetch(url.toString(), withHostHeader(request, originalHost));
+		return await this.runtime.network.fetch(
+			this.process.ctx,
+			url.toString(),
+			withHostHeader(request, originalHost),
+		);
 	}
 
 	async resolveDns(name: string, type: DnsRecordType = "A"): Promise<DnsResponse> {
