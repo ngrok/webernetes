@@ -3,7 +3,8 @@ import * as context from "../go/context";
 import { Etcd } from "./etcd";
 import * as k8s from "../client";
 import { Server } from "./server";
-import { ClusterNetwork, type HttpRequest, type HttpResponse } from "./cni";
+import * as http from "./cni/http";
+import { ClusterNetwork } from "./cni";
 import { ImageRegistry, type ExecResult } from "./cri";
 import { CoreDNS } from "./images/coredns";
 import { BusyBoxImage } from "./images/busybox";
@@ -231,7 +232,10 @@ export class Cluster {
 		);
 	}
 
-	public async fetchNodePort(nodePort: number, request: HttpRequest = {}): Promise<HttpResponse> {
+	public async fetchNodePort(
+		nodePort: number,
+		request: Partial<http.Request> = {},
+	): Promise<http.Response> {
 		return await this.network.fetchNodePort(this.ctx, nodePort, request);
 	}
 

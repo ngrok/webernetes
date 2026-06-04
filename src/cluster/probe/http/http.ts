@@ -2,20 +2,15 @@ import type { Clock } from "../../../clock";
 import { Channel, select } from "../../../go/channel";
 import * as context from "../../../go/context";
 import * as time from "../../../go/time";
+import * as http from "../../cni/http";
 import { NetworkError, type ClusterNetwork } from "../../cni";
 import type { ProbeResult } from "../probe";
-import { type HTTPHeader, type ProbeHTTPRequest } from "./request";
 
 // Models kubernetes/pkg/probe/http/http.go maxRespBodyLength.
 const maxRespBodyLength = (10 * 1) << 10;
 
 export interface GetHTTPInterface {
-	do(ctx: context.Context, req: ProbeHTTPRequest): Promise<HTTPResponse>;
-}
-
-export interface HTTPResponse {
-	statusCode: number;
-	body: string;
+	do(ctx: context.Context, req: http.Request): Promise<http.Response>;
 }
 
 export class HTTPProber {
@@ -32,7 +27,7 @@ export class HTTPProber {
 
 	// Models kubernetes/pkg/probe/http/http.go Probe.
 	async probe(
-		req: ProbeHTTPRequest,
+		req: http.Request,
 		timeoutMs: number,
 	): Promise<[ProbeResult, string, Error | undefined]> {
 		const [ctx, cancel] = context.withCancel(this.ctx);
@@ -69,10 +64,10 @@ export class HTTPProber {
 // Models kubernetes/pkg/probe/http/http.go DoHTTPProbe.
 export async function doHTTPProbe(
 	ctx: context.Context,
-	req: ProbeHTTPRequest,
+	req: http.Request,
 	client: GetHTTPInterface,
 ): Promise<[ProbeResult, string, Error | undefined]> {
-	let res: HTTPResponse;
+	let res: http.Response;
 	try {
 		res = await client.do(ctx, req);
 	} catch (error) {
@@ -101,20 +96,7 @@ class ClusterNetworkHTTPClient implements GetHTTPInterface {
 		readonly _followNonLocalRedirects: boolean,
 	) {}
 
-	async do(ctx: context.Context, req: ProbeHTTPRequest): Promise<HTTPResponse> {
-		const response = await this.network.fetch(ctx, req.url.toString(), {
-			method: req.method,
-			headers: headersForClusterNetwork(req.header),
-		});
-		return {
-			statusCode: response.status,
-			body: response.body ?? "",
-		};
+	async do(ctx: context.Context, req: http.Request): Promise<http.Response> {
+		return await this.network.fetch(ctx, req.url.toString(), req);
 	}
-}
-
-function headersForClusterNetwork(headers: HTTPHeader): Record<string, string> {
-	return Object.fromEntries(
-		Object.entries(headers).map(([key, values]) => [key, values.join(", ")]),
-	);
 }

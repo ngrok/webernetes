@@ -10,17 +10,17 @@ export class HttpEchoImage extends BaseImage {
 		}
 
 		context.listenHttp(options.port, async (_ctx, request) => {
-			if (request.path === "/health") {
+			if (`${request.url.pathname}${request.url.search}` === "/health") {
 				return {
-					status: 200,
-					headers: appHeaders(),
+					statusCode: 200,
+					header: appHeaders(),
 					body: '{"status":"ok"}\n',
 				};
 			}
 
 			return {
-				status: options.statusCode,
-				headers: appHeaders(),
+				statusCode: options.statusCode,
+				header: appHeaders(),
 				body: `${text}\n`,
 			};
 		});
@@ -91,9 +91,9 @@ function unquote(value: string): string {
 	return value;
 }
 
-function appHeaders(): Record<string, string> {
+function appHeaders(): Record<string, string[]> {
 	return {
-		"X-App-Name": "http-echo",
-		"X-App-Version": "simulator",
+		"X-App-Name": ["http-echo"],
+		"X-App-Version": ["simulator"],
 	};
 }

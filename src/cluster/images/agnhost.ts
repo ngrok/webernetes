@@ -10,43 +10,43 @@ export class AgnhostImage extends BaseImage {
 		}
 		const port = parsePort(argv.slice(commandIndex + 1)) ?? 8080;
 		context.listenHttp(port, async (_ctx, request) => {
-			const url = new URL(`http://localhost${request.path ?? "/"}`);
+			const url = request.url;
 			switch (url.pathname) {
 				case "/healthz":
 				case "/readyz":
-					return { status: 200, body: "ok\n" };
+					return { statusCode: 200, body: "ok\n" };
 				case "/exit":
 					return this.exitResponse(context, url);
 				case "/echo":
 					return {
-						status: Number(url.searchParams.get("code") ?? "200"),
+						statusCode: Number(url.searchParams.get("code") ?? "200"),
 						body: url.searchParams.get("msg") ?? "ok",
 					};
 				case "/redirect":
-					return { status: 302, headers: { Location: "/echo" }, body: "" };
+					return { statusCode: 302, header: { Location: ["/echo"] }, body: "" };
 				case "/shell":
 					return await this.shellResponse(context, url.searchParams.get("cmd") ?? "");
 				default:
-					return { status: 404, body: "not found\n" };
+					return { statusCode: 404, body: "not found\n" };
 			}
 		});
 		return await context.waitUntilKilled();
 	}
 
-	private exitResponse(context: ProcessContext, url: URL): { status: number; body: string } {
+	private exitResponse(context: ProcessContext, url: URL): { statusCode: number; body: string } {
 		const code = parseExitCode(url.searchParams.get("code"));
 		const waitMs = parseDurationMs(url.searchParams.get("wait"));
 		void (async () => {
 			await context.sleep(waitMs);
 			context.exit(code);
 		})().catch(() => {});
-		return { status: 200, body: "" };
+		return { statusCode: 200, body: "" };
 	}
 
 	private async shellResponse(
 		context: ProcessContext,
 		command: string,
-	): Promise<{ status: number; body: string }> {
+	): Promise<{ statusCode: number; body: string }> {
 		let output = "";
 		let error = "";
 		const code = await this.execCommand(context, this.splitShellWords(command), {
@@ -58,7 +58,7 @@ export class AgnhostImage extends BaseImage {
 			},
 		});
 		return {
-			status: 200,
+			statusCode: 200,
 			body: JSON.stringify({
 				output,
 				error,

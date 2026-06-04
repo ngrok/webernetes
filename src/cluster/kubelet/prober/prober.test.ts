@@ -10,6 +10,7 @@ import type {
 	V1TCPSocketAction,
 } from "../../../client";
 import { FakeRecorder, newFakeRecorder } from "../../../client-go/tools/record/fake";
+import { Clock } from "../../../clock";
 import * as context from "../../../go/context";
 import { browser } from "../../../test/describe";
 import type { ProbeResult } from "../../probe";
@@ -140,6 +141,7 @@ browser.describe("TestGetTCPAddrParts", () => {
 browser.describe("TestProbe", () => {
 	it("handles probe results and exec arguments", async () => {
 		const ctx = context.background();
+		const clock = new Clock();
 		const containerID = buildContainerID("test", "foobar");
 		const execProbe: V1Probe = {
 			exec: {},
@@ -235,7 +237,9 @@ browser.describe("TestProbe", () => {
 			for (const originalProbeType of ["liveness", "readiness", "startup"] as const) {
 				const probeType = test.unsupported ? (666 as unknown as ProbeType) : originalProbeType;
 				const prober = new Prober(
+					ctx,
 					new FakeContainerCommandRunner(),
+					clock,
 					new ClusterNetwork(),
 					new FakeRecorder(),
 				);
@@ -275,7 +279,13 @@ browser.describe("TestProbe", () => {
 
 				if ((test.expectCommand?.length ?? 0) > 0) {
 					const runner = new FakeContainerCommandRunner();
-					const commandProber = new Prober(runner, new ClusterNetwork(), new FakeRecorder());
+					const commandProber = new Prober(
+						ctx,
+						runner,
+						clock,
+						new ClusterNetwork(),
+						new FakeRecorder(),
+					);
 					const [, commandErr] = await commandProber.probe(
 						ctx,
 						probeType,
@@ -300,7 +310,13 @@ browser.describe("TestNewProber", () => {
 	it("initializes prober dependencies", () => {
 		const runner = new FakeContainerCommandRunner();
 		const recorder = new FakeRecorder();
-		const prober = new Prober(runner, new ClusterNetwork(), recorder);
+		const prober = new Prober(
+			context.background(),
+			runner,
+			new Clock(),
+			new ClusterNetwork(),
+			recorder,
+		);
 
 		expect(prober).toBeDefined();
 		expect(prober.runner).toBe(runner);
@@ -370,7 +386,9 @@ browser.describe("TestRecordContainerEventUnknownStatus", () => {
 			const bufferSize = tc.expected.length + 1;
 			const fakeRecorder = newFakeRecorder(bufferSize);
 			const prober = new Prober(
+				context.background(),
 				new FakeContainerCommandRunner(),
+				new Clock(),
 				new ClusterNetwork(),
 				fakeRecorder,
 			);
