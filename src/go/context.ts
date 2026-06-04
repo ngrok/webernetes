@@ -1,8 +1,10 @@
 import { Channel, type ReadOnlyChannel } from "./channel";
+import { Clock } from "../clock";
 
 export class ContextError extends Error {}
 
 export const Canceled = new ContextError("context canceled");
+export const DeadlineExceeded = new ContextError("context deadline exceeded");
 
 export type CancelFunc = () => void;
 export type CancelCauseFunc = (cause?: Error | undefined) => void;
@@ -29,6 +31,7 @@ class CancelContext implements Context {
 	private readonly children = new Set<CancelContext>();
 	private error: ContextError | undefined;
 	private causeError: Error | undefined;
+	private cleanup: (() => void) | undefined;
 
 	constructor(private readonly parent: Context) {}
 
@@ -56,12 +59,18 @@ class CancelContext implements Context {
 		this.children.delete(child);
 	}
 
+	setCleanup(cleanup: () => void): void {
+		this.cleanup = cleanup;
+	}
+
 	cancel(removeFromParent: boolean, error: ContextError, cause?: Error | undefined): void {
 		if (this.error) {
 			return;
 		}
 		this.error = error;
 		this.causeError = cause ?? error;
+		this.cleanup?.();
+		this.cleanup = undefined;
 		this.doneCh.close();
 
 		for (const child of this.children) {
@@ -110,6 +119,33 @@ export function withCancelCause(parent: Context): [Context, CancelCauseFunc] {
 			context.cancel(true, Canceled, cause);
 		},
 	];
+}
+
+// Models go/src/context/context.go WithTimeout.
+export function withTimeout(
+	parent: Context,
+	timeoutMs: number,
+	clock = new Clock(),
+): [Context, CancelFunc] {
+	const context = newCancelContext(parent);
+	const cancel = () => {
+		context.cancel(true, Canceled);
+	};
+	if (context.err()) {
+		return [context, cancel];
+	}
+	if (timeoutMs <= 0) {
+		context.cancel(true, DeadlineExceeded);
+		return [context, cancel];
+	}
+	const timer = clock.setTimeout(() => {
+		context.cancel(true, DeadlineExceeded);
+	}, timeoutMs);
+	context.setCleanup(() => {
+		clock.clearTimeout(timer);
+	});
+
+	return [context, cancel];
 }
 
 function newCancelContext(parent: Context): CancelContext {
