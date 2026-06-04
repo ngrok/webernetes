@@ -33,7 +33,7 @@ export interface ClusterOptions {
 export class KubeClient {
 	readonly corev1: k8s.CoreV1Api;
 	readonly discoveryv1: k8s.DiscoveryV1Api;
-	constructor(private readonly kubeConfig: k8s.KubeConfig) {
+	constructor(readonly kubeConfig: k8s.KubeConfig) {
 		this.corev1 = this.kubeConfig.makeApiClient(k8s.CoreV1Api);
 		this.discoveryv1 = this.kubeConfig.makeApiClient(k8s.DiscoveryV1Api);
 	}

@@ -135,22 +135,19 @@ export interface SyncHandler {
 	handlePodCleanups(ctx: context.Context): Promise<Error | undefined>;
 }
 
+// Models kubernetes/pkg/kubelet/kubelet.go Dependencies.
 export interface KubeletDependencies {
 	kubeClient: KubeClient | undefined;
-	podListWatchClient: PodListWatchClient | undefined;
-	serviceLister?: ServiceLister;
-	serviceHasSynced?: () => boolean;
-	node: V1Node;
-	nodeLister?: NodeLister;
-	nodeHasSynced?: () => boolean;
+	podConfig?: PodConfig;
 	recorder: EventRecorder;
-	podStartupLatencyTracker: PodStartupSLIObserver;
 	remoteRuntimeService?: RuntimeService;
 	remoteImageService?: ImageManagerService;
-	network: ClusterNetwork;
+	podStartupLatencyTracker: PodStartupSLIObserver;
+
+	// Simulator-only dependencies.
 	clock: Clock;
-	podConfig?: PodConfig;
-	nodeIPs?: string[];
+	network: ClusterNetwork;
+	node: V1Node;
 }
 
 interface KubeletOptions {
@@ -206,10 +203,10 @@ function makePodSourceConfig(
 
 	// Static pod file and URL sources are intentionally omitted: this simulator
 	// has partial static pod bookkeeping but does not support static pods end to end.
-	if (kubeDeps.kubeClient && kubeDeps.podListWatchClient) {
+	if (kubeDeps.kubeClient) {
 		newSourceApiserver(
 			ctx,
-			kubeDeps.podListWatchClient,
+			new PodListWatchClient(kubeDeps.kubeClient.kubeConfig),
 			nodeName,
 			nodeHasSynced,
 			cfg.channel(ctx, apiserverSource),
@@ -218,7 +215,7 @@ function makePodSourceConfig(
 	} else {
 		// For now we will throw an error here to make it easier to identify
 		// when things are not configured correctly.
-		throw new Error("kubeClient and podListWatchClient are required");
+		throw new Error("kubeClient is required");
 	}
 
 	return [cfg, undefined];
@@ -235,12 +232,14 @@ export function newMainKubelet(
 	kubeDeps: KubeletDependencies,
 	hostname: string,
 	nodeName: string,
+	nodeIPs: string[],
 ): Kubelet {
 	if (!kubeDeps.kubeClient) {
 		throw new Error("standalone kubelet mode is not implemented");
 	}
 	const kubeClient = kubeDeps.kubeClient;
-	const nodeHasSynced = kubeDeps.nodeHasSynced ?? (() => true);
+	const nodeLister = newAPINodeLister(kubeClient);
+	const nodeHasSynced = () => true;
 	if (!kubeDeps.podConfig) {
 		const [podConfig, podConfigErr] = makePodSourceConfig(
 			ctx,
@@ -256,21 +255,9 @@ export function newMainKubelet(
 		kubeDeps.podConfig = podConfig;
 	}
 	const podConfig = kubeDeps.podConfig;
-	const serviceLister =
-		kubeDeps.serviceLister ??
-		({
-			list: async () => {
-				try {
-					const services = await kubeClient.corev1.listServiceForAllNamespaces();
-					return [services.items, undefined];
-				} catch (error) {
-					return [[], error instanceof Error ? error : new Error(String(error))];
-				}
-			},
-		} satisfies ServiceLister);
-	const serviceHasSynced = kubeDeps.serviceHasSynced ?? (() => true);
-	const nodeLister = kubeDeps.nodeLister ?? newAPINodeLister(kubeClient);
-	const nodeIPs = kubeDeps.nodeIPs ? [...kubeDeps.nodeIPs] : ["127.0.0.1", "::1"];
+	const serviceLister = newAPIServiceLister(kubeClient);
+	const serviceHasSynced = () => true;
+	const normalizedNodeIPs = [...nodeIPs];
 	const clusterDNS = kubeCfg.clusterDNS.flatMap((ipEntry) => {
 		const ip = parseIPSloppy(ipEntry);
 		return ip ? [formatIP(ip)] : [];
@@ -283,7 +270,7 @@ export function newMainKubelet(
 			uid: nodeName,
 			namespace: "",
 		},
-		nodeIPs,
+		nodeIPs: normalizedNodeIPs,
 		clusterDNS,
 		clusterDomain: kubeCfg.clusterDomain,
 		resolverConfig: "",
@@ -332,7 +319,7 @@ export function newMainKubelet(
 		workQueue,
 		crashLoopBackOff: newBackOff(initialCrashLoopBackOffMs, maxCrashLoopBackOffMs, kubeDeps.clock),
 		clock: kubeDeps.clock,
-		nodeIPs,
+		nodeIPs: normalizedNodeIPs,
 		nodeAddresses: kubeDeps.node.status?.addresses,
 	});
 	kubelet.podWorkers = new PodWorkersImpl(
@@ -413,6 +400,19 @@ export interface ServiceLister {
 export interface NodeLister {
 	get(name: string): Promise<[node: V1Node | undefined, err: Error | undefined]>;
 	list(): Promise<[nodes: V1Node[], err: Error | undefined]>;
+}
+
+function newAPIServiceLister(kubeClient: KubeClient): ServiceLister {
+	return {
+		async list() {
+			try {
+				const services = await kubeClient.corev1.listServiceForAllNamespaces();
+				return [services.items, undefined];
+			} catch (error) {
+				return [[], error instanceof Error ? error : new Error(String(error))];
+			}
+		},
+	};
 }
 
 function newAPINodeLister(kubeClient: KubeClient): NodeLister {

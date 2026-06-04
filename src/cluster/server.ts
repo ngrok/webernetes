@@ -10,7 +10,6 @@ import { EventRecorderImpl } from "./events";
 import { Kubelet, newMainKubelet, NoopPodStartupSLIObserver } from "./kubelet";
 import type { Runtime as KubeletRuntime } from "./kubelet/container";
 import type { KubeletConfiguration } from "./kubelet/apis/config";
-import { PodListWatchClient } from "./kubelet/config";
 import * as context from "../go/context";
 import type { V1Node } from "../client";
 
@@ -73,7 +72,6 @@ export class Server {
 			options.kubeletConfiguration,
 			{
 				kubeClient: cluster.api,
-				podListWatchClient: new PodListWatchClient(cluster.kubeConfig),
 				recorder: new EventRecorderImpl({
 					api: cluster.api.corev1,
 					clock: cluster.clock,
@@ -85,11 +83,11 @@ export class Server {
 				remoteImageService: this.imageService,
 				network: this.network,
 				clock: cluster.clock,
-				nodeIPs: this.ipAddresses,
 				node: this.node,
 			},
 			this.name,
 			this.name,
+			this.ipAddresses,
 		);
 		this.kubelet.runtimeState.setNetworkState(undefined);
 		this.containerRuntime = this.kubelet.containerRuntime;
