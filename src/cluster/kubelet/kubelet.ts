@@ -10,6 +10,7 @@ import { Channel, select, type ReadOnlyChannel } from "../../go/channel";
 import * as context from "../../go/context";
 import { formatIP } from "../../go/net";
 import * as time from "../../go/time";
+import * as expansion from "../../third_party/forked/golang/expansion";
 import type { Backoff } from "../../client-go/util/flowcontrol/backoff";
 import { newBackOff } from "../../client-go/util/flowcontrol/backoff";
 import type { DnsConfig, ExecResult, ImageManagerService, RuntimeService } from "../cri";
@@ -146,37 +147,6 @@ export interface KubeletDependencies {
 	clock: Clock;
 	podConfig?: PodConfig;
 	nodeIPs?: string[];
-}
-
-function expandEnvironment(input: string, envMap: Map<string, string>): string {
-	let output = "";
-	let checkpoint = 0;
-	for (let cursor = 0; cursor < input.length; cursor++) {
-		if (input[cursor] !== "$" || cursor + 1 >= input.length) {
-			continue;
-		}
-		output += input.slice(checkpoint, cursor);
-		const [read, isVar, advance] = tryReadVariableName(input.slice(cursor + 1));
-		output += isVar ? (envMap.get(read) ?? `$(${read})`) : read;
-		cursor += advance;
-		checkpoint = cursor + 1;
-	}
-	return output + input.slice(checkpoint);
-}
-
-function tryReadVariableName(input: string): [read: string, isVar: boolean, advance: number] {
-	const first = input[0];
-	if (first === "$") {
-		return ["$", false, 1];
-	}
-	if (first !== "(") {
-		return [`$${first ?? ""}`, false, first === undefined ? 0 : 1];
-	}
-	const closer = input.indexOf(")", 1);
-	if (closer === -1) {
-		return ["$(", false, 1];
-	}
-	return [input.slice(1, closer), true, closer + 1];
 }
 
 const masterServices = new Set(["kubernetes"]);
@@ -1707,10 +1677,11 @@ export class Kubelet implements RuntimeHelper {
 			return [result, serviceEnvErr];
 		}
 		const tmpEnv = new Map<string, string>();
+		const mapping = expansion.mappingFuncFor(tmpEnv, serviceEnv);
 		for (const envVar of container.env ?? []) {
 			let runtimeVal = envVar.value ?? "";
 			if (runtimeVal.length > 0) {
-				runtimeVal = expandEnvironment(runtimeVal, new Map([...tmpEnv, ...serviceEnv]));
+				runtimeVal = expansion.expand(runtimeVal, mapping);
 			} else if (envVar.valueFrom?.fieldRef) {
 				const [fieldValue, fieldErr] = this.podFieldSelectorRuntimeValue(
 					ctx,
