@@ -96,6 +96,7 @@ export class Server {
 	async boot(ctx: context.Context) {
 		[this.ctx, this.cancelContext] = context.withCancel(ctx);
 		await this.kubelet.run();
+		this.kubelet.startGarbageCollection(this.ctx);
 	}
 
 	close(): Promise<void> {

@@ -100,7 +100,7 @@ export interface ContainerStatus {
 	imageId?: string;
 	imageRuntimeHandler: string;
 	hash: number;
-	state: "Created" | "Running" | "Exited";
+	state: "Created" | "Running" | "Exited" | "Unknown";
 	restartCount: number;
 	createdAt: number;
 	startedAt?: number;

@@ -32,7 +32,7 @@ interface KillPodOptions {
 // Models kubernetes/pkg/kubelet/pod_workers.go UpdatePodOptions.
 export interface UpdatePodOptions {
 	updateType: SyncPodType;
-	startTime: Date;
+	startTime?: Date;
 	pod?: V1Pod;
 	mirrorPod?: V1Pod;
 	runningPod?: kubecontainer.Pod;
@@ -44,7 +44,6 @@ export function newUpdatePodOptions(options: DeepPartial<UpdatePodOptions>): Upd
 	return deepMerge<UpdatePodOptions>(
 		{
 			updateType: "sync",
-			startTime: new Date(0),
 		},
 		options,
 	);
@@ -471,7 +470,11 @@ export class PodWorkersImpl implements PodWorkers {
 				this.workerRuns.set(uid, run);
 			}
 
-			if (status.pendingUpdate && status.pendingUpdate.startTime < options.startTime) {
+			if (
+				status.pendingUpdate?.startTime &&
+				options.startTime &&
+				status.pendingUpdate.startTime < options.startTime
+			) {
 				options.startTime = status.pendingUpdate.startTime;
 			}
 
