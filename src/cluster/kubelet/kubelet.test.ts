@@ -99,6 +99,8 @@ browser.describe("syncLoopAbort", () => {
 				new Channel<PodLifecycleEvent>(1).readOnly(),
 			);
 			expect(ok).toBe(false);
+
+			await kubelet.syncLoop(tCtx, ch.readOnly(), kubelet);
 		} finally {
 			await testKubelet.cleanup();
 		}

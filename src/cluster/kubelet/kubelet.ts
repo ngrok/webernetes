@@ -120,12 +120,6 @@ const imageBackOffPeriodMs = 10 * 1000;
 const syncTickerPeriodMs = 1000;
 // Models kubernetes/pkg/kubelet/kubelet.go Run's updateRuntimeUp interval.
 const runtimeStatusUpdatePeriodMs = 5 * 1000;
-// Models kubernetes/pkg/kubelet/kubelet.go syncLoop runtime readiness backoff base.
-const syncLoopRuntimeBackoffBaseMs = 100;
-// Models kubernetes/pkg/kubelet/kubelet.go syncLoop runtime readiness backoff max.
-const syncLoopRuntimeBackoffMaxMs = 5 * 1000;
-// Models kubernetes/pkg/kubelet/kubelet.go syncLoop runtime readiness backoff factor.
-const syncLoopRuntimeBackoffFactor = 2;
 // Models kubernetes/pkg/kubelet/kubelet.go SyncHandler.
 export interface SyncHandler {
 	handlePodAdditions(ctx: context.Context, pods: V1Pod[]): Promise<void>;
@@ -514,7 +508,6 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 	private readonly updateRuntimeMux = new Mutex();
 	private closePromise: Promise<void> | undefined;
 	private syncLoopExited = false;
-	private stopped = false;
 
 	public constructor(options: KubeletOptions) {
 		this.hostname = options.hostname;
@@ -600,7 +593,6 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 
 	// Models kubernetes/pkg/kubelet/kubelet.go Run.
 	async run(): Promise<void> {
-		this.statusManagerPromise = this.statusManager.start(this.ctx);
 		await this.updateRuntimeUp(this.ctx);
 
 		// Models kubernetes/pkg/kubelet/kubelet.go Run's wait.UntilWithContext updateRuntimeUp loop.
@@ -610,13 +602,13 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 			runtimeStatusUpdatePeriodMs,
 			this.clock,
 		);
+		this.statusManagerPromise = this.statusManager.start(this.ctx);
 		await this.pleg.start();
-		this.syncLoopPromise = this.syncLoop(this.ctx, this.podConfig.updates());
+		this.syncLoopPromise = this.syncLoop(this.ctx, this.podConfig.updates(), this);
 	}
 
 	close(): Promise<void> {
 		if (!this.closePromise) {
-			this.stopped = true;
 			this.cancelContext();
 			this.closePromise = (async () => {
 				await this.pleg.stop();
@@ -1033,14 +1025,17 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 	async syncLoop(
 		ctx: context.Context,
 		updates: ReadOnlyChannel<PodUpdate>,
-		handler: SyncHandler = this,
+		handler: SyncHandler,
 	): Promise<void> {
 		const syncTicker = new time.Ticker(this.clock, syncTickerPeriodMs);
 		const housekeepingTicker = new time.Ticker(this.clock, housekeepingPeriodMs);
 		const plegCh = this.pleg.watch();
-		let duration = syncLoopRuntimeBackoffBaseMs;
+		const base = 100;
+		const max = 5 * 1000;
+		const factor = 2;
+		let duration = base;
 		try {
-			while (!this.stopped && !ctx.err()) {
+			while (!ctx.err()) {
 				const err = this.runtimeState.runtimeErrors();
 				if (err) {
 					const selected = await select()
@@ -1049,10 +1044,10 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 					if (selected === "done") {
 						break;
 					}
-					duration = Math.min(syncLoopRuntimeBackoffMaxMs, syncLoopRuntimeBackoffFactor * duration);
+					duration = Math.min(max, factor * duration);
 					continue;
 				}
-				duration = syncLoopRuntimeBackoffBaseMs;
+				duration = base;
 
 				this.syncLoopMonitor = this.clock.now();
 				if (
@@ -1090,12 +1085,37 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 				if (!ok) {
 					return false;
 				}
-				await this.handlePodUpdateWithHandler(ctx, value, handler);
+				switch (value.op) {
+					case "ADD":
+						await handler.handlePodAdditions(ctx, value.pods);
+						break;
+					case "UPDATE":
+						await handler.handlePodUpdates(ctx, value.pods);
+						break;
+					case "REMOVE":
+						await handler.handlePodRemoves(ctx, value.pods);
+						break;
+					case "RECONCILE":
+						await handler.handlePodReconcile(ctx, value.pods);
+						break;
+					case "DELETE":
+						await handler.handlePodUpdates(ctx, value.pods);
+						break;
+				}
+				this.sourcesReady.addSource(value.source);
 				return true;
 			})
 			.case(plegCh, async ({ ok, value }) => {
 				if (ok) {
-					await this.handlePlegEvent(ctx, value, handler);
+					if (isSyncPodWorthy(value)) {
+						const pod = this.podManager.getPodByUid(value.id);
+						if (pod) {
+							await handler.handlePodSyncs(ctx, [pod]);
+						}
+					}
+					if (value.type === ContainerDied && value.data) {
+						await this.cleanUpContainersInPod(ctx, value.id, value.data);
+					}
 				}
 				return true;
 			})
@@ -1110,7 +1130,7 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 			})
 			.case(this.livenessManager.updates(), async ({ ok, value }) => {
 				if (ok && value.result === "failure") {
-					await this.handleProbeSync(ctx, value, "liveness", "unhealthy", handler);
+					await handleProbeSync(ctx, this, value, handler, "liveness", "unhealthy");
 				}
 				return true;
 			})
@@ -1120,7 +1140,7 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 					await this.statusManager.setContainerReadiness(value.podUid, value.containerId, ready);
 
 					const status = ready ? "ready" : "not ready";
-					await this.handleProbeSync(ctx, value, "readiness", status, handler);
+					await handleProbeSync(ctx, this, value, handler, "readiness", status);
 				}
 				return true;
 			})
@@ -1130,7 +1150,7 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 					await this.statusManager.setContainerStartup(value.podUid, value.containerId, started);
 
 					const status = started ? "started" : "unhealthy";
-					await this.handleProbeSync(ctx, value, "startup", status, handler);
+					await handleProbeSync(ctx, this, value, handler, "startup", status);
 				}
 				return true;
 			})
@@ -1164,77 +1184,12 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 			.case(ctx.done(), () => false);
 	}
 
-	// Models kubernetes/pkg/kubelet/kubelet.go syncLoopIteration configCh case.
-	private async handlePodUpdate(ctx: context.Context, update: PodUpdate): Promise<void> {
-		await this.handlePodUpdateWithHandler(ctx, update, this);
-	}
-
-	private async handlePodUpdateWithHandler(
-		ctx: context.Context,
-		update: PodUpdate,
-		handler: SyncHandler,
-	): Promise<void> {
-		switch (update.op) {
-			case "ADD":
-				await handler.handlePodAdditions(ctx, update.pods);
-				break;
-			case "UPDATE":
-				await handler.handlePodUpdates(ctx, update.pods);
-				break;
-			case "REMOVE":
-				await handler.handlePodRemoves(ctx, update.pods);
-				break;
-			case "RECONCILE":
-				await handler.handlePodReconcile(ctx, update.pods);
-				break;
-			case "DELETE":
-				// DELETE is treated as UPDATE because graceful deletion first
-				// updates the pod with a deletion timestamp.
-				await handler.handlePodUpdates(ctx, update.pods);
-				break;
-		}
-		this.sourcesReady.addSource(update.source);
-	}
-
-	// Models kubernetes/pkg/kubelet/kubelet.go syncLoopIteration plegCh case.
-	private async handlePlegEvent(
-		ctx: context.Context,
-		event: PodLifecycleEvent,
-		handler: SyncHandler = this,
-	): Promise<void> {
-		if (isSyncPodWorthy(event)) {
-			const pod = this.podManager.getPodByUid(event.id);
-			if (pod) {
-				await handler.handlePodSyncs(ctx, [pod]);
-			}
-		}
-		if (event.type === ContainerDied && event.data) {
-			await this.cleanUpContainersInPod(ctx, event.id, event.data);
-		}
-	}
-
-	// Models kubernetes/pkg/kubelet/kubelet.go handleProbeSync.
-	private async handleProbeSync(
-		ctx: context.Context,
-		update: ProbeUpdate,
-		_probe: "liveness" | "readiness" | "startup",
-		_status: string,
-		handler: SyncHandler = this,
-	): Promise<void> {
-		if (this.stopped || !update.podUid) {
-			return;
-		}
-		// We should not use the pod from the prober manager, because it is never
-		// updated after initialization.
-		const pod = this.podManager.getPodByUid(update.podUid);
-		if (!pod) {
-			return;
-		}
-		await handler.handlePodSyncs(ctx, [pod]);
-	}
-
 	private containerManagerUpdates(): ReadOnlyChannel<{ podUIDs: string[] }> | undefined {
-		// The simulator does not currently model kubelet's container manager update channel.
+		// Kubernetes' kubelet container manager owns node/pod resource management
+		// such as cgroups, QoS hierarchy, device manager, CPU/memory manager, and
+		// DRA resource updates. The simulator does not currently model pod
+		// resources, limits, cgroups, or dynamic resource allocation, so this
+		// mirrors the upstream stub's nil update channel.
 		return undefined;
 	}
 
@@ -1270,7 +1225,7 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 	async handlePodUpdates(ctx: context.Context, pods: V1Pod[]): Promise<void> {
 		const start = this.clock.now();
 		for (const pod of pods) {
-			if (this.stopped || pod.spec?.nodeName !== this.nodeName || !pod.metadata?.name) {
+			if (ctx.err() || pod.spec?.nodeName !== this.nodeName || !pod.metadata?.name) {
 				continue;
 			}
 			this.podManager.updatePod(pod);
@@ -1316,9 +1271,9 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 	}
 
 	// Models kubernetes/pkg/kubelet/kubelet.go HandlePodReconcile.
-	async handlePodReconcile(_ctx: context.Context, pods: V1Pod[]): Promise<void> {
+	async handlePodReconcile(ctx: context.Context, pods: V1Pod[]): Promise<void> {
 		for (const pod of pods) {
-			if (this.stopped || pod.spec?.nodeName !== this.nodeName || !pod.metadata?.name) {
+			if (ctx.err() || pod.spec?.nodeName !== this.nodeName || !pod.metadata?.name) {
 				continue;
 			}
 			this.podManager.updatePod(pod);
@@ -2406,4 +2361,20 @@ function preserveDataFromBeforeStopping(
 // Models kubernetes/pkg/kubelet/kubelet.go isSyncPodWorthy.
 function isSyncPodWorthy(event: PodLifecycleEvent): boolean {
 	return event.type !== ContainerRemoved;
+}
+
+// Models kubernetes/pkg/kubelet/kubelet.go handleProbeSync.
+async function handleProbeSync(
+	ctx: context.Context,
+	kl: Kubelet,
+	update: ProbeUpdate,
+	handler: SyncHandler,
+	_probe: "liveness" | "readiness" | "startup",
+	_status: string,
+): Promise<void> {
+	const pod = kl.podManager.getPodByUid(update.podUid);
+	if (!pod) {
+		return;
+	}
+	await handler.handlePodSyncs(ctx, [pod]);
 }
