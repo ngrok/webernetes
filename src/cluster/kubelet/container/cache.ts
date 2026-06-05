@@ -18,10 +18,10 @@ export interface Cache extends ROCache {
 		status: PodStatus | undefined,
 		error: Error | undefined,
 		timestamp: Date,
-	): boolean;
-	setObservedTime(id: string, timestamp: Date): void;
-	delete(id: string): void;
-	updateTime(timestamp: Date): void;
+	): Promise<boolean>;
+	setObservedTime(id: string, timestamp: Date): Promise<void>;
+	delete(id: string): Promise<void>;
+	updateTime(timestamp: Date): Promise<void>;
 }
 
 export type PodStatusResult = [status: PodStatus | undefined, err: Error | undefined];
@@ -43,8 +43,8 @@ interface SubRecord {
 // Models kubernetes/pkg/kubelet/container/cache.go cache.
 export class PodStatusCache implements Cache {
 	private readonly pods = new Map<string, Data>();
-	private readonly subscribers = new Map<string, SubRecord[]>();
 	private timestamp: Date | undefined;
+	private readonly subscribers = new Map<string, SubRecord[]>();
 
 	// Models kubernetes/pkg/kubelet/container/cache.go Get.
 	async get(id: string): Promise<PodStatusResult> {
@@ -71,12 +71,12 @@ export class PodStatusCache implements Cache {
 	}
 
 	// Models kubernetes/pkg/kubelet/container/cache.go Set.
-	set(
+	async set(
 		id: string,
 		status: PodStatus | undefined,
 		error: Error | undefined,
 		timestamp: Date,
-	): boolean {
+	): Promise<boolean> {
 		// Kubernetes has Evented PLEG timestamp conflict handling here. The simulator
 		// currently models Generic PLEG only.
 		this.pods.set(id, {
@@ -90,7 +90,7 @@ export class PodStatusCache implements Cache {
 	}
 
 	// Models kubernetes/pkg/kubelet/container/cache.go SetObservedTime.
-	setObservedTime(id: string, timestamp: Date): void {
+	async setObservedTime(id: string, timestamp: Date): Promise<void> {
 		const data = this.pods.get(id);
 		if (data) {
 			data.observedTime = timestamp;
@@ -99,12 +99,12 @@ export class PodStatusCache implements Cache {
 	}
 
 	// Models kubernetes/pkg/kubelet/container/cache.go Delete.
-	delete(id: string): void {
+	async delete(id: string): Promise<void> {
 		this.pods.delete(id);
 	}
 
 	// Models kubernetes/pkg/kubelet/container/cache.go UpdateTime.
-	updateTime(timestamp: Date): void {
+	async updateTime(timestamp: Date): Promise<void> {
 		this.timestamp = timestamp;
 		for (const id of this.subscribers.keys()) {
 			this.notify(id, timestamp);

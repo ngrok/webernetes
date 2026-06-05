@@ -9,7 +9,7 @@ browser.describe("PodStatusCache", () => {
 		const cache = new PodStatusCache();
 		const pending = cache.getNewerThan(context.background(), "pod-1", new Date(1000));
 
-		cache.updateTime(new Date(2000));
+		await cache.updateTime(new Date(2000));
 
 		await expect(pending).resolves.toEqual([
 			expect.objectContaining({
@@ -36,17 +36,17 @@ browser.describe("PodStatusCache", () => {
 		await Promise.resolve();
 		expect(completed).toBe(false);
 
-		cache.set("pod-1", status, undefined, new Date(2000));
+		await cache.set("pod-1", status, undefined, new Date(2000));
 
 		await expect(pending).resolves.toEqual([status, undefined]);
 		expect(completed).toBe(true);
 
 		const observed = cache.getNewerThan(context.background(), "pod-1", new Date(3000));
-		cache.setObservedTime("pod-1", new Date(3000));
+		await cache.setObservedTime("pod-1", new Date(3000));
 		await expect(observed).resolves.toEqual([status, undefined]);
 
 		const globallyFresh = cache.getNewerThan(context.background(), "pod-2", new Date(4000));
-		cache.updateTime(new Date(5000));
+		await cache.updateTime(new Date(5000));
 		await expect(globallyFresh).resolves.toEqual([
 			expect.objectContaining({
 				id: "pod-2",
@@ -60,9 +60,9 @@ browser.describe("PodStatusCache", () => {
 
 	it("delete removes pod status while global freshness can still return empty status", async () => {
 		const cache = new PodStatusCache();
-		cache.set("pod-1", podStatus("pod-1"), undefined, new Date(2000));
-		cache.delete("pod-1");
-		cache.updateTime(new Date(3000));
+		await cache.set("pod-1", podStatus("pod-1"), undefined, new Date(2000));
+		await cache.delete("pod-1");
+		await cache.updateTime(new Date(3000));
 
 		await expect(
 			cache.getNewerThan(context.background(), "pod-1", new Date(2500)),
