@@ -30,23 +30,23 @@ class FakeCache implements Cache {
 	}
 
 	// Models kubernetes/pkg/kubelet/container/testing/fake_cache.go Set.
-	set(
+	async set(
 		_id: string,
 		_status: PodStatusResult[0] | undefined,
 		_err: Error | undefined,
 		_timestamp: Date,
-	): boolean {
+	): Promise<boolean> {
 		return true;
 	}
 
 	// Models kubernetes/pkg/kubelet/container/testing/fake_cache.go Delete.
-	delete(_id: string): void {}
+	async delete(_id: string): Promise<void> {}
 
 	// Models kubernetes/pkg/kubelet/container/testing/fake_cache.go UpdateTime.
-	updateTime(_timestamp: Date): void {}
+	async updateTime(_timestamp: Date): Promise<void> {}
 
 	// Models kubernetes/pkg/kubelet/container/testing/fake_cache.go SetObservedTime.
-	setObservedTime(_id: string, _timestamp: Date): void {}
+	async setObservedTime(_id: string, _timestamp: Date): Promise<void> {}
 
 	private getDefaultStatus(id: string): PodStatusResult[0] {
 		return {

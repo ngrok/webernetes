@@ -772,7 +772,7 @@ browser.describe("TestTerminatePod", () => {
 			newContainerStatus({ name: "test-3", state: { running: {} } }),
 		];
 
-		syncer.terminatePod(testPod);
+		await syncer.terminatePod(testPod);
 
 		const newStatus = expectPodStatus(syncer, testPod);
 		for (const container of newStatus.containerStatuses ?? []) {
@@ -869,7 +869,7 @@ browser.describe("TestTerminatePodWaiting", () => {
 			newContainerStatus({ name: "test-3", state: { running: {} } }),
 		];
 
-		syncer.terminatePod(testPod);
+		await syncer.terminatePod(testPod);
 
 		const newStatus = expectPodStatus(syncer, testPod);
 		for (const container of newStatus.containerStatuses ?? []) {
@@ -1402,7 +1402,7 @@ browser.describe("TestTerminatePod_DefaultUnknownStatus", () => {
 			}
 			const expected = structuredClone(copied);
 
-			syncer.terminatePod(copied);
+			await syncer.terminatePod(copied);
 			const status = expectPodStatus(syncer, structuredClone(tc.pod));
 			if (tc.expectFn) {
 				tc.expectFn(status);
@@ -1474,7 +1474,7 @@ browser.describe("TestTerminatePod_EnsurePodPhaseIsTerminal", () => {
 	};
 
 	for (const [name, tc] of Object.entries(testCases)) {
-		it(name, () => {
+		it(name, async () => {
 			const kubeClient = newTestKubeClient();
 			const podManager = new PodManager();
 			const podStartupLatencyTracker = {
@@ -1493,7 +1493,7 @@ browser.describe("TestTerminatePod_EnsurePodPhaseIsTerminal", () => {
 
 			const pod = getTestPod();
 			pod.status = tc.status;
-			syncer.terminatePod(pod);
+			await syncer.terminatePod(pod);
 			const gotStatus = expectPodStatus(syncer, structuredClone(pod));
 			const gotStatusWithoutStartTime = structuredClone(gotStatus);
 			gotStatusWithoutStartTime.startTime = undefined;
@@ -1564,7 +1564,7 @@ browser.describe("TestSetContainerReadiness", () => {
 		const podManager = m.podManager;
 		podManager.addPod(pod);
 
-		m.setContainerReadiness(pod.metadata?.uid ?? "", cID1, true);
+		await m.setContainerReadiness(pod.metadata?.uid ?? "", cID1, true);
 		await verifyUpdates(m, 0);
 		expect(m.getPodStatus(pod.metadata?.uid ?? "")).toBeUndefined();
 
@@ -1573,22 +1573,22 @@ browser.describe("TestSetContainerReadiness", () => {
 		let gotStatus = expectPodStatus(m, pod);
 		verifyReadiness("initial", gotStatus, false, false, false);
 
-		m.setContainerReadiness(pod.metadata?.uid ?? "", cID1, false);
+		await m.setContainerReadiness(pod.metadata?.uid ?? "", cID1, false);
 		await verifyUpdates(m, 0);
 		gotStatus = expectPodStatus(m, pod);
 		verifyReadiness("unchanged", gotStatus, false, false, false);
 
-		m.setContainerReadiness(pod.metadata?.uid ?? "", cID1, true);
+		await m.setContainerReadiness(pod.metadata?.uid ?? "", cID1, true);
 		await verifyUpdates(m, 1);
 		gotStatus = expectPodStatus(m, pod);
 		verifyReadiness("c1 ready", gotStatus, true, false, false);
 
-		m.setContainerReadiness(pod.metadata?.uid ?? "", cID2, true);
+		await m.setContainerReadiness(pod.metadata?.uid ?? "", cID2, true);
 		await verifyUpdates(m, 1);
 		gotStatus = expectPodStatus(m, pod);
 		verifyReadiness("all ready", gotStatus, true, true, true);
 
-		m.setContainerReadiness(pod.metadata?.uid ?? "", buildContainerID("test", "foo"), true);
+		await m.setContainerReadiness(pod.metadata?.uid ?? "", buildContainerID("test", "foo"), true);
 		await verifyUpdates(m, 0);
 		gotStatus = expectPodStatus(m, pod);
 		verifyReadiness("ignore non-existent", gotStatus, true, true, true);
@@ -1658,7 +1658,7 @@ browser.describe("TestSetContainerStartup", () => {
 		const podManager = m.podManager;
 		podManager.addPod(pod);
 
-		m.setContainerStartup(pod.metadata?.uid ?? "", cID1, true);
+		await m.setContainerStartup(pod.metadata?.uid ?? "", cID1, true);
 		await verifyUpdates(m, 0);
 		expect(m.getPodStatus(pod.metadata?.uid ?? "")).toBeUndefined();
 
@@ -1667,22 +1667,22 @@ browser.describe("TestSetContainerStartup", () => {
 		let gotStatus = expectPodStatus(m, pod);
 		verifyStartup("initial", gotStatus, false, false, false);
 
-		m.setContainerStartup(pod.metadata?.uid ?? "", cID1, false);
+		await m.setContainerStartup(pod.metadata?.uid ?? "", cID1, false);
 		await verifyUpdates(m, 1);
 		gotStatus = expectPodStatus(m, pod);
 		verifyStartup("unchanged", gotStatus, false, false, false);
 
-		m.setContainerStartup(pod.metadata?.uid ?? "", cID1, true);
+		await m.setContainerStartup(pod.metadata?.uid ?? "", cID1, true);
 		await verifyUpdates(m, 1);
 		gotStatus = expectPodStatus(m, pod);
 		verifyStartup("c1 ready", gotStatus, true, false, false);
 
-		m.setContainerStartup(pod.metadata?.uid ?? "", cID2, true);
+		await m.setContainerStartup(pod.metadata?.uid ?? "", cID2, true);
 		await verifyUpdates(m, 1);
 		gotStatus = expectPodStatus(m, pod);
 		verifyStartup("all ready", gotStatus, true, true, true);
 
-		m.setContainerStartup(pod.metadata?.uid ?? "", buildContainerID("test", "foo"), true);
+		await m.setContainerStartup(pod.metadata?.uid ?? "", buildContainerID("test", "foo"), true);
 		await verifyUpdates(m, 0);
 		gotStatus = expectPodStatus(m, pod);
 		verifyStartup("ignore non-existent", gotStatus, true, true, true);
@@ -1806,7 +1806,7 @@ browser.describe("TestDeletePodFinished", () => {
 		const m = newTestManager(kubeClient);
 		const podManager = m.podManager;
 		podManager.addPod(pod);
-		m.terminatePod(pod);
+		await m.terminatePod(pod);
 		await verifyActions(m, [getAction(), patchAction(), deleteAction()]);
 	});
 });
