@@ -155,9 +155,12 @@ export class ProbeWorker {
 			return false;
 		}
 
-		const initialDelayMs = (this.spec.initialDelaySeconds ?? 0) * 1000;
 		const startedAt = c.state.running.startedAt?.getTime();
-		if (startedAt !== undefined && this.probeManager.clock.nowMs() < startedAt + initialDelayMs) {
+		if (
+			startedAt !== undefined &&
+			Math.trunc((this.probeManager.clock.nowMs() - startedAt) / 1000) <
+				(this.spec.initialDelaySeconds ?? 0)
+		) {
 			return true;
 		}
 

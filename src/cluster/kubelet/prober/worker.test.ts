@@ -389,6 +389,18 @@ browser.describe("TestInitialDelay", () => {
 			resultsManager(m, probeType).remove(testContainerID);
 		}
 	});
+
+	it("truncates subsecond start-time skew for zero initial delay", async () => {
+		const ctx = context.background();
+		const m = newTestManager();
+		const w = newTestWorker(m, readiness, {});
+		const status = getTestRunningStatus();
+		setOnlyRunningStartedAt(status, new Date(m.clock.nowMs() + 1));
+		await m.statusManager.setPodStatus(w.pod, status);
+
+		expectContinue(w, await w.doProbe(ctx), "subsecond future start time");
+		expectResult(w, "success", "subsecond future start time");
+	});
 });
 
 // Models kubernetes/pkg/kubelet/prober/worker_test.go TestFailureThreshold.
