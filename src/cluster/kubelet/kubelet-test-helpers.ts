@@ -41,7 +41,7 @@ import { PodManager } from "./pod";
 import { ResultsManager } from "./prober";
 import { FakeManager } from "./prober/testing/fake-manager";
 import { newRuntimeState } from "./runtime";
-import { StatusManager } from "./status";
+import { StatusManagerImpl } from "./status";
 import { wait } from "../../promise";
 import type { SyncPodType } from "./types/pod-update";
 import { BasicWorkQueue, type WorkQueue } from "./util/queue/work-queue";
@@ -440,11 +440,6 @@ export function newTestKubeletWithImageList(
 	const [kubeletCtx, cancelContext] = context.withCancel(tCtx);
 	const podConfig = newPodConfig(recorder, podStartupLatencyTracker, fakeClock);
 	const podManager = new PodManager();
-	const statusManager = new StatusManager({
-		clock: fakeClock,
-		kubeClient: fakeKubeClient,
-		podManager,
-	});
 	const livenessManager = new ResultsManager();
 	const readinessManager = new ResultsManager();
 	const startupManager = new ResultsManager();
@@ -452,24 +447,7 @@ export function newTestKubeletWithImageList(
 	runtimeState.setNetworkState(undefined);
 	const podCache = new PodStatusCache();
 	const workQueue = new BasicWorkQueue(fakeClock);
-	let kubelet: Kubelet;
-	const fakePodWorkers = new FakePodWorkers(
-		podCache,
-		(ctx, updateType, pod, mirrorPod, podStatus) =>
-			kubelet.syncPod(ctx, updateType, pod, mirrorPod, podStatus),
-	);
-	const pleg = new GenericPLEG(
-		fakeRuntime,
-		new Channel<PodLifecycleEvent>(100),
-		{
-			relistPeriodMs: 1000,
-			relistThresholdMs: 3 * 60 * 1000,
-		},
-		podCache,
-		fakeClock,
-		kubeletCtx,
-	);
-	kubelet = new Kubelet({
+	const kubelet = new Kubelet({
 		ctx: kubeletCtx,
 		cancelContext,
 		hostname: testKubeletHostname,
@@ -512,10 +490,7 @@ export function newTestKubeletWithImageList(
 		livenessManager,
 		readinessManager,
 		startupManager,
-		podWorkers: fakePodWorkers,
 		podCache,
-		pleg,
-		statusManager,
 		recorder,
 		workQueue,
 		crashLoopBackOff: newBackOff(10 * 1000, 300 * 1000, fakeClock),
@@ -523,6 +498,30 @@ export function newTestKubeletWithImageList(
 		nodeIPs: ["127.0.0.1", "::1"],
 		nodeAddresses: node.status?.addresses,
 	});
+	kubelet.statusManager = new StatusManagerImpl({
+		clock: fakeClock,
+		kubeClient: fakeKubeClient,
+		podManager,
+		podDeletionSafety: kubelet,
+		podStartupLatencyHelper: podStartupLatencyTracker,
+	});
+	const fakePodWorkers = new FakePodWorkers(
+		podCache,
+		(ctx, updateType, pod, mirrorPod, podStatus) =>
+			kubelet.syncPod(ctx, updateType, pod, mirrorPod, podStatus),
+	);
+	kubelet.podWorkers = fakePodWorkers;
+	kubelet.pleg = new GenericPLEG(
+		fakeRuntime,
+		new Channel<PodLifecycleEvent>(100),
+		{
+			relistPeriodMs: 1000,
+			relistThresholdMs: 3 * 60 * 1000,
+		},
+		podCache,
+		fakeClock,
+		kubeletCtx,
+	);
 	const [activeDeadlineHandler, activeDeadlineHandlerErr] = newActiveDeadlineHandler(
 		kubelet.statusManager,
 		kubelet.recorder,
