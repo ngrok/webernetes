@@ -28,7 +28,7 @@ export class Backoff {
 	next(id: string, eventTime: Date): void {
 		let entry = this.perItemBackoff.get(id);
 		if (!entry || this.hasExpired(eventTime, entry.lastUpdate, this.maxDurationMs)) {
-			entry = this.initEntry(id);
+			entry = this.initEntryUnsafe(id);
 			entry.backoff += this.jitter(entry.backoff);
 		} else {
 			const delay = entry.backoff * 2 + this.jitter(entry.backoff);
@@ -82,7 +82,7 @@ export class Backoff {
 	}
 
 	// Models staging/src/k8s.io/client-go/util/flowcontrol/backoff.go Backoff.initEntryUnsafe.
-	private initEntry(id: string): BackoffEntry {
+	private initEntryUnsafe(id: string): BackoffEntry {
 		const entry = { backoff: this.defaultDurationMs, lastUpdate: new Date(0) };
 		this.perItemBackoff.set(id, entry);
 		return entry;

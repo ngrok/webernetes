@@ -68,9 +68,7 @@ export class UndeltaStore<T extends KubernetesObject> implements Store<T> {
 	}
 
 	// Models staging/src/k8s.io/client-go/tools/cache/store.go Store.GetByKey.
-	getByKey(
-		key: string,
-	): MaybePromise<[item: T | undefined, exists: boolean, err: Error | undefined]> {
+	getByKey(key: string): [item: T | undefined, exists: boolean, err: Error | undefined] {
 		return this.store.getByKey(key);
 	}
 

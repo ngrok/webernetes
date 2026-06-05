@@ -268,7 +268,7 @@ export class Reflector<T extends KubernetesObject> {
 				}
 			}
 		} finally {
-			w?.stop();
+			await w?.stop();
 		}
 	}
 

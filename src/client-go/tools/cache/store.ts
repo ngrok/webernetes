@@ -26,9 +26,7 @@ export interface Store<T extends KubernetesObject> {
 	get(
 		obj: T | ExplicitKey,
 	): MaybePromise<[item: T | undefined, exists: boolean, err: Error | undefined]>;
-	getByKey(
-		key: string,
-	): MaybePromise<[item: T | undefined, exists: boolean, err: Error | undefined]>;
+	getByKey(key: string): [item: T | undefined, exists: boolean, err: Error | undefined];
 	replace(list: T[], resourceVersion: string): MaybePromise<Error | undefined>;
 	resync(): MaybePromise<Error | undefined>;
 }
