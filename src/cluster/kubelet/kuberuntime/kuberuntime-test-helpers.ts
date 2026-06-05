@@ -1,5 +1,6 @@
 import { expect } from "vitest";
 import type { V1Container, V1Pod } from "../../../client";
+import { newBackOff } from "../../../client-go/util/flowcontrol/backoff";
 import { Clock } from "../../../clock";
 import * as context from "../../../go/context";
 import type {
@@ -117,6 +118,7 @@ export function createTestRuntimeManager(ctx: context.Context): TestRuntimeManag
 		},
 		internalLifecycle: testInternalLifecycle(),
 		livenessManager,
+		imageBackOff: newBackOff(10 * 1000, 300 * 1000, clock),
 		network: new ClusterNetwork(),
 		startupManager,
 		clock,

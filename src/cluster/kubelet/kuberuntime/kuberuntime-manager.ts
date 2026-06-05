@@ -1,7 +1,6 @@
 import type { V1Container, V1Pod } from "../../../client";
 import type { Clock } from "../../../clock";
 import type { Backoff } from "../../../client-go/util/flowcontrol/backoff";
-import { newBackOff } from "../../../client-go/util/flowcontrol/backoff";
 import { KeyFnMap } from "../../../collections";
 import { Channel, select } from "../../../go/channel";
 import * as context from "../../../go/context";
@@ -71,6 +70,7 @@ import { newHandlerRunner } from "../lifecycle";
 import type { ClusterNetwork } from "../../cni";
 import * as format from "../util/format";
 import { getNodenameForKernel, podSandboxChanged } from "./util/util";
+import { newContainerGC, type ContainerGC } from "./kuberuntime-gc";
 import {
 	getTerminationMessage,
 	hasAnyRegularContainerCreated,
@@ -127,20 +127,17 @@ const errPreStartHook = new Error("PreStartHookError");
 const errPostStartHook = new Error("PostStartHookError");
 // Models kubernetes/pkg/kubelet/container/sync_result.go ErrRunContainer.
 const errRunContainer = new Error("RunContainerError");
-// Models kubernetes/pkg/kubelet/kubelet.go MaxImageBackOff.
-const maxImageBackOffMs = 300 * 1000;
-// Models kubernetes/pkg/kubelet/kubelet.go imageBackOffPeriod.
-const imageBackOffPeriodMs = 10 * 1000;
 
 export interface KubeGenericRuntimeManagerOptions {
 	ctx: context.Context;
 	runtimeService: RuntimeService;
 	imageService: ImageManagerService;
+	podStateProvider: PodStateProvider;
 	runtimeHelper: RuntimeHelper;
 	events: EventRecorder;
 	internalLifecycle?: InternalContainerLifecycle;
 	livenessManager: ResultsManager;
-	imageBackOff?: Backoff;
+	imageBackOff: Backoff;
 	registryPullQPS?: number;
 	registryBurst?: number;
 	maxParallelImagePulls?: number;
@@ -149,24 +146,34 @@ export interface KubeGenericRuntimeManagerOptions {
 	clock: Clock;
 }
 
+// Models kubernetes/pkg/kubelet/kuberuntime/kuberuntime_manager.go podStateProvider.
+export interface PodStateProvider {
+	isPodTerminationRequested(uid: string): Promise<boolean>;
+	shouldPodContentBeRemoved(uid: string): Promise<boolean>;
+	shouldPodRuntimeBeRemoved(uid: string): Promise<boolean>;
+}
+
 // Models kubernetes/pkg/kubelet/kuberuntime/kuberuntime_manager.go kubeGenericRuntimeManager.
 export class KubeGenericRuntimeManager implements Runtime, CommandRunner {
 	private readonly ctx: context.Context;
 	private readonly runtimeService: RuntimeService;
 	private readonly imageService: ImageManagerService;
 	runtimeHelper: RuntimeHelper;
+	readonly containerGC: ContainerGC;
+	readonly podStateProvider: PodStateProvider;
 	private readonly imagePuller: ImageManager;
 	private readonly events: EventRecorder;
 	private readonly internalLifecycle: InternalContainerLifecycle;
 	private readonly livenessManager: ResultsManager;
 	private readonly runner: HandlerRunner;
 	private readonly startupManager: ResultsManager;
-	private readonly clock: Clock;
+	readonly clock: Clock;
 
 	constructor(options: KubeGenericRuntimeManagerOptions) {
 		this.ctx = options.ctx;
 		this.runtimeService = options.runtimeService;
 		this.imageService = options.imageService;
+		this.podStateProvider = options.podStateProvider;
 		this.runtimeHelper = options.runtimeHelper;
 		this.events = options.events;
 		this.internalLifecycle = options.internalLifecycle ?? newFakeInternalContainerLifecycle();
@@ -177,8 +184,7 @@ export class KubeGenericRuntimeManager implements Runtime, CommandRunner {
 			recorder: this.events,
 			imageService: this,
 			clock: this.clock,
-			imageBackOff:
-				options.imageBackOff ?? newBackOff(imageBackOffPeriodMs, maxImageBackOffMs, this.clock),
+			imageBackOff: options.imageBackOff,
 			qps: options.registryPullQPS,
 			burst: options.registryBurst,
 			maxParallelImagePulls: options.maxParallelImagePulls,
@@ -194,6 +200,7 @@ export class KubeGenericRuntimeManager implements Runtime, CommandRunner {
 			eventRecorder: this.events,
 			network: options.network,
 		});
+		this.containerGC = newContainerGC(this.runtimeService, this.podStateProvider, this);
 	}
 
 	// Models kubernetes/pkg/kubelet/kuberuntime/kuberuntime_manager.go kubeGenericRuntimeManager.Type.
@@ -338,7 +345,7 @@ export class KubeGenericRuntimeManager implements Runtime, CommandRunner {
 	}
 
 	// Models kubernetes/pkg/kubelet/kuberuntime/kuberuntime_container.go kubeGenericRuntimeManager.getContainers.
-	private async getContainers(
+	async getContainers(
 		ctx: context.Context,
 		opts: ListOptions,
 	): Promise<[containers: CRIContainer[], err: Error | undefined]> {
@@ -346,7 +353,7 @@ export class KubeGenericRuntimeManager implements Runtime, CommandRunner {
 	}
 
 	// Models kubernetes/pkg/kubelet/kuberuntime/kuberuntime_container.go kubeGenericRuntimeManager.getSandboxes.
-	private async getSandboxes(
+	async getSandboxes(
 		ctx: context.Context,
 		opts: ListOptions,
 	): Promise<[sandboxes: PodSandbox[], err: Error | undefined]> {
@@ -639,7 +646,7 @@ export class KubeGenericRuntimeManager implements Runtime, CommandRunner {
 	}
 
 	// Models kubernetes/pkg/kubelet/kuberuntime/kuberuntime_container.go killContainer.
-	private async killContainer(
+	async killContainer(
 		ctx: context.Context,
 		pod: V1Pod | undefined,
 		containerID: ContainerID,
@@ -1009,7 +1016,7 @@ export class KubeGenericRuntimeManager implements Runtime, CommandRunner {
 	}
 
 	// Models kubernetes/pkg/kubelet/kuberuntime/kuberuntime_container.go removeContainer.
-	private async removeContainer(
+	async removeContainer(
 		ctx: context.Context,
 		containerID: string,
 		keepLogs: boolean,
@@ -1176,13 +1183,19 @@ export class KubeGenericRuntimeManager implements Runtime, CommandRunner {
 
 	// Models kubernetes/pkg/kubelet/kuberuntime/kuberuntime_manager.go kubeGenericRuntimeManager.GarbageCollect.
 	async garbageCollect(
-		_ctx: context.Context,
-		_gcPolicy: GCPolicy,
-		_allSourcesReady: boolean,
-		_evictNonDeletedPods: boolean,
+		ctx: context.Context,
+		gcPolicy: GCPolicy,
+		allSourcesReady: boolean,
+		evictNonDeletedPods: boolean,
 	): Promise<Error | undefined> {
-		// TODO(samwho): implement this.
-		return undefined;
+		// Upstream removes terminated pods from actuatedState here. The simulator
+		// does not currently model Kubernetes resource allocation state.
+		return await this.containerGC.garbageCollect(
+			ctx,
+			gcPolicy,
+			allSourcesReady,
+			evictNonDeletedPods,
+		);
 	}
 
 	// Models kubernetes/pkg/kubelet/kuberuntime/kuberuntime_manager.go kubeGenericRuntimeManager.UpdatePodCIDR.

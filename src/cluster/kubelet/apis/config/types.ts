@@ -7,4 +7,7 @@ export interface KubeletConfiguration {
 	registryBurst: number;
 	serializeImagePulls: boolean;
 	maxParallelImagePulls: number | undefined;
+	minimumGCAgeMs: number;
+	maxPerPodContainerCount: number;
+	maxContainerCount: number;
 }

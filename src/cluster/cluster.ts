@@ -88,6 +88,9 @@ export class Cluster {
 			registryBurst: 10,
 			serializeImagePulls: true,
 			maxParallelImagePulls: undefined,
+			minimumGCAgeMs: 0,
+			maxPerPodContainerCount: 1,
+			maxContainerCount: -1,
 			clusterDomain: "cluster.local",
 		};
 

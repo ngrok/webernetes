@@ -25,6 +25,7 @@ import {
 	convertPodStatusToRunningPod,
 	errPodNotFound,
 	isHostNetworkPod,
+	newContainerGC,
 	newRuntimeCache,
 	networkReady,
 	PodStatusCache,
@@ -39,6 +40,7 @@ import type {
 	PodStatus as PodRuntimeStatus,
 	Runtime as KubeletRuntime,
 	RuntimeCache,
+	GC,
 	Status as ContainerStatus,
 } from "./container";
 import type { RunContainerOptions, RuntimeHelper } from "./container";
@@ -117,6 +119,8 @@ const runtimeCacheRefreshPeriodMs = housekeepingPeriodMs + housekeepingWarningDu
 const backOffPeriodMs = 10 * 1000;
 // Models kubernetes/pkg/kubelet/kubelet.go imageBackOffPeriod.
 const imageBackOffPeriodMs = 10 * 1000;
+// Models kubernetes/pkg/kubelet/kubelet.go ContainerGCPeriod.
+const containerGCPeriodMs = 60 * 1000;
 // Models kubernetes/pkg/kubelet/kubelet.go syncLoop's one-second syncTicker.
 const syncTickerPeriodMs = 1000;
 // Models kubernetes/pkg/kubelet/kubelet.go Run's updateRuntimeUp interval.
@@ -333,6 +337,7 @@ export function newMainKubelet(
 		ctx: kubeletCtx,
 		runtimeService: kubeDeps.remoteRuntimeService,
 		imageService: kubeDeps.remoteImageService,
+		podStateProvider: kubelet.podWorkers,
 		runtimeHelper: kubelet,
 		events: kubeDeps.recorder,
 		livenessManager,
@@ -345,6 +350,20 @@ export function newMainKubelet(
 		clock: kubeDeps.clock,
 	});
 	kubelet.containerRuntime = containerRuntime;
+	const containerGCPolicy = {
+		minAgeMs: kubeCfg.minimumGCAgeMs,
+		maxPerPodContainer: kubeCfg.maxPerPodContainerCount,
+		maxContainers: kubeCfg.maxContainerCount,
+	};
+	const [containerGC, containerGCErr] = newContainerGC(
+		kubelet.containerRuntime,
+		containerGCPolicy,
+		kubelet.sourcesReady,
+	);
+	if (containerGCErr || !containerGC) {
+		throw containerGCErr ?? new Error("failed to initialize container garbage collector");
+	}
+	kubelet.containerGC = containerGC;
 	kubelet.runtimeCache = newRuntimeCache(
 		kubelet.containerRuntime,
 		runtimeCacheRefreshPeriodMs,
@@ -462,6 +481,8 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 	private readonly imageService: ImageManagerService | undefined;
 	// Package-visible for upstream-parity tests and Server wiring that mirror kubelet_test.go.
 	containerRuntime!: KubeletRuntime;
+	// Models kubernetes/pkg/kubelet/kubelet.go Kubelet.containerGC.
+	containerGC!: GC;
 	// Package-visible for upstream-parity tests that mirror kubelet_test.go.
 	runtimeCache!: RuntimeCache;
 	// Package-visible for upstream-parity tests that mirror kubelet_test.go.
@@ -506,6 +527,7 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 	private syncLoopPromise: Promise<void> | undefined;
 	private statusManagerPromise: Promise<void> | undefined;
 	private runtimeStatusUpdaterPromise: Promise<void> | undefined;
+	private containerGCPromise: Promise<void> | undefined;
 	private readonly updateRuntimeMux = new Mutex();
 	private closePromise: Promise<void> | undefined;
 	private syncLoopExited = false;
@@ -608,6 +630,34 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 		this.syncLoopPromise = this.syncLoop(this.ctx, this.podConfig.updates(), this);
 	}
 
+	// Models kubernetes/pkg/kubelet/kubelet.go StartGarbageCollection.
+	startGarbageCollection(ctx: context.Context): void {
+		this.containerGCPromise = untilWithContext(
+			ctx,
+			async (ctx) => {
+				const err = await this.containerGC.garbageCollect(ctx);
+				if (err) {
+					await this.recorder.eventf(
+						{
+							kind: "Node",
+							name: this.nodeName,
+							uid: this.nodeName,
+							namespace: "",
+						},
+						"Warning",
+						"ContainerGCFailed",
+						"%s",
+						err.message,
+					);
+				}
+			},
+			containerGCPeriodMs,
+			this.clock,
+		);
+
+		// TODO(samwho): implement image GC here
+	}
+
 	close(): Promise<void> {
 		if (!this.closePromise) {
 			this.cancelContext();
@@ -621,6 +671,7 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 				await this.syncLoopPromise;
 				await this.runtimeStatusUpdaterPromise;
 				await this.statusManagerPromise;
+				await this.containerGCPromise;
 			})();
 		}
 		return this.closePromise;
@@ -895,31 +946,11 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 		ctx: context.Context,
 		runningPod: RuntimePod,
 	): Promise<Error | undefined> {
-		if (ctx.err()) {
-			return context.Canceled;
-		}
 		const pod = toAPIPod(runningPod);
 		const gracePeriod = 1;
 		const killErr = await this.killPod(ctx, pod, runningPod, gracePeriod);
 		if (killErr) {
 			return killErr;
-		}
-		if (this.runtimeService) {
-			for (const sandbox of runningPod.sandboxes) {
-				const err = await this.runtimeService.removePodSandbox(ctx, sandbox.id.id);
-				if (err) {
-					return err;
-				}
-			}
-		}
-		// Kubernetes relies on runtime garbage collection after killing runtime-only
-		// pods. The simulator has no separate runtime GC loop, so remove any
-		// container records not covered by sandbox removal here.
-		for (const container of runningPod.containers) {
-			const err = await this.containerRuntime.deleteContainer(ctx, container.id);
-			if (err) {
-				return err;
-			}
 		}
 		return undefined;
 	}
@@ -930,46 +961,10 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 		pod: V1Pod,
 		podStatus: PodRuntimeStatus,
 	): Promise<Error | undefined> {
-		if (ctx.err()) {
-			return context.Canceled;
-		}
 		const apiPodStatus = this.generateAPIPodStatus(ctx, pod, podStatus, true);
 		await this.statusManager.setPodStatus(pod, apiPodStatus);
 
-		// Kubernetes waits for volume teardown, unregisters secret/configmap
-		// managers, and releases cgroups/user namespaces here. The simulator does
-		// not model those resources, but it does tear down its in-memory CRI pod.
-		const cleanupErr = await this.cleanupPodRuntime(ctx, pod);
-		if (cleanupErr) {
-			return cleanupErr;
-		}
-
 		await this.statusManager.terminatePod(pod);
-		return undefined;
-	}
-
-	private async cleanupPodRuntime(ctx: context.Context, pod: V1Pod): Promise<Error | undefined> {
-		const [runningPod, runningPodErr] = await this.containerRuntime.getPod(
-			ctx,
-			pod.metadata?.uid ?? "",
-		);
-		if (runningPodErr) {
-			if (runningPodErr === errPodNotFound) {
-				return undefined;
-			}
-			return runningPodErr;
-		}
-		if (!runningPod) {
-			return undefined;
-		}
-		if (this.runtimeService) {
-			for (const sandbox of runningPod.sandboxes) {
-				const err = await this.runtimeService.removePodSandbox(ctx, sandbox.id.id);
-				if (err) {
-					return err;
-				}
-			}
-		}
 		return undefined;
 	}
 
@@ -1009,7 +1004,6 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 		await this.podWorkers.updatePod(ctx, {
 			pod,
 			updateType: "kill",
-			startTime: this.clock.now(),
 		});
 		return undefined;
 	}
