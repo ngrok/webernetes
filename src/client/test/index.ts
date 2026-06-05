@@ -1,1 +1,7 @@
-export { clientAction, TestKubeClient, type ClientAction } from "./kube-client";
+export {
+	clientAction,
+	TestKubeClient,
+	type ClientAction,
+	type ClientReaction,
+	type ClientReactor,
+} from "./kube-client";
