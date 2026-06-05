@@ -96,6 +96,7 @@ import {
 } from "../../apimachinery/pkg/util/validation/validation";
 import { getNodeHostIPs } from "../../util/node";
 import { isIPv4, isIPv6, parseIPSloppy } from "../../utils/net";
+import { untilWithContext } from "../../apimachinery/pkg/util/wait/backoff";
 
 // Models kubernetes/pkg/kubelet/kubelet.go maxWaitForContainerRuntime.
 const maxWaitForContainerRuntimeMs = 30 * 1000;
@@ -567,6 +568,7 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 		}
 	}
 
+	// Models kubernetes/pkg/kubelet/kubelet.go PodCPUAndMemoryStats.
 	podCPUAndMemoryStats(
 		_ctx: context.Context,
 		_pod: V1Pod,
@@ -600,7 +602,14 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 	async run(): Promise<void> {
 		this.statusManagerPromise = this.statusManager.start(this.ctx);
 		await this.updateRuntimeUp(this.ctx);
-		this.runtimeStatusUpdaterPromise = this.runRuntimeStatusUpdater(this.ctx);
+
+		// Models kubernetes/pkg/kubelet/kubelet.go Run's wait.UntilWithContext updateRuntimeUp loop.
+		this.runtimeStatusUpdaterPromise = untilWithContext(
+			this.ctx,
+			(ctx) => this.updateRuntimeUp(ctx),
+			runtimeStatusUpdatePeriodMs,
+			this.clock,
+		);
 		await this.pleg.start();
 		this.syncLoopPromise = this.syncLoop(this.ctx, this.podConfig.updates());
 	}
@@ -622,25 +631,6 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 			})();
 		}
 		return this.closePromise;
-	}
-
-	private async runRuntimeStatusUpdater(ctx: context.Context): Promise<void> {
-		const ticker = new time.Ticker(this.clock, runtimeStatusUpdatePeriodMs);
-		try {
-			for (;;) {
-				const selected = await select()
-					.case(ctx.done(), () => "done" as const)
-					.case(ticker.C, async () => {
-						await this.updateRuntimeUp(ctx);
-						return "tick" as const;
-					});
-				if (selected === "done") {
-					return;
-				}
-			}
-		} finally {
-			ticker.stop();
-		}
 	}
 
 	// Models kubernetes/pkg/kubelet/kubelet.go updateRuntimeUp.

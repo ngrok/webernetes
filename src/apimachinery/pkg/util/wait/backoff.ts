@@ -1,4 +1,7 @@
 import type { Clock } from "../../../../clock";
+import { select } from "../../../../go/channel";
+import * as context from "../../../../go/context";
+import type { MaybePromise } from "../../../../promise";
 import { DelayFunc } from "./delay";
 import {
 	FixedTimer,
@@ -9,6 +12,8 @@ import {
 	VariableTimer,
 } from "./timer";
 import { jitter as jitterDuration } from "./wait";
+
+export type FuncWithContext = (ctx: context.Context) => MaybePromise<void>;
 
 export interface BackoffOptions {
 	durationMs?: number;
@@ -124,6 +129,51 @@ class BackoffManager {
 			this.lastStart = this.clock.now();
 		}
 		return this.backoff.step();
+	}
+}
+
+// Models staging/src/k8s.io/apimachinery/pkg/util/wait/backoff.go UntilWithContext.
+export async function untilWithContext(
+	ctx: context.Context,
+	f: FuncWithContext,
+	periodMs: number,
+	clock: Clock,
+): Promise<void> {
+	await backoffUntilWithContext(ctx, f, new Backoff({ durationMs: periodMs }).timer(clock), true);
+}
+
+// Models staging/src/k8s.io/apimachinery/pkg/util/wait/backoff.go BackoffUntilWithContext.
+async function backoffUntilWithContext(
+	ctx: context.Context,
+	f: FuncWithContext,
+	timer: Timer,
+	sliding: boolean,
+): Promise<void> {
+	try {
+		for (;;) {
+			if (ctx.err()) {
+				return;
+			}
+
+			if (!sliding) {
+				timer.next();
+			}
+
+			await f(ctx);
+
+			if (sliding) {
+				timer.next();
+			}
+
+			const selected = await select()
+				.case(ctx.done(), () => "done" as const)
+				.case(timer.c(), () => "time" as const);
+			if (selected === "done") {
+				return;
+			}
+		}
+	} finally {
+		timer.stop();
 	}
 }
 
