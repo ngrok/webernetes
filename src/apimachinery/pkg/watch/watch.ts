@@ -1,5 +1,7 @@
 import { Channel, type ReadOnlyChannel } from "../../../go/channel";
+import { Mutex } from "../../../go/sync/mutex";
 import type { KubernetesObject } from "../../../client/types";
+import type { MaybePromise } from "../../../promise";
 
 // Models staging/src/k8s.io/apimachinery/pkg/watch/watch.go EventType.
 export type EventType = "ADDED" | "MODIFIED" | "DELETED" | "BOOKMARK" | "ERROR";
@@ -12,7 +14,7 @@ export interface Event<T extends KubernetesObject> {
 
 // Models staging/src/k8s.io/apimachinery/pkg/watch/watch.go Interface.
 export interface Interface<T extends KubernetesObject> {
-	stop(): void;
+	stop(): MaybePromise<void>;
 	resultChan(): ReadOnlyChannel<Event<T>>;
 }
 
@@ -45,28 +47,33 @@ export function newFakeWithOptions<T extends KubernetesObject>(
 export class FakeWatcher<T extends KubernetesObject> implements Interface<T> {
 	private result: Channel<Event<T>>;
 	private stopped = false;
+	private readonly lock = new Mutex();
 
 	constructor(private readonly channelSize = 0) {
 		this.result = new Channel<Event<T>>(this.channelSize);
 	}
 
 	// Models staging/src/k8s.io/apimachinery/pkg/watch/watch.go FakeWatcher.Stop.
-	stop(): void {
-		if (!this.stopped) {
-			this.result.close();
-			this.stopped = true;
-		}
+	async stop(): Promise<void> {
+		await this.lock.withLock(() => {
+			if (!this.stopped) {
+				this.result.close();
+				this.stopped = true;
+			}
+		});
 	}
 
 	// Models staging/src/k8s.io/apimachinery/pkg/watch/watch.go FakeWatcher.IsStopped.
-	isStopped(): boolean {
-		return this.stopped;
+	async isStopped(): Promise<boolean> {
+		return await this.lock.withLock(() => this.stopped);
 	}
 
 	// Models staging/src/k8s.io/apimachinery/pkg/watch/watch.go FakeWatcher.Reset.
-	reset(): void {
-		this.stopped = false;
-		this.result = new Channel<Event<T>>(this.channelSize);
+	async reset(): Promise<void> {
+		await this.lock.withLock(() => {
+			this.stopped = false;
+			this.result = new Channel<Event<T>>(this.channelSize);
+		});
 	}
 
 	// Models staging/src/k8s.io/apimachinery/pkg/watch/watch.go FakeWatcher.ResultChan.
@@ -97,5 +104,23 @@ export class FakeWatcher<T extends KubernetesObject> implements Interface<T> {
 	// Models staging/src/k8s.io/apimachinery/pkg/watch/watch.go FakeWatcher.Action.
 	async action(action: EventType, obj: T): Promise<void> {
 		await this.result.send({ type: action, object: obj });
+	}
+}
+
+// Models staging/src/k8s.io/apimachinery/pkg/watch/watch.go MockWatcher.
+export class MockWatcher<T extends KubernetesObject> implements Interface<T> {
+	constructor(
+		readonly stopFunc: () => MaybePromise<void>,
+		readonly resultChanFunc: () => ReadOnlyChannel<Event<T>>,
+	) {}
+
+	// Models staging/src/k8s.io/apimachinery/pkg/watch/watch.go MockWatcher.Stop.
+	stop(): MaybePromise<void> {
+		return this.stopFunc();
+	}
+
+	// Models staging/src/k8s.io/apimachinery/pkg/watch/watch.go MockWatcher.ResultChan.
+	resultChan(): ReadOnlyChannel<Event<T>> {
+		return this.resultChanFunc();
 	}
 }

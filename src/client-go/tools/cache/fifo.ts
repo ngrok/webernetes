@@ -20,7 +20,7 @@ export interface Queue<T extends KubernetesObject> extends ReflectorStore<T> {
 	pop(process: PopProcessFunc<T>): Promise<[item: T | undefined, err: Error | undefined]>;
 	hasSynced(): boolean;
 	hasSyncedChecker(): DoneChecker;
-	close(): void;
+	close(): Promise<void>;
 }
 
 // Models staging/src/k8s.io/client-go/tools/cache/fifo.go DoneChecker.
@@ -45,12 +45,11 @@ export class FIFO<T extends KubernetesObject> implements Queue<T>, Store<T> {
 	constructor(private readonly keyFunc: KeyFunc<T>) {}
 
 	// Models staging/src/k8s.io/client-go/tools/cache/fifo.go FIFO.Close.
-	close(): void {
-		if (this.closed) {
-			return;
-		}
-		this.closed = true;
-		this.cond.broadcast();
+	close(): Promise<void> {
+		return this.lock.withLock(() => {
+			this.closed = true;
+			this.cond.broadcast();
+		});
 	}
 
 	// Models staging/src/k8s.io/client-go/tools/cache/fifo.go FIFO.HasSynced.
@@ -93,13 +92,18 @@ export class FIFO<T extends KubernetesObject> implements Queue<T>, Store<T> {
 		if (err) {
 			return new KeyError(obj, err);
 		}
-		this.populated = true;
-		this.checkSynced();
-		if (!this.items.has(id)) {
-			this.queue.push(id);
+		await this.lock.lock();
+		try {
+			this.populated = true;
+			this.checkSynced();
+			if (!this.items.has(id)) {
+				this.queue.push(id);
+			}
+			this.items.set(id, structuredClone(obj));
+			this.cond.broadcast();
+		} finally {
+			this.lock.unlock();
 		}
-		this.items.set(id, structuredClone(obj));
-		this.cond.broadcast();
 		return undefined;
 	}
 
@@ -114,9 +118,14 @@ export class FIFO<T extends KubernetesObject> implements Queue<T>, Store<T> {
 		if (err) {
 			return new KeyError(obj, err);
 		}
-		this.populated = true;
-		this.checkSynced();
-		this.items.delete(id);
+		await this.lock.lock();
+		try {
+			this.populated = true;
+			this.checkSynced();
+			this.items.delete(id);
+		} finally {
+			this.lock.unlock();
+		}
 		return undefined;
 	}
 
@@ -174,33 +183,40 @@ export class FIFO<T extends KubernetesObject> implements Queue<T>, Store<T> {
 			items.set(key, structuredClone(item));
 		}
 
-		if (!this.populated) {
-			this.populated = true;
-			this.initialPopulationCount = items.size;
-			this.checkSynced();
-		}
+		await this.lock.lock();
+		try {
+			if (!this.populated) {
+				this.populated = true;
+				this.initialPopulationCount = items.size;
+				this.checkSynced();
+			}
 
-		this.items = items;
-		this.queue = [...items.keys()];
-		this.lastSyncResourceVersion = resourceVersion;
-		if (this.queue.length > 0) {
-			this.cond.broadcast();
+			this.items = items;
+			this.queue = [...items.keys()];
+			this.lastSyncResourceVersion = resourceVersion;
+			if (this.queue.length > 0) {
+				this.cond.broadcast();
+			}
+		} finally {
+			this.lock.unlock();
 		}
 		return undefined;
 	}
 
 	// Models staging/src/k8s.io/client-go/tools/cache/fifo.go FIFO.Resync.
-	resync(): Error | undefined {
-		const inQueue = new Set<string>(this.queue);
-		for (const id of this.items.keys()) {
-			if (!inQueue.has(id)) {
-				this.queue.push(id);
+	resync(): Promise<Error | undefined> {
+		return this.lock.withLock(() => {
+			const inQueue = new Set<string>(this.queue);
+			for (const id of this.items.keys()) {
+				if (!inQueue.has(id)) {
+					this.queue.push(id);
+				}
 			}
-		}
-		if (this.queue.length > 0) {
-			this.cond.broadcast();
-		}
-		return undefined;
+			if (this.queue.length > 0) {
+				this.cond.broadcast();
+			}
+			return undefined;
+		});
 	}
 
 	// Models staging/src/k8s.io/client-go/tools/cache/store.go Store.List.
@@ -219,9 +235,8 @@ export class FIFO<T extends KubernetesObject> implements Queue<T>, Store<T> {
 	}
 
 	// Models staging/src/k8s.io/client-go/tools/cache/store.go Store.Bookmark.
-	bookmark(resourceVersion: string): Error | undefined {
+	bookmark(resourceVersion: string): void {
 		this.lastSyncResourceVersion = resourceVersion;
-		return undefined;
 	}
 
 	// Models staging/src/k8s.io/client-go/tools/cache/store.go Store.Get.

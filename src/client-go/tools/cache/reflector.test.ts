@@ -2,7 +2,12 @@ import { expect, it, vi } from "vitest";
 
 import type { ListOptions } from "../../../apimachinery/pkg/apis/meta/v1/types";
 import { GroupVersionKind } from "../../../apimachinery/pkg/runtime/schema/group_version";
-import type { Event, Interface } from "../../../apimachinery/pkg/watch/watch";
+import {
+	FakeWatcher,
+	MockWatcher,
+	newFakeWithChanSize,
+	type Event,
+} from "../../../apimachinery/pkg/watch/watch";
 import { Clock } from "../../../clock";
 import type { KubernetesObject, KubeList } from "../../../client/types";
 import { Channel, type ReadOnlyChannel } from "../../../go/channel";
@@ -80,7 +85,7 @@ browser.describe("Reflector", () => {
 
 		expect(err).toBeUndefined();
 		expect(watchers).toHaveLength(1);
-		expect(watchers[0]?.stopped).toBe(true);
+		await expect(watchers[0]?.isStopped()).resolves.toBe(true);
 	});
 
 	// Models staging/src/k8s.io/client-go/tools/cache/reflector_test.go TestReflectorWatchHandler.
@@ -130,13 +135,24 @@ browser.describe("Reflector", () => {
 		const store = new TestStore<TestPod>();
 		const [ctx, cancel] = context.withCancelCause(context.background());
 		cancel(new Error("don't run"));
-		const watcher = new FakeWatcher<TestPod>();
+		const calls: string[] = [];
+		const resultCh = new Channel<Event<TestPod>>(10);
+		const fw = new MockWatcher<TestPod>(
+			() => {
+				calls.push("Stop");
+				resultCh.close();
+			},
+			() => {
+				calls.push("ResultChan");
+				return resultCh.readOnly();
+			},
+		);
 
 		const clock = new Clock();
 		const err = await handleWatch(
 			ctx,
 			clock.now(),
-			watcher,
+			fw,
 			store,
 			undefined,
 			undefined,
@@ -147,8 +163,7 @@ browser.describe("Reflector", () => {
 		);
 
 		expect(err).toBe(errorStopRequested);
-		expect(watcher.stopped).toBe(true);
-		expect(watcher.calls).toEqual(["ResultChan", "Stop"]);
+		expect(calls).toEqual(["ResultChan", "Stop"]);
 	});
 
 	// Models staging/src/k8s.io/client-go/tools/cache/reflector_test.go TestReflectorHandleWatchStoppedAfter.
@@ -156,18 +171,25 @@ browser.describe("Reflector", () => {
 		const store = new TestStore<TestPod>();
 		const [ctx, cancel] = context.withCancelCause(context.background());
 		const clock = new Clock();
-		const resultCh = new Channel<Event<TestPod>>(10);
-		const watcher = new FakeWatcher<TestPod>({
-			resultChan: (): ReadOnlyChannel<Event<TestPod>> => {
+		const calls: string[] = [];
+		let resultCh = new Channel<Event<TestPod>>(10);
+		const fw = new MockWatcher<TestPod>(
+			() => {
+				calls.push("Stop");
+				resultCh.close();
+			},
+			(): ReadOnlyChannel<Event<TestPod>> => {
+				calls.push("ResultChan");
+				resultCh = new Channel<Event<TestPod>>(10);
 				clock.setTimeout(() => cancel(new Error("10ms timeout reached")), 10);
 				return resultCh.readOnly();
 			},
-		});
+		);
 
-		const watchPromise = handleWatch(
+		const err = await handleWatch(
 			ctx,
 			clock.now(),
-			watcher,
+			fw,
 			store,
 			undefined,
 			undefined,
@@ -177,23 +199,30 @@ browser.describe("Reflector", () => {
 			clock,
 		);
 
-		const err = await watchPromise;
-
 		expect(err).toBe(errorStopRequested);
-		expect(watcher.stopped).toBe(true);
-		expect(watcher.calls).toEqual(["ResultChan", "Stop"]);
+		expect(calls).toEqual(["ResultChan", "Stop"]);
 	});
 
 	// Models staging/src/k8s.io/client-go/tools/cache/reflector_test.go TestReflectorHandleWatchResultChanClosedBefore.
 	it("returns a very short watch error when the result channel closes without events", async () => {
 		const store = new TestStore<TestPod>();
-		const watcher = new FakeWatcher<TestPod>();
-		watcher.close();
+		const resultCh = new Channel<Event<TestPod>>(10);
+		const calls: string[] = [];
+		const fw = new MockWatcher<TestPod>(
+			() => {
+				calls.push("Stop");
+			},
+			() => {
+				calls.push("ResultChan");
+				return resultCh.readOnly();
+			},
+		);
+		resultCh.close();
 
 		const err = await handleWatch(
 			context.background(),
 			new Date(Date.now()),
-			watcher,
+			fw,
 			store,
 			undefined,
 			undefined,
@@ -204,26 +233,31 @@ browser.describe("Reflector", () => {
 		);
 
 		expect(err).toBeInstanceOf(VeryShortWatchError);
-		expect(watcher.stopped).toBe(true);
-		expect(watcher.calls).toEqual(["ResultChan", "Stop"]);
+		expect(calls).toEqual(["ResultChan", "Stop"]);
 	});
 
 	// Models staging/src/k8s.io/client-go/tools/cache/reflector_test.go TestReflectorHandleWatchResultChanClosedAfter.
 	it("returns a very short watch error when the result channel closes after handleWatch starts", async () => {
 		const store = new TestStore<TestPod>();
 		const clock = new Clock();
-		const resultCh = new Channel<Event<TestPod>>(10);
-		const watcher = new FakeWatcher<TestPod>({
-			resultChan: (): ReadOnlyChannel<Event<TestPod>> => {
+		const calls: string[] = [];
+		let resultCh = new Channel<Event<TestPod>>(10);
+		const fw = new MockWatcher<TestPod>(
+			() => {
+				calls.push("Stop");
+			},
+			(): ReadOnlyChannel<Event<TestPod>> => {
+				calls.push("ResultChan");
+				resultCh = new Channel<Event<TestPod>>(10);
 				clock.setTimeout(() => resultCh.close(), 10);
 				return resultCh.readOnly();
 			},
-		});
+		);
 
-		const watchPromise = handleWatch(
+		const err = await handleWatch(
 			context.background(),
 			clock.now(),
-			watcher,
+			fw,
 			store,
 			undefined,
 			undefined,
@@ -233,11 +267,8 @@ browser.describe("Reflector", () => {
 			clock,
 		);
 
-		const err = await watchPromise;
-
 		expect(err).toBeInstanceOf(VeryShortWatchError);
-		expect(watcher.stopped).toBe(true);
-		expect(watcher.calls).toEqual(["ResultChan", "Stop"]);
+		expect(calls).toEqual(["ResultChan", "Stop"]);
 	});
 
 	// Models staging/src/k8s.io/client-go/tools/cache/reflector_test.go TestReflectorStopWatch.
@@ -368,7 +399,7 @@ browser.describe("Reflector", () => {
 		if (!tc.expectedError) {
 			const watcher = await watcherPromise;
 			for (const event of tc.watchEvents) {
-				await watcher.action(event);
+				await watcher.action(event.type, event.object);
 			}
 			await vi.waitFor(() => {
 				if (store.list().length !== tc.expectedStore.length) {
@@ -426,9 +457,9 @@ browser.describe("Reflector", () => {
 			},
 		];
 
-		const store = newFIFO<TestPod>(metaNamespaceKeyFunc);
+		const s = newFIFO<TestPod>(metaNamespaceKeyFunc);
 		for (const [line, item] of table.entries()) {
-			expectStoreMatchesList(store, item.list, line);
+			expectStoreMatchesList(s, item.list, line);
 			let watchErr = item.watchErr;
 			const [ctx, cancel] = context.withCancelCause(context.background());
 			const lw = new ListWatch<TestPod>({
@@ -437,10 +468,10 @@ browser.describe("Reflector", () => {
 						return [undefined, watchErr];
 					}
 					watchErr = new Error("second watch");
-					const watcher = new FakeWatcher<TestPod>({}, 0);
+					const watcher = newFakeWithChanSize<TestPod>(0, false);
 					void (async () => {
 						for (const event of item.events ?? []) {
-							await watcher.action(event);
+							await watcher.action(event.type, event.object);
 						}
 						cancel(new Error("done"));
 					})();
@@ -448,7 +479,7 @@ browser.describe("Reflector", () => {
 				},
 				listFunc: () => [item.list, item.listErr],
 			});
-			const reflector = newReflector(lw, mkPod("expected", ""), store, 0);
+			const reflector = newReflector(lw, mkPod("expected", ""), s, 0);
 
 			const err = await reflector.listAndWatchWithContext(ctx);
 
@@ -517,7 +548,7 @@ browser.describe("Reflector simulator behavior", () => {
 
 		expect(err).toBeUndefined();
 		expect(store.resyncCalls).toBe(1);
-		expect(watcher.stopped).toBe(true);
+		await expect(watcher.isStopped()).resolves.toBe(true);
 	});
 
 	it("returns an explicit error when watch-list mode is enabled", async () => {
@@ -573,67 +604,6 @@ class TestStore<T extends KubernetesObject> implements ReflectorStore<T> {
 
 	list(): T[] {
 		return [...this.objects.values()];
-	}
-}
-
-class FakeWatcher<T extends KubernetesObject> implements Interface<T> {
-	readonly ch: Channel<Event<T>>;
-	readonly calls: string[] = [];
-	stopped = false;
-
-	constructor(
-		private readonly overrides: {
-			stop?: () => void;
-			resultChan?: () => ReadOnlyChannel<Event<T>>;
-		} = {},
-		capacity = 10,
-	) {
-		this.ch = new Channel<Event<T>>(capacity);
-	}
-
-	stop(): void {
-		if (this.stopped) {
-			return;
-		}
-		this.calls.push("Stop");
-		if (this.overrides.stop) {
-			this.overrides.stop();
-			return;
-		}
-		this.stopped = true;
-		try {
-			this.ch.close();
-		} catch {
-			// Tests may close the result channel first, then assert stop was called.
-		}
-	}
-
-	resultChan(): ReadOnlyChannel<Event<T>> {
-		this.calls.push("ResultChan");
-		if (this.overrides.resultChan) {
-			return this.overrides.resultChan();
-		}
-		return this.ch.readOnly();
-	}
-
-	async add(object: T): Promise<void> {
-		await this.ch.send({ type: "ADDED", object });
-	}
-
-	async modify(object: T): Promise<void> {
-		await this.ch.send({ type: "MODIFIED", object });
-	}
-
-	async delete(object: T): Promise<void> {
-		await this.ch.send({ type: "DELETED", object });
-	}
-
-	async action(event: Event<T>): Promise<void> {
-		await this.ch.send(event);
-	}
-
-	close(): void {
-		this.ch.close();
 	}
 }
 

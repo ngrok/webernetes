@@ -39,4 +39,9 @@ export class DelayFunc {
 			condition,
 		);
 	}
+
+	// Models staging/src/k8s.io/apimachinery/pkg/util/wait/delay.go DelayFunc.Concurrent.
+	concurrent(): DelayFunc {
+		return new DelayFunc(() => this.next(), this.clock);
+	}
 }

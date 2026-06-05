@@ -8,6 +8,7 @@ import type { V1Pod } from "../../../client";
 import { Clock } from "../../../clock";
 import { Channel, select, type ReadOnlyChannel, type SendChannel } from "../../../go/channel";
 import * as context from "../../../go/context";
+import { Mutex } from "../../../go/sync/mutex";
 import * as time from "../../../go/time";
 import { oneTermEqualSelector } from "../../../apimachinery/pkg/fields/selector";
 import {
@@ -93,6 +94,7 @@ class PodWatch implements WatchInterface<V1Pod> {
 	}>(100);
 	private controller: AbortController | undefined;
 	private stopped = false;
+	private readonly lock = new Mutex();
 
 	constructor(
 		private readonly watch: k8s.Watch,
@@ -110,25 +112,37 @@ class PodWatch implements WatchInterface<V1Pod> {
 					.catch(() => {});
 			},
 			() => {
-				this.closeResult();
+				void this.closeResult();
 			},
 		);
 	}
 
-	stop(): void {
-		if (this.stopped) {
-			return;
-		}
-		this.stopped = true;
-		this.controller?.abort();
-		this.closeResult();
+	async stop(): Promise<void> {
+		await this.lock.withLock(() => {
+			if (this.stopped) {
+				return;
+			}
+			this.stopped = true;
+			this.controller?.abort();
+			this.closeResultLocked();
+		});
 	}
 
 	resultChan(): ReadOnlyChannel<{ type: EventType; object: V1Pod }> {
 		return this.result.readOnly();
 	}
 
-	private closeResult(): void {
+	private async closeResult(): Promise<void> {
+		await this.lock.withLock(() => {
+			if (this.stopped) {
+				return;
+			}
+			this.stopped = true;
+			this.closeResultLocked();
+		});
+	}
+
+	private closeResultLocked(): void {
 		try {
 			this.result.close();
 		} catch {
