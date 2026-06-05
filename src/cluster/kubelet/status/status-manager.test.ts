@@ -35,11 +35,12 @@ import {
 	isPodStatusByKubeletEqual,
 	mergePodStatus,
 	normalizeStatus,
-	StatusManager,
+	type StatusManager,
+	StatusManagerImpl,
 	updateLastTransitionTime,
 } from "./status-manager";
 
-type TestStatusManager = StatusManager & { kubeClient: TestKubeClient };
+type TestStatusManager = StatusManagerImpl & { kubeClient: TestKubeClient };
 
 // Models kubernetes/pkg/kubelet/status/status_manager_test.go getTestPod.
 function getTestPod(): V1Pod {
@@ -55,7 +56,7 @@ function getTestPod(): V1Pod {
 }
 
 // Models kubernetes/pkg/kubelet/status/status_manager_test.go manager.testSyncBatch.
-async function testSyncBatch(m: StatusManager, ctx: context.Context): Promise<void> {
+async function testSyncBatch(m: StatusManagerImpl, ctx: context.Context): Promise<void> {
 	for (const [uid, status] of m.podStatuses) {
 		const pod = m.podManager.getPodByUid(uid);
 		if (pod) {
@@ -78,7 +79,7 @@ function newTestManager(kubeClient: TestKubeClient): TestStatusManager {
 		recordStatusUpdated(_pod: V1Pod): void {},
 		deletePodStartupState(_podUid: string): void {},
 	};
-	const manager = new StatusManager({
+	const manager = new StatusManagerImpl({
 		clock,
 		kubeClient,
 		podManager,
@@ -166,14 +167,14 @@ async function verifyActions(
 }
 
 // Models kubernetes/pkg/kubelet/status/status_manager_test.go verifyUpdates.
-async function verifyUpdates(manager: StatusManager, expectedUpdates: number): Promise<void> {
+async function verifyUpdates(manager: StatusManagerImpl, expectedUpdates: number): Promise<void> {
 	const ctx = context.background();
 	const numUpdates = await consumeUpdates(manager, ctx);
 	expect(numUpdates).toBe(expectedUpdates);
 }
 
 // Models kubernetes/pkg/kubelet/status/status_manager_test.go manager.consumeUpdates.
-async function consumeUpdates(m: StatusManager, ctx: context.Context): Promise<number> {
+async function consumeUpdates(m: StatusManagerImpl, ctx: context.Context): Promise<number> {
 	let updates = 0;
 	for (;;) {
 		const result = m.podStatusChannel.tryReceive();
@@ -1382,7 +1383,7 @@ browser.describe("TestTerminatePod_DefaultUnknownStatus", () => {
 				recordStatusUpdated(_pod: V1Pod): void {},
 				deletePodStartupState(_podUid: string): void {},
 			};
-			const syncer = new StatusManager({
+			const syncer = new StatusManagerImpl({
 				clock: kubeClient.kubeConfig.options.clock,
 				kubeClient,
 				podManager,
@@ -1480,7 +1481,7 @@ browser.describe("TestTerminatePod_EnsurePodPhaseIsTerminal", () => {
 				recordStatusUpdated(_pod: V1Pod): void {},
 				deletePodStartupState(_podUid: string): void {},
 			};
-			const syncer = new StatusManager({
+			const syncer = new StatusManagerImpl({
 				clock: kubeClient.kubeConfig.options.clock,
 				kubeClient,
 				podManager,

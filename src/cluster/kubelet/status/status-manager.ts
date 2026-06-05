@@ -9,15 +9,21 @@ import type {
 import { isNotFoundError } from "../../../client/errors";
 import type { Clock } from "../../../clock";
 import type { KubeClient } from "../../cluster";
-import { deepEqual } from "../../../deep-equal";
+import { deepEqual, dropUndefinedFields } from "../../../deep-equal";
 import { Channel, select } from "../../../go/channel";
 import type { Context } from "../../../go/context";
 import * as time from "../../../go/time";
 import * as podutil from "../../api/v1/pod/util";
 import * as statusutil from "../../util/pod/pod";
-import { type ContainerID, parseContainerID } from "../container";
+import {
+	containerReasonStatusUnknown,
+	maxPodTerminationMessageLogLength,
+	type ContainerID,
+	parseContainerID,
+} from "../container";
 import type { PodManager } from "../pod";
 import * as kubetypes from "../types";
+import { getContainerByIndex } from "../util";
 import {
 	generateContainersReadyCondition,
 	generateContainersReadyConditionForTerminalPhase,
@@ -29,6 +35,8 @@ export interface StatusManagerOptions {
 	clock: Clock;
 	kubeClient: KubeClient;
 	podManager: PodManager;
+	podDeletionSafety: PodDeletionSafetyProvider;
+	podStartupLatencyHelper: PodStartupLatencyStateHelper;
 }
 
 // Models kubernetes/pkg/kubelet/status/status_manager.go PodUpdateNotifier.
@@ -37,7 +45,34 @@ export interface PodUpdateNotifier {
 	onPodRemoved(pod: V1Pod): void;
 }
 
-interface VersionedPodStatus {
+// Models kubernetes/pkg/kubelet/status/status_manager.go PodDeletionSafetyProvider.
+export interface PodDeletionSafetyProvider {
+	podCouldHaveRunningContainers(pod: V1Pod): Promise<boolean>;
+}
+
+// Models kubernetes/pkg/kubelet/status/status_manager.go PodStartupLatencyStateHelper.
+export interface PodStartupLatencyStateHelper {
+	recordStatusUpdated(pod: V1Pod): void;
+	deletePodStartupState(podUid: string): void;
+}
+
+// Models kubernetes/pkg/kubelet/status/status_manager.go PodStatusProvider.
+export interface PodStatusProvider {
+	getPodStatus(podUid: string): V1PodStatus | undefined;
+}
+
+// Models kubernetes/pkg/kubelet/status/status_manager.go Manager.
+export interface StatusManager extends PodStatusProvider {
+	start(ctx: Context): Promise<void>;
+	addPodUpdateNotifier(notifier: PodUpdateNotifier): void;
+	setPodStatus(pod: V1Pod, status: V1PodStatus): Promise<[V1PodStatus, boolean]>;
+	setContainerReadiness(podUid: string, containerId: ContainerID, ready: boolean): void;
+	setContainerStartup(podUid: string, containerId: ContainerID, started: boolean): void;
+	terminatePod(pod: V1Pod): void;
+	removeOrphanedStatuses(podUids: Set<string>): void;
+}
+
+export interface VersionedPodStatus {
 	version: number;
 	podName: string;
 	podNamespace: string | undefined;
@@ -57,68 +92,33 @@ interface PodStatusNotification {
 const syncPeriodMs = 10 * 1000;
 
 // Models kubernetes/pkg/kubelet/status/status_manager.go manager.
-export class StatusManager {
-	private readonly podStatuses = new Map<string, VersionedPodStatus>();
-	private readonly podStatusChannel = new Channel<void>(1);
-	private readonly apiStatusVersions = new Map<string, number>();
+export class StatusManagerImpl implements StatusManager {
+	readonly kubeClient: KubeClient;
+	readonly podManager: PodManager;
+	readonly podStatuses = new Map<string, VersionedPodStatus>();
+	readonly podStatusChannel = new Channel<void>(1);
+	readonly apiStatusVersions = new Map<string, number>();
+	private readonly podDeletionSafety: PodDeletionSafetyProvider;
+	private readonly podStartupLatencyHelper: PodStartupLatencyStateHelper;
+
 	// TypeScript-only teardown handle. Upstream Start launches a goroutine and
 	// returns void; kubelet.close awaits this promise so the ticker is stopped.
 	private startPromise: Promise<void> | undefined;
 	private readonly clock: Clock;
-	private readonly kubeClient: KubeClient;
-	private readonly podManager: PodManager;
 	private readonly notifiers: PodUpdateNotifier[] = [];
 
-	constructor({ clock, kubeClient, podManager }: StatusManagerOptions) {
+	constructor({
+		clock,
+		kubeClient,
+		podManager,
+		podDeletionSafety,
+		podStartupLatencyHelper,
+	}: StatusManagerOptions) {
 		this.clock = clock;
 		this.kubeClient = kubeClient;
 		this.podManager = podManager;
-	}
-
-	// Models kubernetes/pkg/kubelet/status/status_manager.go isPodStatusByKubeletEqual.
-	private isPodStatusByKubeletEqual(oldStatus: V1PodStatus, status: V1PodStatus): boolean {
-		const oldCopy = structuredClone(oldStatus);
-
-		const newConditions = new Map<string, V1PodCondition>();
-		const oldConditions = new Map<string, V1PodCondition>();
-		for (const c of status.conditions ?? []) {
-			if (
-				kubetypes.podConditionByKubelet(c.type) ||
-				kubetypes.podConditionSharedByKubelet(c.type)
-			) {
-				newConditions.set(c.type, c);
-			}
-		}
-		for (const c of oldStatus.conditions ?? []) {
-			if (
-				kubetypes.podConditionByKubelet(c.type) ||
-				kubetypes.podConditionSharedByKubelet(c.type)
-			) {
-				oldConditions.set(c.type, c);
-			}
-		}
-
-		if (newConditions.size !== oldConditions.size) {
-			return false;
-		}
-		for (const newCondition of newConditions.values()) {
-			const oldCondition = oldConditions.get(newCondition.type);
-			if (
-				!oldCondition ||
-				oldCondition.status !== newCondition.status ||
-				oldCondition.message !== newCondition.message ||
-				oldCondition.reason !== newCondition.reason
-			) {
-				return false;
-			}
-		}
-
-		oldCopy.conditions = status.conditions;
-		oldCopy.resourceClaimStatuses = status.resourceClaimStatuses;
-		oldCopy.extendedResourceClaimStatus = status.extendedResourceClaimStatus;
-		oldCopy.nodeAllocatableResourceClaimStatuses = status.nodeAllocatableResourceClaimStatuses;
-
-		return deepEqual(oldCopy, status);
+		this.podDeletionSafety = podDeletionSafety;
+		this.podStartupLatencyHelper = podStartupLatencyHelper;
 	}
 
 	// Models kubernetes/pkg/kubelet/status/status_manager.go Start.
@@ -310,19 +310,33 @@ export class StatusManager {
 		}
 		const status = structuredClone(oldStatus);
 
-		if (this.hasPodInitialized(pod)) {
+		if (hasPodInitialized(pod)) {
 			for (const containerStatus of status.containerStatuses ?? []) {
 				if (containerStatus.state?.terminated) {
 					continue;
 				}
 				containerStatus.state = {
 					terminated: {
-						reason: "ContainerStatusUnknown",
+						reason: containerReasonStatusUnknown,
 						message: "The container could not be located when the pod was terminated",
 						exitCode: 137,
 					},
 				};
 			}
+		}
+
+		for (let i = 0; i < initializedContainers(status.initContainerStatuses).length; i++) {
+			const containerStatus = status.initContainerStatuses?.[i];
+			if (!containerStatus || containerStatus.state?.terminated) {
+				continue;
+			}
+			containerStatus.state = {
+				terminated: {
+					reason: containerReasonStatusUnknown,
+					message: "The container could not be located when the pod was terminated",
+					exitCode: 137,
+				},
+			};
 		}
 
 		if (!kubetypes.isStaticPod(pod)) {
@@ -346,12 +360,6 @@ export class StatusManager {
 				this.sendNotification(notification);
 			}
 		}
-	}
-
-	private hasPodInitialized(_pod: V1Pod): boolean {
-		// The simulator does not currently model init containers, so regular
-		// containers are considered initialized as in Kubernetes' no-init case.
-		return true;
 	}
 
 	// Models kubernetes/pkg/kubelet/status/status_manager.go checkContainerStateTransition.
@@ -401,7 +409,7 @@ export class StatusManager {
 	}
 
 	// Models kubernetes/pkg/kubelet/status/status_manager.go updateStatusInternal.
-	private updateStatusInternal(
+	updateStatusInternal(
 		pod: V1Pod,
 		status: V1PodStatus,
 		forceUpdate: boolean,
@@ -434,13 +442,13 @@ export class StatusManager {
 			return [false, undefined];
 		}
 
-		this.updateLastTransitionTime(status, oldStatus, "ContainersReady");
-		this.updateLastTransitionTime(status, oldStatus, "Ready");
-		this.updateLastTransitionTime(status, oldStatus, "Initialized");
-		this.updateLastTransitionTime(status, oldStatus, "PodReadyToStartContainers");
-		this.updateLastTransitionTime(status, oldStatus, "PodScheduled");
-		this.updateLastTransitionTime(status, oldStatus, "DisruptionTarget");
-		this.updateLastTransitionTime(status, oldStatus, "AllContainersRestarting");
+		updateLastTransitionTime(this.clock, status, oldStatus, "ContainersReady");
+		updateLastTransitionTime(this.clock, status, oldStatus, "Ready");
+		updateLastTransitionTime(this.clock, status, oldStatus, "Initialized");
+		updateLastTransitionTime(this.clock, status, oldStatus, "PodReadyToStartContainers");
+		updateLastTransitionTime(this.clock, status, oldStatus, "PodScheduled");
+		updateLastTransitionTime(this.clock, status, oldStatus, "DisruptionTarget");
+		updateLastTransitionTime(this.clock, status, oldStatus, "AllContainersRestarting");
 
 		if (oldStatus.startTime) {
 			status.startTime = new Date(oldStatus.startTime);
@@ -452,9 +460,9 @@ export class StatusManager {
 			status.observedGeneration = oldStatus.observedGeneration;
 		}
 
-		this.normalizeStatus(pod, status);
+		normalizeStatus(pod, status);
 
-		if (isCached && this.isPodStatusByKubeletEqual(cachedStatus.status, status) && !forceUpdate) {
+		if (isCached && isPodStatusByKubeletEqual(cachedStatus.status, status) && !forceUpdate) {
 			return [false, undefined];
 		}
 
@@ -501,28 +509,10 @@ export class StatusManager {
 		}
 	}
 
-	// Models kubernetes/pkg/kubelet/status/status_manager.go updateLastTransitionTime.
-	private updateLastTransitionTime(
-		status: V1PodStatus,
-		oldStatus: V1PodStatus,
-		conditionType: V1PodCondition["type"],
-	): void {
-		const condition = podutil.getPodCondition(status, conditionType);
-		if (!condition) {
-			return;
-		}
-
-		let lastTransitionTime: Date | undefined = this.clock.now();
-		const oldCondition = podutil.getPodCondition(oldStatus, conditionType);
-		if (oldCondition && condition.status === oldCondition.status) {
-			lastTransitionTime = oldCondition.lastTransitionTime;
-		}
-		condition.lastTransitionTime = lastTransitionTime;
-	}
-
 	// Models kubernetes/pkg/kubelet/status/status_manager.go deletePodStatus.
-	private deletePodStatus(uid: string): void {
+	deletePodStatus(uid: string): void {
 		this.podStatuses.delete(uid);
+		this.podStartupLatencyHelper.deletePodStartupState(uid);
 	}
 
 	// Models kubernetes/pkg/kubelet/status/status_manager.go RemoveOrphanedStatuses.
@@ -535,7 +525,7 @@ export class StatusManager {
 	}
 
 	// Models kubernetes/pkg/kubelet/status/status_manager.go syncBatch.
-	private async syncBatch(ctx: Context, all: boolean): Promise<number> {
+	async syncBatch(ctx: Context, all: boolean): Promise<number> {
 		const updatedStatuses: Array<{
 			podUid: string;
 			statusUid: string;
@@ -590,7 +580,7 @@ export class StatusManager {
 	}
 
 	// Models kubernetes/pkg/kubelet/status/status_manager.go syncPod.
-	private async syncPod(ctx: Context, uid: string, status: VersionedPodStatus): Promise<void> {
+	async syncPod(ctx: Context, uid: string, status: VersionedPodStatus): Promise<void> {
 		const namespace = status.podNamespace ?? "default";
 		let pod: V1Pod;
 		try {
@@ -614,7 +604,13 @@ export class StatusManager {
 			return;
 		}
 
-		const mergedStatus = this.mergePodStatus(pod, pod.status ?? {}, status.status, false);
+		const mergedStatus = mergePodStatus(
+			this.clock,
+			pod,
+			pod.status ?? {},
+			status.status,
+			await this.podDeletionSafety.podCouldHaveRunningContainers(pod),
+		);
 		try {
 			const result = await statusutil.patchPodStatus(
 				this.kubeClient,
@@ -626,6 +622,7 @@ export class StatusManager {
 			);
 			if (!result.unchanged && result.pod) {
 				pod = result.pod;
+				this.podStartupLatencyHelper.recordStatusUpdated(pod);
 			}
 		} catch {
 			return;
@@ -650,7 +647,7 @@ export class StatusManager {
 	}
 
 	// Models kubernetes/pkg/kubelet/status/status_manager.go needsUpdate.
-	private needsUpdate(uid: string, status: VersionedPodStatus): boolean {
+	needsUpdate(uid: string, status: VersionedPodStatus): boolean {
 		const latest = this.apiStatusVersions.get(uid);
 		if (latest === undefined || latest < status.version) {
 			return true;
@@ -662,7 +659,7 @@ export class StatusManager {
 		return this.canBeDeleted(pod, status.status, status.podIsFinished);
 	}
 
-	private canBeDeleted(pod: V1Pod, status: V1PodStatus, podIsFinished: boolean): boolean {
+	canBeDeleted(pod: V1Pod, status: V1PodStatus, podIsFinished: boolean): boolean {
 		if (pod.metadata?.deletionTimestamp === undefined || kubetypes.isMirrorPod(pod)) {
 			return false;
 		}
@@ -673,7 +670,7 @@ export class StatusManager {
 	}
 
 	// Models kubernetes/pkg/kubelet/status/status_manager.go needsReconcile.
-	private needsReconcile(uid: string, status: V1PodStatus): boolean {
+	needsReconcile(uid: string, status: V1PodStatus): boolean {
 		let pod = this.podManager.getPodByUid(uid);
 		if (!pod) {
 			return false;
@@ -687,153 +684,274 @@ export class StatusManager {
 		}
 
 		const podStatus = structuredClone(pod.status ?? {});
-		this.normalizeStatus(pod, podStatus);
-		return !this.isPodStatusByKubeletEqual(podStatus, status);
+		normalizeStatus(pod, podStatus);
+		return !isPodStatusByKubeletEqual(podStatus, status);
+	}
+}
+
+// Models kubernetes/pkg/kubelet/status/status_manager.go updateLastTransitionTime.
+export function updateLastTransitionTime(
+	clock: Clock,
+	status: V1PodStatus,
+	oldStatus: V1PodStatus,
+	conditionType: V1PodCondition["type"],
+): void {
+	const condition = podutil.getPodCondition(status, conditionType);
+	if (!condition) {
+		return;
 	}
 
-	// Models kubernetes/pkg/kubelet/status/status_manager.go normalizeStatus.
-	private normalizeStatus(pod: V1Pod, status: V1PodStatus): V1PodStatus {
-		let bytesPerStatus = 1024 * 12;
-		const containers =
-			(pod.spec?.containers?.length ?? 0) +
-			(pod.spec?.initContainers?.length ?? 0) +
-			(pod.spec?.ephemeralContainers?.length ?? 0);
-		if (containers > 0) {
-			bytesPerStatus = Math.floor(bytesPerStatus / containers);
+	let lastTransitionTime: Date | undefined = clock.now();
+	const oldCondition = podutil.getPodCondition(oldStatus, conditionType);
+	if (oldCondition && condition.status === oldCondition.status) {
+		lastTransitionTime = oldCondition.lastTransitionTime;
+	}
+	condition.lastTransitionTime = lastTransitionTime;
+}
+
+// Models kubernetes/pkg/kubelet/status/status_manager.go mergePodStatus.
+export function mergePodStatus(
+	clock: Clock,
+	pod: V1Pod,
+	oldPodStatus: V1PodStatus,
+	newPodStatus: V1PodStatus,
+	couldHaveRunningContainers: boolean,
+): V1PodStatus {
+	newPodStatus = structuredClone(newPodStatus);
+	oldPodStatus = structuredClone(oldPodStatus);
+
+	let podConditions: V1PodCondition[] = [];
+	for (const c of oldPodStatus.conditions ?? []) {
+		if (!kubetypes.podConditionByKubelet(c.type)) {
+			podConditions.push(c);
 		}
+	}
 
-		const normalizeTimeStamp = (time: Date | string | undefined): Date | undefined =>
-			time ? new Date(time instanceof Date ? time.toISOString() : time) : undefined;
+	const transitioningToTerminalPhase =
+		!podutil.isPodPhaseTerminal(oldPodStatus.phase) &&
+		podutil.isPodPhaseTerminal(newPodStatus.phase);
 
-		const normalizeContainerState = (containerState: V1ContainerState | undefined): void => {
-			if (containerState?.running) {
-				containerState.running.startedAt = normalizeTimeStamp(containerState.running.startedAt);
-			}
-			if (containerState?.terminated) {
-				containerState.terminated.startedAt = normalizeTimeStamp(
-					containerState.terminated.startedAt,
-				);
-				containerState.terminated.finishedAt = normalizeTimeStamp(
-					containerState.terminated.finishedAt,
-				);
-				if (
-					containerState.terminated.message &&
-					containerState.terminated.message.length > bytesPerStatus
-				) {
-					containerState.terminated.message = containerState.terminated.message.slice(
-						0,
-						bytesPerStatus,
+	for (const c of newPodStatus.conditions ?? []) {
+		if (kubetypes.podConditionByKubelet(c.type)) {
+			podConditions.push(c);
+		} else if (kubetypes.podConditionSharedByKubelet(c.type)) {
+			if (c.type === "DisruptionTarget") {
+				if (transitioningToTerminalPhase && !couldHaveRunningContainers) {
+					updateLastTransitionTime(clock, newPodStatus, oldPodStatus, c.type);
+					const [, updatedCondition] = podutil.getPodConditionFromList(
+						newPodStatus.conditions,
+						c.type,
 					);
-				}
-			}
-		};
-
-		if (status.startTime) {
-			status.startTime = normalizeTimeStamp(status.startTime);
-		}
-		for (const condition of status.conditions ?? []) {
-			condition.lastProbeTime = normalizeTimeStamp(condition.lastProbeTime);
-			condition.lastTransitionTime = normalizeTimeStamp(condition.lastTransitionTime);
-		}
-
-		const normalizeContainerStatuses = (
-			containerStatuses: V1ContainerStatus[] | undefined,
-		): void => {
-			for (const containerStatus of containerStatuses ?? []) {
-				normalizeContainerState(containerStatus.state);
-				normalizeContainerState(containerStatus.lastState);
-			}
-		};
-
-		normalizeContainerStatuses(status.containerStatuses);
-		status.containerStatuses?.sort((left, right) => left.name.localeCompare(right.name));
-
-		normalizeContainerStatuses(status.initContainerStatuses);
-		status.initContainerStatuses?.sort((left, right) => left.name.localeCompare(right.name));
-
-		normalizeContainerStatuses(status.ephemeralContainerStatuses);
-		status.ephemeralContainerStatuses?.sort((left, right) => left.name.localeCompare(right.name));
-
-		return status;
-	}
-
-	// Models kubernetes/pkg/kubelet/status/status_manager.go mergePodStatus.
-	private mergePodStatus(
-		pod: V1Pod,
-		oldPodStatus: V1PodStatus,
-		newPodStatus: V1PodStatus,
-		couldHaveRunningContainers: boolean,
-	): V1PodStatus {
-		newPodStatus = structuredClone(newPodStatus);
-		oldPodStatus = structuredClone(oldPodStatus);
-
-		let podConditions: V1PodCondition[] = [];
-		for (const c of oldPodStatus.conditions ?? []) {
-			if (!kubetypes.podConditionByKubelet(c.type)) {
-				podConditions.push(c);
-			}
-		}
-
-		const transitioningToTerminalPhase =
-			!podutil.isPodPhaseTerminal(oldPodStatus.phase) &&
-			podutil.isPodPhaseTerminal(newPodStatus.phase);
-
-		for (const c of newPodStatus.conditions ?? []) {
-			if (kubetypes.podConditionByKubelet(c.type)) {
-				podConditions.push(c);
-			} else if (kubetypes.podConditionSharedByKubelet(c.type)) {
-				if (c.type === "DisruptionTarget") {
-					if (transitioningToTerminalPhase && !couldHaveRunningContainers) {
-						this.updateLastTransitionTime(newPodStatus, oldPodStatus, c.type);
-						const [, updatedCondition] = podutil.getPodConditionFromList(
-							newPodStatus.conditions,
-							c.type,
-						);
-						if (updatedCondition) {
-							podConditions = statusutil.replaceOrAppendPodCondition(
-								podConditions,
-								updatedCondition,
-							);
-						}
+					if (updatedCondition) {
+						podConditions = statusutil.replaceOrAppendPodCondition(podConditions, updatedCondition);
 					}
 				}
 			}
 		}
-		newPodStatus.conditions = podConditions;
-
-		newPodStatus.resourceClaimStatuses = oldPodStatus.resourceClaimStatuses;
-		newPodStatus.extendedResourceClaimStatus = oldPodStatus.extendedResourceClaimStatus;
-		newPodStatus.nodeAllocatableResourceClaimStatuses =
-			oldPodStatus.nodeAllocatableResourceClaimStatuses;
-
-		if (transitioningToTerminalPhase && couldHaveRunningContainers) {
-			newPodStatus.phase = oldPodStatus.phase;
-			newPodStatus.reason = oldPodStatus.reason;
-			newPodStatus.message = oldPodStatus.message;
-		}
-
-		if (
-			podutil.isPodPhaseTerminal(newPodStatus.phase) &&
-			(podutil.isPodReadyConditionTrue(newPodStatus) ||
-				podutil.isContainersReadyConditionTrue(newPodStatus))
-		) {
-			const containersReadyCondition = generateContainersReadyConditionForTerminalPhase(
-				pod,
-				oldPodStatus,
-				newPodStatus.phase,
-			);
-			podutil.updatePodCondition(this.clock, newPodStatus, containersReadyCondition);
-
-			const podReadyCondition = generatePodReadyConditionForTerminalPhase(
-				pod,
-				oldPodStatus,
-				newPodStatus.phase,
-			);
-			podutil.updatePodCondition(this.clock, newPodStatus, podReadyCondition);
-		}
-
-		return newPodStatus;
 	}
+	newPodStatus.conditions = podConditions;
+
+	newPodStatus.resourceClaimStatuses = oldPodStatus.resourceClaimStatuses;
+	newPodStatus.extendedResourceClaimStatus = oldPodStatus.extendedResourceClaimStatus;
+	newPodStatus.nodeAllocatableResourceClaimStatuses =
+		oldPodStatus.nodeAllocatableResourceClaimStatuses;
+
+	if (transitioningToTerminalPhase && couldHaveRunningContainers) {
+		newPodStatus.phase = oldPodStatus.phase;
+		newPodStatus.reason = oldPodStatus.reason;
+		newPodStatus.message = oldPodStatus.message;
+	}
+
+	if (
+		podutil.isPodPhaseTerminal(newPodStatus.phase) &&
+		(podutil.isPodReadyConditionTrue(newPodStatus) ||
+			podutil.isContainersReadyConditionTrue(newPodStatus))
+	) {
+		const containersReadyCondition = generateContainersReadyConditionForTerminalPhase(
+			pod,
+			oldPodStatus,
+			newPodStatus.phase,
+		);
+		podutil.updatePodCondition(clock, newPodStatus, containersReadyCondition);
+
+		const podReadyCondition = generatePodReadyConditionForTerminalPhase(
+			pod,
+			oldPodStatus,
+			newPodStatus.phase,
+		);
+		podutil.updatePodCondition(clock, newPodStatus, podReadyCondition);
+	}
+
+	return newPodStatus;
+}
+
+// Models kubernetes/pkg/kubelet/status/status_manager.go hasPodInitialized.
+function hasPodInitialized(pod: V1Pod): boolean {
+	if ((pod.spec?.initContainers?.length ?? 0) === 0) {
+		return true;
+	}
+	for (const status of pod.status?.containerStatuses ?? []) {
+		if (status.lastState?.terminated !== undefined || status.state?.waiting === undefined) {
+			return true;
+		}
+	}
+	const l = pod.status?.initContainerStatuses?.length ?? 0;
+	if (l > 0) {
+		const [container, ok] = getContainerByIndex(
+			pod.spec?.initContainers ?? [],
+			pod.status?.initContainerStatuses ?? [],
+			l - 1,
+		);
+		if (!ok) {
+			return false;
+		}
+
+		const containerStatus = pod.status?.initContainerStatuses?.[l - 1];
+		if (podutil.isRestartableInitContainer(container)) {
+			if (
+				containerStatus?.state?.running !== undefined &&
+				containerStatus.started !== undefined &&
+				containerStatus.started
+			) {
+				return true;
+			}
+		} else {
+			if ((containerStatus?.lastState?.terminated?.exitCode ?? -1) === 0) {
+				return true;
+			}
+			if ((containerStatus?.state?.terminated?.exitCode ?? -1) === 0) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+// Models kubernetes/pkg/kubelet/status/status_manager.go initializedContainers.
+function initializedContainers(containers: V1ContainerStatus[] | undefined): V1ContainerStatus[] {
+	for (let i = (containers?.length ?? 0) - 1; i >= 0; i--) {
+		const container = containers?.[i];
+		if (container?.state?.waiting === undefined || container.lastState?.terminated !== undefined) {
+			return containers?.slice(0, i + 1) ?? [];
+		}
+	}
+	if ((containers?.length ?? 0) > 0) {
+		return containers?.slice(0, 1) ?? [];
+	}
+	return [];
+}
+
+// Models kubernetes/pkg/kubelet/status/status_manager.go isPodStatusByKubeletEqual.
+export function isPodStatusByKubeletEqual(oldStatus: V1PodStatus, status: V1PodStatus): boolean {
+	const oldCopy = structuredClone(oldStatus);
+	const statusCopy = structuredClone(status);
+
+	const newConditions = new Map<string, V1PodCondition>();
+	const oldConditions = new Map<string, V1PodCondition>();
+	for (const c of status.conditions ?? []) {
+		if (kubetypes.podConditionByKubelet(c.type) || kubetypes.podConditionSharedByKubelet(c.type)) {
+			newConditions.set(c.type, c);
+		}
+	}
+	for (const c of oldStatus.conditions ?? []) {
+		if (kubetypes.podConditionByKubelet(c.type) || kubetypes.podConditionSharedByKubelet(c.type)) {
+			oldConditions.set(c.type, c);
+		}
+	}
+
+	if (newConditions.size !== oldConditions.size) {
+		return false;
+	}
+	for (const newCondition of newConditions.values()) {
+		const oldCondition = oldConditions.get(newCondition.type);
+		if (
+			!oldCondition ||
+			oldCondition.status !== newCondition.status ||
+			oldCondition.message !== newCondition.message ||
+			oldCondition.reason !== newCondition.reason
+		) {
+			return false;
+		}
+	}
+
+	oldCopy.conditions = statusCopy.conditions;
+	oldCopy.resourceClaimStatuses = statusCopy.resourceClaimStatuses;
+	oldCopy.extendedResourceClaimStatus = statusCopy.extendedResourceClaimStatus;
+	oldCopy.nodeAllocatableResourceClaimStatuses = statusCopy.nodeAllocatableResourceClaimStatuses;
+	oldCopy.observedGeneration ??= 0;
+	statusCopy.observedGeneration ??= 0;
+
+	return deepEqual(dropUndefinedFields(oldCopy), dropUndefinedFields(statusCopy));
+}
+
+// Models kubernetes/pkg/kubelet/status/status_manager.go normalizeStatus.
+export function normalizeStatus(pod: V1Pod, status: V1PodStatus): V1PodStatus {
+	let bytesPerStatus = maxPodTerminationMessageLogLength;
+	const containers =
+		(pod.spec?.containers?.length ?? 0) +
+		(pod.spec?.initContainers?.length ?? 0) +
+		(pod.spec?.ephemeralContainers?.length ?? 0);
+	if (containers > 0) {
+		bytesPerStatus = Math.floor(bytesPerStatus / containers);
+	}
+
+	const normalizeTimeStamp = (time: Date | string | undefined): Date | undefined =>
+		time ? new Date(time instanceof Date ? time.toISOString() : time) : undefined;
+
+	const normalizeContainerState = (containerState: V1ContainerState | undefined): void => {
+		if (containerState?.running) {
+			if (containerState.running.startedAt) {
+				containerState.running.startedAt = normalizeTimeStamp(containerState.running.startedAt);
+			}
+		}
+		if (containerState?.terminated) {
+			if (containerState.terminated.startedAt) {
+				containerState.terminated.startedAt = normalizeTimeStamp(
+					containerState.terminated.startedAt,
+				);
+			}
+			if (containerState.terminated.finishedAt) {
+				containerState.terminated.finishedAt = normalizeTimeStamp(
+					containerState.terminated.finishedAt,
+				);
+			}
+			if (
+				containerState.terminated.message &&
+				containerState.terminated.message.length > bytesPerStatus
+			) {
+				containerState.terminated.message = containerState.terminated.message.slice(
+					0,
+					bytesPerStatus,
+				);
+			}
+		}
+	};
+
+	if (status.startTime) {
+		status.startTime = normalizeTimeStamp(status.startTime);
+	}
+	for (const condition of status.conditions ?? []) {
+		condition.lastProbeTime = normalizeTimeStamp(condition.lastProbeTime);
+		condition.lastTransitionTime = normalizeTimeStamp(condition.lastTransitionTime);
+	}
+
+	const normalizeContainerStatuses = (containerStatuses: V1ContainerStatus[] | undefined): void => {
+		for (const containerStatus of containerStatuses ?? []) {
+			normalizeContainerState(containerStatus.state);
+			normalizeContainerState(containerStatus.lastState);
+		}
+	};
+
+	normalizeContainerStatuses(status.containerStatuses);
+	status.containerStatuses?.sort((left, right) => left.name.localeCompare(right.name));
+
+	normalizeContainerStatuses(status.initContainerStatuses);
+	status.initContainerStatuses?.sort((left, right) => left.name.localeCompare(right.name));
+
+	normalizeContainerStatuses(status.ephemeralContainerStatuses);
+	status.ephemeralContainerStatuses?.sort((left, right) => left.name.localeCompare(right.name));
+
+	return status;
 }
 
 function podStatusKey(pod: V1Pod): string {
