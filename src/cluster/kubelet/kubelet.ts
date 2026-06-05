@@ -28,7 +28,6 @@ import {
 	networkReady,
 	PodStatusCache,
 	runtimeReady,
-	shouldAllContainersRestart,
 	toAPIPod,
 } from "./container";
 import type {
@@ -657,10 +656,12 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 		});
 	}
 
+	// Test observability hook used by cluster shutdown tests.
 	isSyncLoopExited(): boolean {
 		return this.syncLoopExited;
 	}
 
+	// Test observability hook used to assert probe workers are cleaned up.
 	probeWorkerCount(): number {
 		if (this.probeManager instanceof ProbeManagerImpl) {
 			return this.probeManager.workerCount();
@@ -676,9 +677,6 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 		mirrorPod: V1Pod | undefined,
 		podStatus: PodRuntimeStatus,
 	): Promise<SyncPodResult> {
-		if (ctx.err()) {
-			return [false, undefined, undefined];
-		}
 		if (!pod) {
 			throw new Error("SyncPod requires a pod");
 		}
@@ -699,7 +697,7 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 			podStatus.ips = [apiPodStatus.podIP];
 		}
 
-		if (isPodPhaseTerminal(apiPodStatus.phase)) {
+		if (apiPodStatus.phase === "Succeeded" || apiPodStatus.phase === "Failed") {
 			await this.statusManager.setPodStatus(pod, apiPodStatus);
 			return [true, undefined, undefined];
 		}
@@ -708,6 +706,14 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 
 		const networkErr = this.runtimeState.networkErrors();
 		if (networkErr && !isHostNetworkPod(pod)) {
+			await this.recorder.eventf(
+				pod,
+				"Warning",
+				"NetworkNotReady",
+				"%s: %s",
+				networkNotReadyErrorMsg,
+				networkErr.message,
+			);
 			return [
 				false,
 				undefined,
@@ -717,16 +723,12 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 			];
 		}
 
-		if (!(await this.podWorkers.isPodTerminationRequested(pod.metadata?.uid ?? ""))) {
-			// Kubernetes registers referenced secrets and configmaps here. The
-			// simulator keeps image credential and configmap/secret resolution out
-			// of kubelet sync scope for now.
-		}
+		// Kubernetes registers referenced secrets and configmaps here. The
+		// simulator keeps image credential and configmap/secret resolution out
+		// of kubelet sync scope for now.
 
-		if (!(await this.podWorkers.isPodTerminationRequested(pod.metadata?.uid ?? ""))) {
-			// Kubernetes creates and updates pod cgroups/QOS hierarchy here. The
-			// simulator does not model cgroups, resource requests, or limits.
-		}
+		// Kubernetes creates and updates pod cgroups/QOS hierarchy here. The
+		// simulator does not model cgroups, resource requests, or limits.
 
 		// Kubernetes reconciles mirror pods for static pods here. Static pods and
 		// mirror pods are not supported end to end by the simulator.
@@ -743,18 +745,22 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 		// authentication is intentionally a no-op in the simulator.
 
 		this.probeManager.addPod(ctx, pod);
-		const restartAllContainers = shouldAllContainersRestart(pod, podStatus, apiPodStatus);
+		let restartingAllContainers = false;
+		for (const cond of apiPodStatus.conditions ?? []) {
+			if (cond.type === "AllContainersRestarting" && cond.status === "True") {
+				restartingAllContainers = true;
+			}
+		}
 		const result = await this.containerRuntime.syncPod(
 			ctx,
 			pod,
 			podStatus,
 			pullSecrets,
 			this.crashLoopBackOff,
-			restartAllContainers,
+			restartingAllContainers,
 		);
 		this.reasonCache.update(pod.metadata?.uid ?? "", result);
-		const err = result.error();
-		if (restartAllContainers && !err) {
+		if (restartingAllContainers && !result.error()) {
 			const shouldRequeue = result.syncResults.some(
 				(syncResult) => syncResult.action === "RemoveContainer" && !syncResult.error,
 			);
@@ -769,18 +775,12 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 		}
 		// Kubernetes handles resize errors here. The simulator does not model
 		// in-place pod resize or allocation-manager behavior.
-
-		// Kubernetes performs post-sync relist/requeue hooks here. The simulator
-		// returns a PLEG relist callback below when runtime state changed.
-		return [false, this.postSyncIfChanged(pod, result.syncResults.length > 0 && !err), err];
-	}
-
-	private postSyncIfChanged(pod: V1Pod, runtimeChanged: boolean): (() => void) | undefined {
-		const uid = pod.metadata?.uid;
-		if (!runtimeChanged || !uid) {
-			return undefined;
+		const err = result.error();
+		let postSync: (() => void) | undefined;
+		if (result.syncResults.length > 0 && !err) {
+			postSync = () => this.requestPodRelist(pod.metadata?.uid ?? "");
 		}
-		return () => this.pleg.requestRelist(uid);
+		return [false, postSync, err];
 	}
 
 	// Models kubernetes/pkg/kubelet/kubelet.go SyncTerminatingPod.

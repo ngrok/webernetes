@@ -641,7 +641,11 @@ browser.describe("networkErrorsWithoutHostNetwork", () => {
 		const tCtx = context.background();
 		const testKubelet = newTestKubelet(false);
 		const kubelet = testKubelet.kubelet;
+		const fakeKubeClient = testKubelet.fakeKubeClient;
 		try {
+			await fakeKubeClient.corev1.createNamespace({
+				body: { metadata: { name: "new" } },
+			});
 			kubelet.runtimeState.setNetworkState(new Error("simulated network error"));
 
 			const pod = podWithUIDNameNsSpec("12345678", "hostnetwork", "new", {
@@ -662,6 +666,14 @@ browser.describe("networkErrorsWithoutHostNetwork", () => {
 			expect(err).toBeInstanceOf(Error);
 			expect(err?.message).toContain("network is not ready");
 			expect(isTerminal).toBe(false);
+			const events = await fakeKubeClient.corev1.listNamespacedEvent({ namespace: "new" });
+			expect(events.items).toContainEqual(
+				expect.objectContaining({
+					type: "Warning",
+					reason: "NetworkNotReady",
+					message: "network is not ready: simulated network error",
+				}),
+			);
 
 			pod.metadata ??= {};
 			pod.metadata.annotations ??= {};
