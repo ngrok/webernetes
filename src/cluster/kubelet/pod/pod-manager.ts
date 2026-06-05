@@ -176,16 +176,12 @@ export class PodManager {
 	}
 
 	// Models kubernetes/pkg/kubelet/pod/pod_manager.go GetPodAndMirrorPod.
-	getPodAndMirrorPod(aPod: V1Pod): {
-		pod: V1Pod | undefined;
-		mirrorPod: V1Pod | undefined;
-		wasMirror: boolean;
-	} {
+	getPodAndMirrorPod(aPod: V1Pod): [V1Pod | undefined, V1Pod | undefined, boolean] {
 		const fullName = kubecontainer.getPodFullName(aPod);
 		if (kubetypes.isMirrorPod(aPod)) {
-			return { pod: this.podByFullName.get(fullName), mirrorPod: aPod, wasMirror: true };
+			return [this.podByFullName.get(fullName), aPod, true];
 		}
-		return { pod: aPod, mirrorPod: this.mirrorPodByFullName.get(fullName), wasMirror: false };
+		return [aPod, this.mirrorPodByFullName.get(fullName), false];
 	}
 }
 
