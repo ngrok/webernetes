@@ -46,7 +46,7 @@ import { ProbeManagerImpl, ResultsManager } from "./prober";
 import type { ProbeManager, ProbeUpdate } from "./prober";
 import { PodWorkersImpl, type PodWorkers, type SyncPodResult } from "./pod-workers";
 import type { EventRecorder } from "../../client-go/tools/record/event";
-import { StatusManager } from "./status";
+import { StatusManagerImpl, type PodDeletionSafetyProvider, type StatusManager } from "./status";
 import { ContainerDied, ContainerRemoved, GenericPLEG, type PodLifecycleEvent } from "./pleg";
 import { networkNotReadyErrorMsg } from "./errors";
 import * as podutil from "../api/v1/pod/util";
@@ -179,7 +179,7 @@ interface KubeletOptions {
 	podWorkers?: PodWorkers & { close(): Promise<void> };
 	podCache: PodStatusCache;
 	pleg?: GenericPLEG;
-	statusManager: StatusManager;
+	statusManager?: StatusManager;
 	recorder: EventRecorder;
 	workQueue: WorkQueue;
 	crashLoopBackOff: Backoff;
@@ -223,6 +223,8 @@ function makePodSourceConfig(
 
 export class NoopPodStartupSLIObserver implements PodStartupSLIObserver {
 	observedPodOnWatch(_pod: V1Pod, _when: Date): void {}
+	recordStatusUpdated(_pod: V1Pod): void {}
+	deletePodStartupState(_podUid: string): void {}
 }
 
 // Models kubernetes/pkg/kubelet/kubelet.go NewMainKubelet.
@@ -280,11 +282,6 @@ export function newMainKubelet(
 		throw new Error("remote runtime and image services are required");
 	}
 	const podManager = new PodManager();
-	const statusManager = new StatusManager({
-		clock: kubeDeps.clock,
-		kubeClient,
-		podManager,
-	});
 	const livenessManager = new ResultsManager();
 	const readinessManager = new ResultsManager();
 	const startupManager = new ResultsManager();
@@ -314,13 +311,19 @@ export function newMainKubelet(
 		readinessManager,
 		startupManager,
 		podCache,
-		statusManager,
 		recorder: kubeDeps.recorder,
 		workQueue,
 		crashLoopBackOff: newBackOff(initialCrashLoopBackOffMs, maxCrashLoopBackOffMs, kubeDeps.clock),
 		clock: kubeDeps.clock,
 		nodeIPs: normalizedNodeIPs,
 		nodeAddresses: kubeDeps.node.status?.addresses,
+	});
+	kubelet.statusManager = new StatusManagerImpl({
+		clock: kubeDeps.clock,
+		kubeClient,
+		podManager,
+		podDeletionSafety: kubelet,
+		podStartupLatencyHelper: kubeDeps.podStartupLatencyTracker,
 	});
 	kubelet.podWorkers = new PodWorkersImpl(
 		kubeDeps.clock,
@@ -354,7 +357,7 @@ export function newMainKubelet(
 	kubelet.runner = containerRuntime;
 	kubelet.probeManager = new ProbeManagerImpl(
 		kubeletCtx,
-		statusManager,
+		kubelet.statusManager,
 		livenessManager,
 		readinessManager,
 		startupManager,
@@ -439,7 +442,7 @@ function newAPINodeLister(kubeClient: KubeClient): NodeLister {
 }
 
 // Models kubernetes/pkg/kubelet/kubelet.go Kubelet.
-export class Kubelet implements RuntimeHelper {
+export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 	private readonly hostname: string;
 	private readonly nodeName: string;
 	// Package-visible for upstream-parity tests that mirror kubelet_test.go.
@@ -484,7 +487,7 @@ export class Kubelet implements RuntimeHelper {
 	// Package-visible for upstream-parity tests that mirror kubelet_test.go.
 	pleg!: GenericPLEG;
 	// Package-visible for upstream-parity tests that mirror kubelet_test.go.
-	readonly statusManager: StatusManager;
+	statusManager!: StatusManager;
 	// Package-visible for upstream-parity tests that mirror kubelet_pods_test.go.
 	recorder: EventRecorder;
 	// Package-visible for upstream-parity tests that mirror kubelet_test.go.
@@ -534,7 +537,9 @@ export class Kubelet implements RuntimeHelper {
 		this.imageService = options.imageService;
 		this.podManager = options.podManager;
 		this.recorder = options.recorder;
-		this.statusManager = options.statusManager;
+		if (options.statusManager) {
+			this.statusManager = options.statusManager;
+		}
 		this.livenessManager = options.livenessManager;
 		this.readinessManager = options.readinessManager;
 		this.startupManager = options.startupManager;
@@ -578,6 +583,17 @@ export class Kubelet implements RuntimeHelper {
 	// Models kubernetes/pkg/kubelet/lifecycle/interfaces.go PodSyncHandlers.AddPodSyncHandler.
 	addPodSyncHandler(a: PodSyncHandler): void {
 		this.podSyncHandlers.addPodSyncHandler(a);
+	}
+
+	// Models kubernetes/pkg/kubelet/kubelet_pods.go PodCouldHaveRunningContainers.
+	async podCouldHaveRunningContainers(pod: V1Pod): Promise<boolean> {
+		if (await this.podWorkers.couldHaveRunningContainers(pod.metadata?.uid ?? "")) {
+			return true;
+		}
+
+		// Dynamic resource unprepare checks are intentionally omitted: the simulator
+		// does not currently model Kubernetes resource allocation managers.
+		return false;
 	}
 
 	// Models kubernetes/pkg/kubelet/kubelet.go Run.
