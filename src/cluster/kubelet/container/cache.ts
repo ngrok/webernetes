@@ -1,5 +1,6 @@
 import { Channel, select, type ChannelReceive } from "../../../go/channel";
 import * as context from "../../../go/context";
+import { RWMutex } from "../../../go/sync/mutex";
 import { newPodStatus, type PodStatus } from "./runtime";
 
 // Models kubernetes/pkg/kubelet/container/cache.go ROCache.
@@ -42,19 +43,22 @@ interface SubRecord {
 
 // Models kubernetes/pkg/kubelet/container/cache.go cache.
 export class PodStatusCache implements Cache {
+	private readonly lock = new RWMutex();
 	private readonly pods = new Map<string, Data>();
 	private timestamp: Date | undefined;
 	private readonly subscribers = new Map<string, SubRecord[]>();
 
 	// Models kubernetes/pkg/kubelet/container/cache.go Get.
 	async get(id: string): Promise<PodStatusResult> {
-		const data = this.getData(id);
-		return [data.status, data.error];
+		return await this.lock.withRLock(() => {
+			const data = this.getData(id);
+			return [data.status, data.error];
+		});
 	}
 
 	// Models kubernetes/pkg/kubelet/container/cache.go GetNewerThan.
 	async getNewerThan(ctx: context.Context, id: string, minTime: Date): Promise<PodStatusResult> {
-		const subscription = this.subscribe(id, minTime);
+		const subscription = await this.subscribe(id, minTime);
 		try {
 			const selected = await select()
 				.case(subscription.ch, (result) => ({ kind: "status" as const, result }))
@@ -65,50 +69,58 @@ export class PodStatusCache implements Cache {
 			return cacheResultFromReceive(id, selected.result);
 		} finally {
 			if (subscription.record) {
-				this.unsubscribe(id, subscription.record);
+				await this.unsubscribe(id, subscription.record);
 			}
 		}
 	}
 
 	// Models kubernetes/pkg/kubelet/container/cache.go Set.
-	async set(
+	set(
 		id: string,
 		status: PodStatus | undefined,
 		error: Error | undefined,
 		timestamp: Date,
 	): Promise<boolean> {
-		// Kubernetes has Evented PLEG timestamp conflict handling here. The simulator
-		// currently models Generic PLEG only.
-		this.pods.set(id, {
-			status,
-			error,
-			modified: timestamp,
-			observedTime: timestamp,
+		return this.lock.withLock(() => {
+			// Kubernetes has Evented PLEG timestamp conflict handling here. The simulator
+			// currently models Generic PLEG only.
+			this.pods.set(id, {
+				status,
+				error,
+				modified: timestamp,
+				observedTime: timestamp,
+			});
+			this.notify(id, timestamp);
+			return true;
 		});
-		this.notify(id, timestamp);
-		return true;
 	}
 
 	// Models kubernetes/pkg/kubelet/container/cache.go SetObservedTime.
 	async setObservedTime(id: string, timestamp: Date): Promise<void> {
-		const data = this.pods.get(id);
-		if (data) {
-			data.observedTime = timestamp;
-		}
-		this.notify(id, timestamp);
+		await this.lock.withLock(() => {
+			const data = this.pods.get(id);
+			if (data) {
+				data.observedTime = timestamp;
+			}
+			this.notify(id, timestamp);
+		});
 	}
 
 	// Models kubernetes/pkg/kubelet/container/cache.go Delete.
 	async delete(id: string): Promise<void> {
-		this.pods.delete(id);
+		await this.lock.withLock(() => {
+			this.pods.delete(id);
+		});
 	}
 
 	// Models kubernetes/pkg/kubelet/container/cache.go UpdateTime.
 	async updateTime(timestamp: Date): Promise<void> {
-		this.timestamp = timestamp;
-		for (const id of this.subscribers.keys()) {
-			this.notify(id, timestamp);
-		}
+		await this.lock.withLock(() => {
+			this.timestamp = timestamp;
+			for (const id of this.subscribers.keys()) {
+				this.notify(id, timestamp);
+			}
+		});
 	}
 
 	// Models kubernetes/pkg/kubelet/container/cache.go get.
@@ -155,33 +167,40 @@ export class PodStatusCache implements Cache {
 	}
 
 	// Models kubernetes/pkg/kubelet/container/cache.go subscribe.
-	private subscribe(id: string, timestamp: Date): { ch: Channel<Data>; record?: SubRecord } {
-		const ch = new Channel<Data>(1);
-		const data = this.getIfNewerThan(id, timestamp);
-		if (data) {
-			ch.trySend(data);
-			return { ch };
-		}
-		const record = {
-			time: timestamp,
-			ch,
-		};
-		this.subscribers.set(id, [...(this.subscribers.get(id) ?? []), record]);
-		return { ch, record };
+	private async subscribe(
+		id: string,
+		timestamp: Date,
+	): Promise<{ ch: Channel<Data>; record?: SubRecord }> {
+		return await this.lock.withLock(() => {
+			const ch = new Channel<Data>(1);
+			const data = this.getIfNewerThan(id, timestamp);
+			if (data) {
+				ch.trySend(data);
+				return { ch };
+			}
+			const record = {
+				time: timestamp,
+				ch,
+			};
+			this.subscribers.set(id, [...(this.subscribers.get(id) ?? []), record]);
+			return { ch, record };
+		});
 	}
 
 	// Simulator cancellation cleanup for GetNewerThan.
-	private unsubscribe(id: string, record: SubRecord): void {
-		const list = this.subscribers.get(id);
-		if (!list) {
-			return;
-		}
-		const newList = list.filter((item) => item !== record);
-		if (newList.length === 0) {
-			this.subscribers.delete(id);
-		} else {
-			this.subscribers.set(id, newList);
-		}
+	private async unsubscribe(id: string, record: SubRecord): Promise<void> {
+		await this.lock.withLock(() => {
+			const list = this.subscribers.get(id);
+			if (!list) {
+				return;
+			}
+			const newList = list.filter((item) => item !== record);
+			if (newList.length === 0) {
+				this.subscribers.delete(id);
+			} else {
+				this.subscribers.set(id, newList);
+			}
+		});
 	}
 }
 
