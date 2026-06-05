@@ -20,6 +20,8 @@ import { Mux, newMux } from "./mux";
 // Models kubernetes/pkg/kubelet/config/config.go podStartupSLIObserver.
 export interface PodStartupSLIObserver {
 	observedPodOnWatch(pod: V1Pod, when: Date): void;
+	recordStatusUpdated(pod: V1Pod): void;
+	deletePodStartupState(podUid: string): void;
 }
 
 // Models kubernetes/pkg/kubelet/config/sources.go SourcesReadyFn.

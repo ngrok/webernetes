@@ -180,6 +180,12 @@ export type SwapBehavior = "NoSwap" | "LimitedSwap" | "UnlimitedSwap";
 // Models kubernetes/pkg/kubelet/container/runtime.go ErrPodNotFound.
 export const errPodNotFound = new Error("pod sandboxes not found");
 
+// Models kubernetes/pkg/kubelet/container/runtime.go ContainerReasonStatusUnknown.
+export const containerReasonStatusUnknown = "ContainerStatusUnknown";
+
+// Models kubernetes/pkg/kubelet/container/runtime.go MaxPodTerminationMessageLogLength.
+export const maxPodTerminationMessageLogLength = 1024 * 12;
+
 // Models kubernetes/pkg/kubelet/container/runtime.go ContainerID.
 export class ContainerID {
 	constructor(

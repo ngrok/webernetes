@@ -7,7 +7,7 @@ import {
 } from "../../../client";
 import type { KubeClient } from "../../cluster";
 import * as podutil from "../../api/v1/pod/util";
-import { deepEqual } from "../../../deep-equal";
+import { deepEqual, dropUndefinedFields } from "../../../deep-equal";
 
 export interface PatchPodStatusResult {
 	pod: V1Pod | undefined;
@@ -59,7 +59,7 @@ function preparePatchBytesForPodStatus(
 	oldPodStatus: V1PodStatus,
 	newPodStatus: V1PodStatus,
 ): { patchBytes: string; unchanged: boolean } {
-	if (deepEqual(oldPodStatus, newPodStatus)) {
+	if (deepEqual(toJsonValue(oldPodStatus), toJsonValue(newPodStatus))) {
 		return {
 			patchBytes: JSON.stringify({ metadata: { uid } }),
 			unchanged: true,
@@ -72,6 +72,10 @@ function preparePatchBytesForPodStatus(
 		}),
 		unchanged: false,
 	};
+}
+
+function toJsonValue(value: unknown): unknown {
+	return JSON.parse(JSON.stringify(dropUndefinedFields(value)));
 }
 
 // Models kubernetes/pkg/util/pod/pod.go ReplaceOrAppendPodCondition.

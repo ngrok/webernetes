@@ -14,7 +14,7 @@ import { Etcd } from "../../etcd";
 import { KubeClient } from "../../cluster";
 import { buildContainerID } from "../container";
 import { PodManager } from "../pod";
-import { StatusManager } from "../status";
+import { StatusManagerImpl } from "../status";
 import { ProbeManagerImpl } from "./prober-manager";
 import { ResultsManager, type ProbeType } from "./results";
 import { ProbeWorker } from "./worker";
@@ -169,10 +169,17 @@ export function newTestManager(): ProbeManagerImpl {
 	});
 	const podManager = new PodManager();
 	podManager.addPod(getTestPod());
-	const statusManager = new StatusManager({
+	const statusManager = new StatusManagerImpl({
 		clock,
 		kubeClient: new KubeClient(kubeConfig),
 		podManager,
+		podDeletionSafety: {
+			podCouldHaveRunningContainers: async () => false,
+		},
+		podStartupLatencyHelper: {
+			recordStatusUpdated: () => undefined,
+			deletePodStartupState: () => undefined,
+		},
 	});
 	const manager = new ProbeManagerImpl(
 		context.background(),

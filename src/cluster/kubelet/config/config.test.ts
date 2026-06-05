@@ -380,6 +380,8 @@ function deepCopyPod(pod: V1Pod): V1Pod {
 
 class MockPodStartupSLIObserver {
 	observedPodOnWatch(_pod: V1Pod, _when: Date): void {}
+	recordStatusUpdated(_pod: V1Pod): void {}
+	deletePodStartupState(_podUid: string): void {}
 }
 
 function fetchEvent(recorder: FakeRecorder): string {

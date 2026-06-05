@@ -1,5 +1,18 @@
-export { StatusManager } from "./status-manager";
-export type { PodUpdateNotifier, StatusManagerOptions } from "./status-manager";
+export {
+	isPodStatusByKubeletEqual,
+	mergePodStatus,
+	normalizeStatus,
+	StatusManagerImpl,
+	updateLastTransitionTime,
+} from "./status-manager";
+export type {
+	PodDeletionSafetyProvider,
+	PodStatusProvider,
+	PodStartupLatencyStateHelper,
+	PodUpdateNotifier,
+	StatusManager,
+	StatusManagerOptions,
+} from "./status-manager";
 export {
 	generateAllContainersRestartingCondition,
 	generateContainersReadyCondition,

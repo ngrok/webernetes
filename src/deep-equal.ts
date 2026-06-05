@@ -25,6 +25,22 @@ export function deepEqual(left: unknown, right: unknown): boolean {
 	return false;
 }
 
+export function dropUndefinedFields<T>(value: T): T {
+	if (Array.isArray(value)) {
+		return value.map((item) => dropUndefinedFields(item)) as T;
+	}
+	if (value instanceof Date || typeof value !== "object" || value === null) {
+		return value;
+	}
+	const result: Record<string, unknown> = {};
+	for (const [key, item] of Object.entries(value)) {
+		if (item !== undefined) {
+			result[key] = dropUndefinedFields(item);
+		}
+	}
+	return result as T;
+}
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
