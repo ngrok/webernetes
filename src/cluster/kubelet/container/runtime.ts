@@ -10,6 +10,7 @@ import type {
 	MetricDescriptor,
 	PodSandboxMetrics,
 } from "../../cri/runtime/v1/api";
+import type { GCPolicy } from "./container-gc";
 import type { PodSyncResult } from "./sync-result";
 
 // Models kubernetes/pkg/kubelet/container/runtime.go Version.
@@ -165,13 +166,6 @@ export interface LinuxContainerUser {
 	uid?: number;
 	gid?: number;
 	supplementalGroups?: number[];
-}
-
-// Models kubernetes/pkg/kubelet/container/runtime.go GCPolicy.
-export interface GCPolicy {
-	minAgeMs?: number;
-	maxPerPodContainer?: number;
-	maxContainers?: number;
 }
 
 // Models kubernetes/pkg/kubelet/types SwapBehavior.
