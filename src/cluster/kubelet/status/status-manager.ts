@@ -12,6 +12,7 @@ import type { KubeClient } from "../../cluster";
 import { deepEqual, dropUndefinedFields } from "../../../deep-equal";
 import { Channel, select } from "../../../go/channel";
 import type { Context } from "../../../go/context";
+import { RWMutex } from "../../../go/sync/mutex";
 import * as time from "../../../go/time";
 import * as podutil from "../../api/v1/pod/util";
 import * as statusutil from "../../util/pod/pod";
@@ -66,9 +67,9 @@ export interface StatusManager extends PodStatusProvider {
 	start(ctx: Context): Promise<void>;
 	addPodUpdateNotifier(notifier: PodUpdateNotifier): void;
 	setPodStatus(pod: V1Pod, status: V1PodStatus): Promise<[V1PodStatus, boolean]>;
-	setContainerReadiness(podUid: string, containerId: ContainerID, ready: boolean): void;
-	setContainerStartup(podUid: string, containerId: ContainerID, started: boolean): void;
-	terminatePod(pod: V1Pod): void;
+	setContainerReadiness(podUid: string, containerId: ContainerID, ready: boolean): Promise<void>;
+	setContainerStartup(podUid: string, containerId: ContainerID, started: boolean): Promise<void>;
+	terminatePod(pod: V1Pod): Promise<void>;
 	removeOrphanedStatuses(podUids: Set<string>): void;
 }
 
@@ -96,6 +97,7 @@ export class StatusManagerImpl implements StatusManager {
 	readonly kubeClient: KubeClient;
 	readonly podManager: PodManager;
 	readonly podStatuses = new Map<string, VersionedPodStatus>();
+	readonly podStatusesLock = new RWMutex();
 	readonly podStatusChannel = new Channel<void>(1);
 	readonly apiStatusVersions = new Map<string, number>();
 	private readonly podDeletionSafety: PodDeletionSafetyProvider;
@@ -161,17 +163,22 @@ export class StatusManagerImpl implements StatusManager {
 	async setPodStatus(pod: V1Pod, status: V1PodStatus): Promise<[V1PodStatus, boolean]> {
 		let notification: PodStatusNotification | undefined;
 		try {
-			status = structuredClone(status);
-			status.observedGeneration = podutil.calculatePodStatusObservedGeneration(pod);
+			return await this.podStatusesLock.withLock(async () => {
+				status = structuredClone(status);
+				status.observedGeneration = podutil.calculatePodStatusObservedGeneration(pod);
 
-			const [changed, notif] = this.updateStatusInternal(
-				pod,
-				status,
-				pod.metadata?.deletionTimestamp !== undefined,
-				false,
-			);
-			notification = notif;
-			return [structuredClone(this.podStatuses.get(podStatusKey(pod))?.status ?? status), changed];
+				const [changed, notif] = this.updateStatusInternal(
+					pod,
+					status,
+					pod.metadata?.deletionTimestamp !== undefined,
+					false,
+				);
+				notification = notif;
+				return [
+					structuredClone(this.podStatuses.get(podStatusKey(pod))?.status ?? status),
+					changed,
+				];
+			});
 		} finally {
 			if (notification) {
 				this.sendNotification(notification);
@@ -180,67 +187,78 @@ export class StatusManagerImpl implements StatusManager {
 	}
 
 	// Models kubernetes/pkg/kubelet/status/status_manager.go SetContainerReadiness.
-	setContainerReadiness(podUid: string, containerId: ContainerID, ready: boolean): void {
+	async setContainerReadiness(
+		podUid: string,
+		containerId: ContainerID,
+		ready: boolean,
+	): Promise<void> {
 		let notification: PodStatusNotification | undefined;
 		try {
-			const pod = this.podManager.getPodByUid(podUid);
-			if (!pod) {
-				return;
-			}
-
-			const oldStatus = this.podStatuses.get(podStatusKey(pod));
-			if (!oldStatus) {
-				return;
-			}
-
-			let containerStatus = this.findContainerStatus(oldStatus.status, containerId);
-			if (!containerStatus) {
-				return;
-			}
-
-			if (containerStatus.ready === ready) {
-				return;
-			}
-
-			const status = structuredClone(oldStatus.status);
-			containerStatus = this.findContainerStatus(status, containerId);
-			if (!containerStatus) {
-				return;
-			}
-			containerStatus.ready = ready;
-
-			const updateConditionFunc = (
-				conditionType: V1PodCondition["type"],
-				condition: V1PodCondition,
-			) => {
-				status.conditions ??= [];
-				const conditionIndex = status.conditions.findIndex(
-					(condition) => condition.type === conditionType,
-				);
-				if (conditionIndex !== -1) {
-					status.conditions[conditionIndex] = condition;
-				} else {
-					status.conditions.push(condition);
+			await this.podStatusesLock.withLock(async () => {
+				const pod = this.podManager.getPodByUid(podUid);
+				if (!pod) {
+					return;
 				}
-			};
 
-			const allContainerStatuses = status.containerStatuses ?? [];
-			updateConditionFunc(
-				"Ready",
-				generatePodReadyCondition(
-					pod,
-					oldStatus.status,
-					status.conditions ?? [],
-					allContainerStatuses,
-					status.phase,
-				),
-			);
-			updateConditionFunc(
-				"ContainersReady",
-				generateContainersReadyCondition(pod, oldStatus.status, allContainerStatuses, status.phase),
-			);
-			const [, notif] = this.updateStatusInternal(pod, status, false, false);
-			notification = notif;
+				const oldStatus = this.podStatuses.get(podStatusKey(pod));
+				if (!oldStatus) {
+					return;
+				}
+
+				let containerStatus = this.findContainerStatus(oldStatus.status, containerId);
+				if (!containerStatus) {
+					return;
+				}
+
+				if (containerStatus.ready === ready) {
+					return;
+				}
+
+				const status = structuredClone(oldStatus.status);
+				containerStatus = this.findContainerStatus(status, containerId);
+				if (!containerStatus) {
+					return;
+				}
+				containerStatus.ready = ready;
+
+				const updateConditionFunc = (
+					conditionType: V1PodCondition["type"],
+					condition: V1PodCondition,
+				) => {
+					status.conditions ??= [];
+					const conditionIndex = status.conditions.findIndex(
+						(condition) => condition.type === conditionType,
+					);
+					if (conditionIndex !== -1) {
+						status.conditions[conditionIndex] = condition;
+					} else {
+						status.conditions.push(condition);
+					}
+				};
+
+				const allContainerStatuses = status.containerStatuses ?? [];
+				updateConditionFunc(
+					"Ready",
+					generatePodReadyCondition(
+						pod,
+						oldStatus.status,
+						status.conditions ?? [],
+						allContainerStatuses,
+						status.phase,
+					),
+				);
+				updateConditionFunc(
+					"ContainersReady",
+					generateContainersReadyCondition(
+						pod,
+						oldStatus.status,
+						allContainerStatuses,
+						status.phase,
+					),
+				);
+				const [, notif] = this.updateStatusInternal(pod, status, false, false);
+				notification = notif;
+			});
 		} finally {
 			if (notification) {
 				this.sendNotification(notification);
@@ -249,36 +267,42 @@ export class StatusManagerImpl implements StatusManager {
 	}
 
 	// Models kubernetes/pkg/kubelet/status/status_manager.go SetContainerStartup.
-	setContainerStartup(podUid: string, containerId: ContainerID, started: boolean): void {
+	async setContainerStartup(
+		podUid: string,
+		containerId: ContainerID,
+		started: boolean,
+	): Promise<void> {
 		let notification: PodStatusNotification | undefined;
 		try {
-			const pod = this.podManager.getPodByUid(podUid);
-			if (!pod) {
-				return;
-			}
+			await this.podStatusesLock.withLock(async () => {
+				const pod = this.podManager.getPodByUid(podUid);
+				if (!pod) {
+					return;
+				}
 
-			const oldStatus = this.podStatuses.get(podStatusKey(pod));
-			if (!oldStatus) {
-				return;
-			}
+				const oldStatus = this.podStatuses.get(podStatusKey(pod));
+				if (!oldStatus) {
+					return;
+				}
 
-			let containerStatus = this.findContainerStatus(oldStatus.status, containerId);
-			if (!containerStatus) {
-				return;
-			}
+				let containerStatus = this.findContainerStatus(oldStatus.status, containerId);
+				if (!containerStatus) {
+					return;
+				}
 
-			if (containerStatus.started === started) {
-				return;
-			}
+				if (containerStatus.started === started) {
+					return;
+				}
 
-			const status = structuredClone(oldStatus.status);
-			containerStatus = this.findContainerStatus(status, containerId);
-			if (!containerStatus) {
-				return;
-			}
-			containerStatus.started = started;
-			const [, notif] = this.updateStatusInternal(pod, status, false, false);
-			notification = notif;
+				const status = structuredClone(oldStatus.status);
+				containerStatus = this.findContainerStatus(status, containerId);
+				if (!containerStatus) {
+					return;
+				}
+				containerStatus.started = started;
+				const [, notif] = this.updateStatusInternal(pod, status, false, false);
+				notification = notif;
+			});
 		} finally {
 			if (notification) {
 				this.sendNotification(notification);
@@ -300,61 +324,63 @@ export class StatusManagerImpl implements StatusManager {
 	}
 
 	// Models kubernetes/pkg/kubelet/status/status_manager.go TerminatePod.
-	terminatePod(pod: V1Pod) {
+	async terminatePod(pod: V1Pod): Promise<void> {
 		let notification: PodStatusNotification | undefined;
-		let oldStatus = pod.status ?? {};
-		const cachedStatus = this.podStatuses.get(podStatusKey(pod));
-		const isCached = cachedStatus !== undefined;
-		if (isCached) {
-			oldStatus = cachedStatus.status;
-		}
-		const status = structuredClone(oldStatus);
-
-		if (hasPodInitialized(pod)) {
-			for (const containerStatus of status.containerStatuses ?? []) {
-				if (containerStatus.state?.terminated) {
-					continue;
-				}
-				containerStatus.state = {
-					terminated: {
-						reason: containerReasonStatusUnknown,
-						message: "The container could not be located when the pod was terminated",
-						exitCode: 137,
-					},
-				};
-			}
-		}
-
-		for (let i = 0; i < initializedContainers(status.initContainerStatuses).length; i++) {
-			const containerStatus = status.initContainerStatuses?.[i];
-			if (!containerStatus || containerStatus.state?.terminated) {
-				continue;
-			}
-			containerStatus.state = {
-				terminated: {
-					reason: containerReasonStatusUnknown,
-					message: "The container could not be located when the pod was terminated",
-					exitCode: 137,
-				},
-			};
-		}
-
-		if (!kubetypes.isStaticPod(pod)) {
-			switch (status.phase) {
-				case "Succeeded":
-				case "Failed":
-					break;
-				case "Pending":
-				case "Running":
-				default:
-					status.phase = "Failed";
-					break;
-			}
-		}
-
 		try {
-			const [, notif] = this.updateStatusInternal(pod, status, true, true);
-			notification = notif;
+			await this.podStatusesLock.withLock(async () => {
+				let oldStatus = pod.status ?? {};
+				const cachedStatus = this.podStatuses.get(podStatusKey(pod));
+				const isCached = cachedStatus !== undefined;
+				if (isCached) {
+					oldStatus = cachedStatus.status;
+				}
+				const status = structuredClone(oldStatus);
+
+				if (hasPodInitialized(pod)) {
+					for (const containerStatus of status.containerStatuses ?? []) {
+						if (containerStatus.state?.terminated) {
+							continue;
+						}
+						containerStatus.state = {
+							terminated: {
+								reason: containerReasonStatusUnknown,
+								message: "The container could not be located when the pod was terminated",
+								exitCode: 137,
+							},
+						};
+					}
+				}
+
+				for (let i = 0; i < initializedContainers(status.initContainerStatuses).length; i++) {
+					const containerStatus = status.initContainerStatuses?.[i];
+					if (!containerStatus || containerStatus.state?.terminated) {
+						continue;
+					}
+					containerStatus.state = {
+						terminated: {
+							reason: containerReasonStatusUnknown,
+							message: "The container could not be located when the pod was terminated",
+							exitCode: 137,
+						},
+					};
+				}
+
+				if (!kubetypes.isStaticPod(pod)) {
+					switch (status.phase) {
+						case "Succeeded":
+						case "Failed":
+							break;
+						case "Pending":
+						case "Running":
+						default:
+							status.phase = "Failed";
+							break;
+					}
+				}
+
+				const [, notif] = this.updateStatusInternal(pod, status, true, true);
+				notification = notif;
+			});
 		} finally {
 			if (notification) {
 				this.sendNotification(notification);
@@ -431,10 +457,13 @@ export class StatusManagerImpl implements StatusManager {
 					podIsFinished = true;
 				}
 			}
-		} else if (this.podManager.getMirrorPodByPod(pod)) {
-			oldStatus = structuredClone(this.podManager.getMirrorPodByPod(pod)?.status ?? {});
 		} else {
-			oldStatus = structuredClone(pod.status ?? {});
+			const mirrorPod = this.podManager.getMirrorPodByPod(pod);
+			if (mirrorPod) {
+				oldStatus = structuredClone(mirrorPod.status ?? {});
+			} else {
+				oldStatus = structuredClone(pod.status ?? {});
+			}
 		}
 
 		const err = this.checkContainerStateTransition(oldStatus, status, pod.spec);
@@ -533,44 +562,46 @@ export class StatusManagerImpl implements StatusManager {
 		}> = [];
 		const { podToMirror, mirrorToPod } = this.podManager.getUidTranslations();
 
-		if (all) {
-			for (const uid of this.apiStatusVersions.keys()) {
-				const hasPod = this.podStatuses.has(uid);
-				const hasMirror = mirrorToPod.has(uid);
-				if (!hasPod && !hasMirror) {
-					this.apiStatusVersions.delete(uid);
+		await this.podStatusesLock.withRLock(async () => {
+			if (all) {
+				for (const uid of this.apiStatusVersions.keys()) {
+					const hasPod = this.podStatuses.has(uid);
+					const hasMirror = mirrorToPod.has(uid);
+					if (!hasPod && !hasMirror) {
+						this.apiStatusVersions.delete(uid);
+					}
 				}
 			}
-		}
 
-		for (const [uid, status] of this.podStatuses) {
-			let uidOfStatus = uid;
-			if (podToMirror.has(uid)) {
-				const mirrorUid = podToMirror.get(uid);
-				// Static pods without mirror pods should not sync status to the API.
-				// The simulator does not currently model static pods or mirror pods,
-				// so this branch is dormant until those pod sources are added.
-				if (mirrorUid === "") {
+			for (const [uid, status] of this.podStatuses) {
+				let uidOfStatus = uid;
+				if (podToMirror.has(uid)) {
+					const mirrorUid = podToMirror.get(uid);
+					// Static pods without mirror pods should not sync status to the API.
+					// The simulator does not currently model static pods or mirror pods,
+					// so this branch is dormant until those pod sources are added.
+					if (mirrorUid === "") {
+						continue;
+					}
+					uidOfStatus = mirrorUid ?? uid;
+				}
+
+				if (!all) {
+					if ((this.apiStatusVersions.get(uidOfStatus) ?? 0) >= status.version) {
+						continue;
+					}
+					updatedStatuses.push({ podUid: uid, statusUid: uidOfStatus, status });
 					continue;
 				}
-				uidOfStatus = mirrorUid ?? uid;
-			}
 
-			if (!all) {
-				if ((this.apiStatusVersions.get(uidOfStatus) ?? 0) >= status.version) {
-					continue;
+				if (this.needsUpdate(uidOfStatus, status)) {
+					updatedStatuses.push({ podUid: uid, statusUid: uidOfStatus, status });
+				} else if (this.needsReconcile(uid, status.status)) {
+					this.apiStatusVersions.delete(uidOfStatus);
+					updatedStatuses.push({ podUid: uid, statusUid: uidOfStatus, status });
 				}
-				updatedStatuses.push({ podUid: uid, statusUid: uidOfStatus, status });
-				continue;
 			}
-
-			if (this.needsUpdate(uidOfStatus, status)) {
-				updatedStatuses.push({ podUid: uid, statusUid: uidOfStatus, status });
-			} else if (this.needsReconcile(uid, status.status)) {
-				this.apiStatusVersions.delete(uidOfStatus);
-				updatedStatuses.push({ podUid: uid, statusUid: uidOfStatus, status });
-			}
-		}
+		});
 
 		for (const update of updatedStatuses) {
 			await this.syncPod(ctx, update.podUid, update.status);
