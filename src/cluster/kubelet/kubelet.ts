@@ -23,6 +23,7 @@ import {
 } from "../api/v1/pod/util";
 import {
 	convertPodStatusToRunningPod,
+	errPodNotFound,
 	isHostNetworkPod,
 	newRuntimeCache,
 	networkReady,
@@ -805,9 +806,6 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 		this.probeManager.stopLivenessAndStartup(pod);
 
 		const p = convertPodStatusToRunningPod(this.getRuntime().type(), podStatus);
-		for (const container of p.containers) {
-			await this.recorder.event(pod, "Normal", "Killing", `Stopping container ${container.name}`);
-		}
 		const killErr = await this.killPod(ctx, pod, p, gracePeriod);
 		if (killErr) {
 			return new Error(`error killing terminating pod: ${killErr.message}`, {
@@ -817,12 +815,40 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 
 		this.probeManager.removePod(pod);
 
-		let runtimePod: RuntimePod;
-		try {
-			runtimePod = await this.getRuntimePod(ctx, pod);
-		} catch (error) {
-			const err = error instanceof Error ? error : new Error(String(error));
-			return new Error(`unable to get pod prior to final pod termination: ${err.message}`);
+		let [runtimePod, runtimePodErr] = await this.containerRuntime.getPod(
+			ctx,
+			pod.metadata?.uid ?? "",
+		);
+		if (runtimePodErr) {
+			if (runtimePodErr === errPodNotFound) {
+				runtimePod = {
+					id: pod.metadata?.uid ?? "",
+					name: pod.metadata?.name ?? "",
+					namespace: pod.metadata?.namespace ?? "default",
+					createdAt: 0,
+					timestamp: this.clock.now(),
+					containers: [],
+					sandboxes: [],
+				};
+			} else {
+				return new Error(
+					`unable to get pod prior to final pod termination: ${runtimePodErr.message}`,
+					{
+						cause: runtimePodErr,
+					},
+				);
+			}
+		}
+		if (!runtimePod) {
+			runtimePod = {
+				id: pod.metadata?.uid ?? "",
+				name: pod.metadata?.name ?? "",
+				namespace: pod.metadata?.namespace ?? "default",
+				createdAt: 0,
+				timestamp: this.clock.now(),
+				containers: [],
+				sandboxes: [],
+			};
 		}
 		const [stoppedPodStatus, podStatusErr] = await this.containerRuntime.getPodStatus(
 			ctx,
@@ -874,9 +900,6 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 		}
 		const pod = toAPIPod(runningPod);
 		const gracePeriod = 1;
-		for (const container of runningPod.containers) {
-			await this.recorder.event(pod, "Normal", "Killing", `Stopping container ${container.name}`);
-		}
 		const killErr = await this.killPod(ctx, pod, runningPod, gracePeriod);
 		if (killErr) {
 			return killErr;
@@ -926,11 +949,18 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 	}
 
 	private async cleanupPodRuntime(ctx: context.Context, pod: V1Pod): Promise<Error | undefined> {
-		let runningPod: RuntimePod;
-		try {
-			runningPod = await this.getRuntimePod(ctx, pod);
-		} catch (error) {
-			return error instanceof Error ? error : new Error(String(error));
+		const [runningPod, runningPodErr] = await this.containerRuntime.getPod(
+			ctx,
+			pod.metadata?.uid ?? "",
+		);
+		if (runningPodErr) {
+			if (runningPodErr === errPodNotFound) {
+				return undefined;
+			}
+			return runningPodErr;
+		}
+		if (!runningPod) {
+			return undefined;
 		}
 		if (this.runtimeService) {
 			for (const sandbox of runningPod.sandboxes) {
@@ -941,33 +971,6 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 			}
 		}
 		return undefined;
-	}
-
-	// Models kubernetes/pkg/kubelet/kubelet.go SyncTerminatingPod runtime pod lookup.
-	private async getRuntimePod(ctx: context.Context, pod: V1Pod): Promise<RuntimePod> {
-		const [runtimePod, err] = await this.containerRuntime.getPod(ctx, pod.metadata?.uid ?? "");
-		if (err) {
-			if (err.message !== "pod sandboxes not found") {
-				throw err;
-			}
-		}
-		if (runtimePod) {
-			return runtimePod;
-		}
-		return this.emptyRuntimePod(pod);
-	}
-
-	// Models kubernetes/pkg/kubelet/kubelet.go SyncTerminatingPod ErrPodNotFound fallback.
-	private emptyRuntimePod(pod: V1Pod): RuntimePod {
-		return {
-			id: pod.metadata?.uid ?? "",
-			name: pod.metadata?.name ?? "",
-			namespace: pod.metadata?.namespace ?? "default",
-			createdAt: 0,
-			timestamp: this.clock.now(),
-			containers: [],
-			sandboxes: [],
-		};
 	}
 
 	// Models kubernetes/pkg/kubelet/kubelet.go getPodsToSync.
