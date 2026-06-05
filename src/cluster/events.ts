@@ -5,7 +5,7 @@ import type { EventObject, EventRecorder } from "../client-go/tools/record/event
 import type { Clock } from "../clock";
 
 export interface EventRecorderOptions {
-	api: k8s.CoreV1Api;
+	api: k8s.KubeClient["corev1"];
 	clock: Clock;
 	component: string;
 	host?: string;

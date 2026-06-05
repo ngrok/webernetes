@@ -30,9 +30,9 @@ export interface ClusterOptions {
 	nodePortRange?: NodePortRange;
 }
 
-export class KubeClient {
-	readonly corev1: k8s.CoreV1Api;
-	readonly discoveryv1: k8s.DiscoveryV1Api;
+export class KubeClient implements k8s.KubeClient {
+	readonly corev1: k8s.KubeClient["corev1"];
+	readonly discoveryv1: k8s.KubeClient["discoveryv1"];
 	constructor(readonly kubeConfig: k8s.KubeConfig) {
 		this.corev1 = this.kubeConfig.makeApiClient(k8s.CoreV1Api);
 		this.discoveryv1 = this.kubeConfig.makeApiClient(k8s.DiscoveryV1Api);

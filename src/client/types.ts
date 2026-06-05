@@ -62,6 +62,11 @@ export interface KubeConfig {
 	makeApiClient<T extends ApiType>(api: ApiConstructor<T>): T;
 }
 
+export interface KubeClient {
+	corev1: CoreV1Api;
+	discoveryv1: DiscoveryV1Api;
+}
+
 export interface ObjectCache<T extends KubernetesObject> {
 	get(name: string, namespace?: string): T | undefined;
 	list(namespace?: string): ReadonlyArray<T>;

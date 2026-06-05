@@ -6,4 +6,4 @@ export * from "./informer";
 export * from "./exec";
 export * from "./watch";
 export * from "./patch";
-export type { KubernetesObject } from "./types";
+export type { KubeClient, KubernetesObject } from "./types";
