@@ -28,6 +28,7 @@ import {
 	networkReady,
 	PodStatusCache,
 	runtimeReady,
+	type Runtime,
 	toAPIPod,
 } from "./container";
 import type {
@@ -669,6 +670,11 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 		return 0;
 	}
 
+	// Models kubernetes/pkg/kubelet/kubelet_getters.go Kubelet.getRuntime.
+	private getRuntime(): Runtime {
+		return this.containerRuntime;
+	}
+
 	// Models kubernetes/pkg/kubelet/kubelet.go SyncPod.
 	async syncPod(
 		ctx: context.Context,
@@ -798,7 +804,7 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 
 		this.probeManager.stopLivenessAndStartup(pod);
 
-		const p = convertPodStatusToRunningPod("simulator", podStatus);
+		const p = convertPodStatusToRunningPod(this.getRuntime().type(), podStatus);
 		for (const container of p.containers) {
 			await this.recorder.event(pod, "Normal", "Killing", `Stopping container ${container.name}`);
 		}
