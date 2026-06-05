@@ -130,7 +130,7 @@ export interface SyncHandler {
 	handlePodAdditions(ctx: context.Context, pods: V1Pod[]): Promise<void>;
 	handlePodUpdates(ctx: context.Context, pods: V1Pod[]): Promise<void>;
 	handlePodRemoves(ctx: context.Context, pods: V1Pod[]): Promise<void>;
-	handlePodReconcile(ctx: context.Context, pods: V1Pod[]): void;
+	handlePodReconcile(ctx: context.Context, pods: V1Pod[]): Promise<void>;
 	handlePodSyncs(ctx: context.Context, pods: V1Pod[]): Promise<void>;
 	handlePodCleanups(ctx: context.Context): Promise<Error | undefined>;
 }
@@ -601,7 +601,7 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 		this.statusManagerPromise = this.statusManager.start(this.ctx);
 		await this.updateRuntimeUp(this.ctx);
 		this.runtimeStatusUpdaterPromise = this.runRuntimeStatusUpdater(this.ctx);
-		this.pleg.start();
+		await this.pleg.start();
 		this.syncLoopPromise = this.syncLoop(this.ctx, this.podConfig.updates());
 	}
 
@@ -611,7 +611,7 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 			this.cancelContext();
 			this.closePromise = (async () => {
 				await this.pleg.stop();
-				this.podCache.updateTime(this.clock.now());
+				await this.podCache.updateTime(this.clock.now());
 				if (this.probeManager instanceof ProbeManagerImpl) {
 					await this.probeManager.close();
 				}
@@ -933,7 +933,7 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 			return cleanupErr;
 		}
 
-		this.statusManager.terminatePod(pod);
+		await this.statusManager.terminatePod(pod);
 		return undefined;
 	}
 
@@ -1127,7 +1127,7 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 			.case(this.readinessManager.updates(), async ({ ok, value }) => {
 				if (ok) {
 					const ready = value.result === "success";
-					this.statusManager.setContainerReadiness(value.podUid, value.containerId, ready);
+					await this.statusManager.setContainerReadiness(value.podUid, value.containerId, ready);
 
 					const status = ready ? "ready" : "not ready";
 					await this.handleProbeSync(ctx, value, "readiness", status, handler);
@@ -1137,7 +1137,7 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 			.case(this.startupManager.updates(), async ({ ok, value }) => {
 				if (ok) {
 					const started = value.result === "success";
-					this.statusManager.setContainerStartup(value.podUid, value.containerId, started);
+					await this.statusManager.setContainerStartup(value.podUid, value.containerId, started);
 
 					const status = started ? "started" : "unhealthy";
 					await this.handleProbeSync(ctx, value, "startup", status, handler);
@@ -1195,7 +1195,7 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 				await handler.handlePodRemoves(ctx, update.pods);
 				break;
 			case "RECONCILE":
-				handler.handlePodReconcile(ctx, update.pods);
+				await handler.handlePodReconcile(ctx, update.pods);
 				break;
 			case "DELETE":
 				// DELETE is treated as UPDATE because graceful deletion first
@@ -1326,7 +1326,7 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 	}
 
 	// Models kubernetes/pkg/kubelet/kubelet.go HandlePodReconcile.
-	handlePodReconcile(_ctx: context.Context, pods: V1Pod[]): void {
+	async handlePodReconcile(_ctx: context.Context, pods: V1Pod[]): Promise<void> {
 		for (const pod of pods) {
 			if (this.stopped || pod.spec?.nodeName !== this.nodeName || !pod.metadata?.name) {
 				continue;
