@@ -626,7 +626,7 @@ browser.describe("select", () => {
 			.case(first, ({ value }) => value)
 			.case(second, ({ value }) => value);
 
-		second.send(2);
+		void second.send(2);
 		const result = await selecting;
 		expect(result).toBe(2);
 	});
@@ -831,7 +831,7 @@ browser.describe("select", () => {
 			.case(first, () => "first")
 			.case(second, () => "second");
 
-		first.send("one");
+		void first.send("one");
 		await expect(selecting).resolves.toEqual("first");
 
 		// It's a tiny bit tricky to understand what's being tested here but the

@@ -716,7 +716,7 @@ browser.describe("TestLivenessProbeDisabledByStarted", () => {
 		expectContinue(w, await w.doProbe(ctx), msg);
 		expectResult(w, "success", msg);
 
-		m.statusManager.setContainerStartup(testPodUID, testContainerID, true);
+		await m.statusManager.setContainerStartup(testPodUID, testContainerID, true);
 		msg = "Started, probe failure, result failure";
 		expectContinue(w, await w.doProbe(ctx), msg);
 		expectResult(w, "failure", msg);
@@ -740,7 +740,7 @@ browser.describe("TestStartupProbeDisabledByStarted", () => {
 		expectContinue(w, await w.doProbe(ctx), msg);
 		expectResult(w, "success", msg);
 
-		m.statusManager.setContainerStartup(testPodUID, testContainerID, true);
+		await m.statusManager.setContainerStartup(testPodUID, testContainerID, true);
 		m.prober.exec = new FakeExecProber("failure");
 		msg = "Started, probe failure, result success";
 		expectContinue(w, await w.doProbe(ctx), msg);

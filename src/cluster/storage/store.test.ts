@@ -62,7 +62,7 @@ fakeEtcd.describe("Store resourceVersion", ({ createEtcd }) => {
 		await store.create({ metadata: { name: "watched" }, value: "initial" });
 		const list = await store.listWithResourceVersion();
 
-		const watcher = await store.watch(undefined, Number(list.resourceVersion) + 1);
+		const watcher = store.watch(undefined, Number(list.resourceVersion) + 1);
 		const event = nextStoreEvent(watcher);
 		const updated = await store.update("watched", {
 			metadata: { name: "watched" },
@@ -87,7 +87,7 @@ fakeEtcd.describe("Store resourceVersion", ({ createEtcd }) => {
 		const list = await store.listWithResourceVersion();
 		const staleObjectRevision = created.metadata.resourceVersion;
 
-		const watcher = await store.watch(undefined, Number(list.resourceVersion) + 1);
+		const watcher = store.watch(undefined, Number(list.resourceVersion) + 1);
 		const event = nextStoreEvent(watcher);
 		const updated = await store.update("stamped", {
 			metadata: { name: "stamped", resourceVersion: staleObjectRevision },

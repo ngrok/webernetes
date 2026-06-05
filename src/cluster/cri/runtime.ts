@@ -851,7 +851,7 @@ export class ContainerInstance {
 		this.finishedAtMs = undefined;
 		this.lastExitCode = undefined;
 		this.mainProcess = process;
-		process.wait().then((exitCode) => {
+		void process.wait().then((exitCode) => {
 			if (this.mainProcess !== process) {
 				return undefined;
 			}

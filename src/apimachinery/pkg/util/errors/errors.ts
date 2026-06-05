@@ -190,7 +190,7 @@ export function reduce(err: Error | undefined): Error | undefined {
 export async function aggregateGoroutines(
 	...funcs: Array<() => Error | undefined | Promise<Error | undefined>>
 ): Promise<Aggregate | undefined> {
-	const results = await Promise.all(funcs.map((f) => f()));
+	const results = await Promise.all(funcs.map((f) => Promise.resolve(f())));
 	const errs: Error[] = [];
 	for (const err of results) {
 		if (err) {

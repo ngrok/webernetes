@@ -98,7 +98,7 @@ browser.describe("UndeltaStore", () => {
 		pushed.val = "pushed mutation";
 		pushed.nested.val = "pushed mutation";
 
-		const [afterPush] = await u.getByKey("a");
+		const [afterPush] = u.getByKey("a");
 		expect(afterPush).toEqual({ name: "a", val: 1, nested: { val: "stored" } });
 
 		const [listed] = u.list();
@@ -108,7 +108,7 @@ browser.describe("UndeltaStore", () => {
 		listed.val = "listed mutation";
 		listed.nested.val = "listed mutation";
 
-		const [afterList] = await u.getByKey("a");
+		const [afterList] = u.getByKey("a");
 		expect(afterList).toEqual({ name: "a", val: 1, nested: { val: "stored" } });
 	});
 });

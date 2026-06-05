@@ -170,7 +170,7 @@ export class Watch {
 		controller.signal.addEventListener(
 			"abort",
 			() => {
-				watcher.cancel().finally(() => {
+				void watcher.cancel().finally(() => {
 					doneOnce(new AbortError("Watch aborted."));
 				});
 			},

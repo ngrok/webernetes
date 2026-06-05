@@ -71,7 +71,7 @@ browser.describe("FIFO", () => {
 			const [, exists] = await f.get(mkFifoObj("foo", 0));
 			expect(exists).toBe(false);
 		} finally {
-			f.close();
+			void f.close();
 		}
 	});
 
@@ -88,7 +88,7 @@ browser.describe("FIFO", () => {
 			const [, exists] = await f.get(mkFifoObj("foo", 0));
 			expect(exists).toBe(false);
 		} finally {
-			f.close();
+			void f.close();
 		}
 	});
 
@@ -169,7 +169,7 @@ browser.describe("FIFO", () => {
 		});
 
 		await Promise.resolve();
-		f.close();
+		void f.close();
 
 		await expect(Promise.all(pops)).resolves.toEqual(
 			Array.from({ length: jobs }, () => errFIFOClosed),
@@ -188,7 +188,7 @@ browser.describe("FIFO", () => {
 			got.val = 2;
 			got.nested.val = 20;
 
-			const [afterGet] = await f.getByKey("foo");
+			const [afterGet] = f.getByKey("foo");
 			expect(afterGet).toEqual({ name: "foo", val: 1, nested: { val: 10 } });
 
 			const [listed] = f.list();
@@ -200,7 +200,7 @@ browser.describe("FIFO", () => {
 
 			expect(await pop(f)).toEqual({ name: "foo", val: 1, nested: { val: 10 } });
 		} finally {
-			f.close();
+			void f.close();
 		}
 	});
 });

@@ -538,7 +538,7 @@ function startReadinessHandling(m: ProbeManagerImpl): { stop(): Promise<void> } 
 				return;
 			}
 			if (selected.update.ok) {
-				extractedReadinessHandling(m, selected.update.value);
+				await extractedReadinessHandling(m, selected.update.value);
 			}
 		}
 	})();
@@ -552,9 +552,9 @@ function startReadinessHandling(m: ProbeManagerImpl): { stop(): Promise<void> } 
 }
 
 // Models kubernetes/pkg/kubelet/prober/prober_manager_test.go extractedReadinessHandling.
-function extractedReadinessHandling(m: ProbeManagerImpl, update: ProbeUpdate): void {
+async function extractedReadinessHandling(m: ProbeManagerImpl, update: ProbeUpdate): Promise<void> {
 	const ready = update.result === "success";
-	m.statusManager.setContainerReadiness(update.podUid, update.containerId, ready);
+	await m.statusManager.setContainerReadiness(update.podUid, update.containerId, ready);
 }
 
 async function poll(

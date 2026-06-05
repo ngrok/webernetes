@@ -62,7 +62,7 @@ browser.describe("Store", () => {
 		got.val = "mutated";
 		got.nested.val = "mutated";
 
-		const [afterGet] = await store.getByKey("foo");
+		const [afterGet] = store.getByKey("foo");
 		expect(afterGet).toEqual({ id: "foo", val: "stored", nested: { val: "nested" } });
 
 		const [listed] = store.list();
@@ -72,7 +72,7 @@ browser.describe("Store", () => {
 		listed.val = "listed mutation";
 		listed.nested.val = "listed mutation";
 
-		const [afterList] = await store.getByKey("foo");
+		const [afterList] = store.getByKey("foo");
 		expect(afterList).toEqual({ id: "foo", val: "stored", nested: { val: "nested" } });
 	});
 });

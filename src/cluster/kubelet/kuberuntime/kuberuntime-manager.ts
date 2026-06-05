@@ -1019,7 +1019,7 @@ export class KubeGenericRuntimeManager implements Runtime, CommandRunner {
 			return postStopErr;
 		}
 		if (!keepLogs) {
-			const removeLogErr = await this.removeContainerLog(ctx, containerID);
+			const removeLogErr = this.removeContainerLog(ctx, containerID);
 			if (removeLogErr) {
 				return removeLogErr;
 			}
@@ -1028,10 +1028,7 @@ export class KubeGenericRuntimeManager implements Runtime, CommandRunner {
 	}
 
 	// Models kubernetes/pkg/kubelet/kuberuntime/kuberuntime_container.go removeContainerLog.
-	private async removeContainerLog(
-		ctx: context.Context,
-		containerID: string,
-	): Promise<Error | undefined> {
+	private removeContainerLog(ctx: context.Context, containerID: string): Error | undefined {
 		void ctx;
 		void containerID;
 		return undefined;

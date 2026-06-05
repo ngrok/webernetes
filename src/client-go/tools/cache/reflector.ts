@@ -531,7 +531,7 @@ async function handleAnyWatch<T extends KubernetesObject>(
 		return [watchListBookmarkReceived, undefined];
 	} finally {
 		if (stopWatcher) {
-			w.stop();
+			await w.stop();
 		}
 	}
 }

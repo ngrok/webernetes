@@ -88,6 +88,7 @@ export class RuntimeState {
 	// Models kubernetes/pkg/kubelet/runtime.go runtimeState.runtimeErrors.
 	runtimeErrors(): Error | undefined {
 		const errs: Error[] = [];
+		const healthChecks = [...this.healthChecks];
 		if (this.lastBaseRuntimeSync === undefined) {
 			errs.push(new Error("container runtime status check may not have completed yet"));
 		} else if (
@@ -96,7 +97,7 @@ export class RuntimeState {
 		) {
 			errs.push(new Error("container runtime is down"));
 		}
-		for (const hc of this.healthChecks) {
+		for (const hc of healthChecks) {
 			const [ok, err] = hc.fn();
 			if (!ok) {
 				errs.push(new Error(`${hc.name} is not healthy: ${err?.message ?? String(err)}`));

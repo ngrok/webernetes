@@ -2,7 +2,11 @@ import type { PassiveClock } from "../clock";
 
 // Models vendor/k8s.io/utils/clock/testing/fake_clock.go FakePassiveClock.
 export class FakePassiveClock implements PassiveClock {
-	constructor(private time: Date) {}
+	private time: Date;
+
+	constructor(time: Date) {
+		this.time = new Date(time);
+	}
 
 	// Models vendor/k8s.io/utils/clock/testing/fake_clock.go FakePassiveClock.Now.
 	now(): Date {
@@ -21,7 +25,7 @@ export class FakePassiveClock implements PassiveClock {
 
 	// Models vendor/k8s.io/utils/clock/testing/fake_clock.go FakePassiveClock.Step.
 	step(d: number): void {
-		this.setTime(new Date(this.now().getTime() + d));
+		this.time = new Date(this.time.getTime() + d);
 	}
 }
 
