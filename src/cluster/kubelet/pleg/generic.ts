@@ -45,6 +45,7 @@ export class GenericPLEG implements PodLifecycleEventGeneratorHandler {
 	readonly podsToReinspect = new Set<string>();
 	private readonly relistRequests = new Channel<RelistRequest>(200);
 	private readonly relistLock = new Mutex();
+	private readonly runningMu = new Mutex();
 	private stopCh: Channel<void> | undefined;
 	globalRelistTimer: time.Timer | undefined;
 	private relistTime: Date | undefined;
@@ -66,29 +67,35 @@ export class GenericPLEG implements PodLifecycleEventGeneratorHandler {
 	}
 
 	// Models kubernetes/pkg/kubelet/pleg/generic.go Start.
-	start(): void {
-		if (this.isRunning) {
-			return;
-		}
-		this.isRunning = true;
-		this.stopCh = new Channel<void>();
-		this.globalRelistTimer = new time.Timer(this.clock, 0);
-		this.runPromise = (async () => {
-			while (await this.workerLoopIteration()) {
-				// Loop body is in workerLoopIteration, matching upstream.
+	async start(): Promise<void> {
+		await this.runningMu.withLock(() => {
+			if (this.isRunning) {
+				return;
 			}
-		})();
+			this.isRunning = true;
+			this.stopCh = new Channel<void>();
+			this.globalRelistTimer = new time.Timer(this.clock, 0);
+			this.runPromise = (async () => {
+				while (await this.workerLoopIteration()) {
+					// Loop body is in workerLoopIteration, matching upstream.
+				}
+			})();
+		});
 	}
 
 	// Models kubernetes/pkg/kubelet/pleg/generic.go Stop.
 	async stop(): Promise<void> {
-		if (!this.isRunning) {
-			return;
-		}
-		this.isRunning = false;
-		this.stopCh?.close();
-		this.globalRelistTimer?.stop();
-		await this.runPromise;
+		let runPromise: Promise<void> | undefined;
+		await this.runningMu.withLock(() => {
+			if (!this.isRunning) {
+				return;
+			}
+			this.stopCh?.close();
+			this.isRunning = false;
+			this.globalRelistTimer?.stop();
+			runPromise = this.runPromise;
+		});
+		await runPromise;
 	}
 
 	// Models kubernetes/pkg/kubelet/pleg/generic.go workerLoopIteration.
@@ -181,7 +188,7 @@ export class GenericPLEG implements PodLifecycleEventGeneratorHandler {
 				await this.reconcilePodRecord(pid);
 			}
 
-			this.cache.updateTime(timestamp);
+			await this.cache.updateTime(timestamp);
 		});
 	}
 
@@ -234,7 +241,7 @@ export class GenericPLEG implements PodLifecycleEventGeneratorHandler {
 				this.podRecords.records.set(podUID, { current: pod });
 			}
 			await this.reconcilePodRecord(podUID);
-			this.cache.setObservedTime(podUID, pod?.timestamp ?? this.clock.now());
+			await this.cache.setObservedTime(podUID, pod?.timestamp ?? this.clock.now());
 		});
 	}
 
@@ -244,7 +251,7 @@ export class GenericPLEG implements PodLifecycleEventGeneratorHandler {
 		pid: string,
 	): Promise<[status: PodRuntimeStatus | undefined, updated: boolean, error: Error | undefined]> {
 		if (!pod) {
-			this.cache.delete(pid);
+			await this.cache.delete(pid);
 			return [undefined, true, undefined];
 		}
 
@@ -253,7 +260,7 @@ export class GenericPLEG implements PodLifecycleEventGeneratorHandler {
 			status.ips = await this.getPodIPs(pid, status);
 		}
 
-		const updated = this.cache.set(pod.id, status, err, pod.timestamp);
+		const updated = await this.cache.set(pod.id, status, err, pod.timestamp);
 		return [status, updated, err];
 	}
 
