@@ -148,6 +148,29 @@ export interface Status {
 	stopSignal?: string;
 }
 
+// Models kubernetes/pkg/kubelet/container/runtime.go Status.
+export function newStatus(status: DeepPartial<Status> = {}): Status {
+	const normalizedStatus: DeepPartial<Status> = { ...status };
+	if (status.id) {
+		normalizedStatus.id = newContainerID(status.id);
+	}
+	return deepMerge<Status>(
+		{
+			id: newContainerID(),
+			name: "",
+			state: "Created",
+			createdAt: 0,
+			image: "",
+			imageID: "",
+			imageRef: "",
+			imageRuntimeHandler: "",
+			hash: 0,
+			restartCount: 0,
+		},
+		normalizedStatus,
+	);
+}
+
 // Models kubernetes/pkg/kubelet/container/runtime.go ContainerResources.
 export interface ContainerResources {
 	cpuRequest?: unknown;

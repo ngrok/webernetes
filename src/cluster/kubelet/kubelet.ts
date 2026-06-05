@@ -88,7 +88,7 @@ import {
 import { Configurer } from "./network/dns";
 import { newReasonCache } from "./reason-cache";
 import { newRuntimeState, type RuntimeState } from "./runtime";
-import { getContainersToDeleteInPod } from "./pod-container-deletor";
+import { newPodContainerDeletor, type PodContainerDeletor } from "./pod-container-deletor";
 import type { KubeletConfiguration } from "./apis/config";
 import type { KubeClient } from "../cluster";
 import type { ClusterNetwork } from "../cni";
@@ -121,6 +121,8 @@ const backOffPeriodMs = 10 * 1000;
 const imageBackOffPeriodMs = 10 * 1000;
 // Models kubernetes/pkg/kubelet/kubelet.go ContainerGCPeriod.
 const containerGCPeriodMs = 60 * 1000;
+// Models kubernetes/pkg/kubelet/kubelet.go minDeadContainerInPod.
+const minDeadContainerInPod = 1;
 // Models kubernetes/pkg/kubelet/kubelet.go syncLoop's one-second syncTicker.
 const syncTickerPeriodMs = 1000;
 // Models kubernetes/pkg/kubelet/kubelet.go Run's updateRuntimeUp interval.
@@ -364,6 +366,12 @@ export function newMainKubelet(
 		throw containerGCErr ?? new Error("failed to initialize container garbage collector");
 	}
 	kubelet.containerGC = containerGC;
+	kubelet.containerDeletor = newPodContainerDeletor(
+		kubeletCtx,
+		kubelet.containerRuntime,
+		Math.max(containerGCPolicy.maxPerPodContainer, minDeadContainerInPod),
+		kubeDeps.clock,
+	);
 	kubelet.runtimeCache = newRuntimeCache(
 		kubelet.containerRuntime,
 		runtimeCacheRefreshPeriodMs,
@@ -483,6 +491,8 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 	containerRuntime!: KubeletRuntime;
 	// Models kubernetes/pkg/kubelet/kubelet.go Kubelet.containerGC.
 	containerGC!: GC;
+	// Models kubernetes/pkg/kubelet/kubelet.go Kubelet.containerDeletor.
+	containerDeletor!: PodContainerDeletor;
 	// Package-visible for upstream-parity tests that mirror kubelet_test.go.
 	runtimeCache!: RuntimeCache;
 	// Package-visible for upstream-parity tests that mirror kubelet_test.go.
@@ -1208,7 +1218,19 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 			// Always add the pod to the pod manager. Kubelet relies on the pod
 			// manager as the source of truth for the desired state.
 			this.podManager.addPod(pod);
-			const { pod: resolvedPod, mirrorPod } = this.podManager.getPodAndMirrorPod(pod);
+			const [resolvedPod, mirrorPod, wasMirror] = this.podManager.getPodAndMirrorPod(pod);
+			if (wasMirror) {
+				if (!resolvedPod) {
+					continue;
+				}
+				await this.podWorkers.updatePod(ctx, {
+					pod: resolvedPod,
+					mirrorPod,
+					updateType: "update",
+					startTime: start,
+				});
+				continue;
+			}
 			if (!resolvedPod) {
 				continue;
 			}
@@ -1232,7 +1254,10 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 				continue;
 			}
 			this.podManager.updatePod(pod);
-			const { pod: resolvedPod, mirrorPod } = this.podManager.getPodAndMirrorPod(pod);
+			const [resolvedPod, mirrorPod, wasMirror] = this.podManager.getPodAndMirrorPod(pod);
+			if (wasMirror && !resolvedPod) {
+				continue;
+			}
 			if (!resolvedPod) {
 				continue;
 			}
@@ -1252,7 +1277,7 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 			this.podManager.removePod(removedPod);
 			// Kubernetes forgets pod certificates and allocation manager state here.
 			// Those subsystems are outside the simulator's current scope.
-			const { pod, mirrorPod, wasMirror } = this.podManager.getPodAndMirrorPod(removedPod);
+			const [pod, mirrorPod, wasMirror] = this.podManager.getPodAndMirrorPod(removedPod);
 			if (wasMirror) {
 				if (!pod) {
 					continue;
@@ -1287,7 +1312,7 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 	async handlePodSyncs(ctx: context.Context, pods: V1Pod[]): Promise<void> {
 		const start = this.clock.now();
 		for (const pod of pods) {
-			const { pod: resolvedPod, mirrorPod, wasMirror } = this.podManager.getPodAndMirrorPod(pod);
+			const [resolvedPod, mirrorPod, wasMirror] = this.podManager.getPodAndMirrorPod(pod);
 			if (wasMirror) {
 				continue;
 			}
@@ -1302,7 +1327,7 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 
 	// Models kubernetes/pkg/kubelet/kubelet.go cleanUpContainersInPod.
 	private async cleanUpContainersInPod(
-		ctx: context.Context,
+		_ctx: context.Context,
 		podID: string,
 		exitedContainerID: string,
 	): Promise<void> {
@@ -1310,9 +1335,8 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 		if (podStatusErr || !podStatus) {
 			return;
 		}
-		for (const container of getContainersToDeleteInPod(exitedContainerID, podStatus, 1)) {
-			await this.containerRuntime.deleteContainer(ctx, container.id);
-		}
+		const removeAll = await this.podWorkers.shouldPodContentBeRemoved(podID);
+		this.containerDeletor.deleteContainersInPod(exitedContainerID, podStatus, removeAll);
 	}
 
 	prepareDynamicResources(_ctx: context.Context, _pod: V1Pod): undefined {
@@ -1403,7 +1427,7 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 				continue;
 			}
 
-			const { pod, mirrorPod, wasMirror } = this.podManager.getPodAndMirrorPod(desiredPod);
+			const [pod, mirrorPod, wasMirror] = this.podManager.getPodAndMirrorPod(desiredPod);
 			if (!pod || wasMirror) {
 				continue;
 			}
