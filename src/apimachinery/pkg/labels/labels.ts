@@ -21,32 +21,44 @@ export class Set extends Map<string, string> implements Labels {
 		super(labels instanceof Map ? labels : Object.entries(labels ?? {}));
 	}
 
+	// Models staging/src/k8s.io/apimachinery/pkg/labels/labels.go Set.String.
 	string(): string {
-		return Array.from(this.entries())
-			.map(([key, value]) => `${key}=${value}`)
-			.sort()
-			.join(",");
+		const selector: string[] = [];
+		for (const [key, value] of this.entries()) {
+			selector.push(`${key}=${value}`);
+		}
+		selector.sort();
+		return selector.join(",");
 	}
 
+	// Models staging/src/k8s.io/apimachinery/pkg/labels/labels.go Set.Has.
+	has(label: string): boolean {
+		return super.has(label);
+	}
+
+	// Models staging/src/k8s.io/apimachinery/pkg/labels/labels.go Set.Get.
 	get(label: string): string {
 		return super.get(label) ?? "";
 	}
 
+	// Models staging/src/k8s.io/apimachinery/pkg/labels/labels.go Set.Lookup.
 	lookup(label: string): [value: string, exists: boolean] {
-		if (!this.has(label)) {
-			return ["", false];
-		}
-		return [this.get(label), true];
+		const val = super.get(label) ?? "";
+		const exists = super.has(label);
+		return [val, exists];
 	}
 
+	// Models staging/src/k8s.io/apimachinery/pkg/labels/labels.go Set.AsSelector.
 	asSelector(): Selector {
 		return selectorFromSet(this);
 	}
 
+	// Models staging/src/k8s.io/apimachinery/pkg/labels/labels.go Set.AsValidatedSelector.
 	asValidatedSelector(): [selector: Selector | undefined, err: Error | undefined] {
 		return validatedSelectorFromSet(this);
 	}
 
+	// Models staging/src/k8s.io/apimachinery/pkg/labels/labels.go Set.AsSelectorPreValidated.
 	asSelectorPreValidated(): Selector {
 		return selectorFromValidatedSet(this);
 	}
@@ -54,8 +66,11 @@ export class Set extends Map<string, string> implements Labels {
 
 // Models staging/src/k8s.io/apimachinery/pkg/labels/labels.go FormatLabels.
 export function formatLabels(labelMap: Record<string, string>): string {
-	const formatted = new Set(labelMap).string();
-	return formatted === "" ? "<none>" : formatted;
+	let l = new Set(labelMap).string();
+	if (l === "") {
+		l = "<none>";
+	}
+	return l;
 }
 
 // Models staging/src/k8s.io/apimachinery/pkg/labels/labels.go Conflicts.
@@ -67,8 +82,12 @@ export function conflicts(labels1: Set, labels2: Set): boolean {
 		big = labels1;
 	}
 	for (const [k, v] of small.entries()) {
-		if (big.has(k) && big.get(k) !== v) {
-			return true;
+		const val = big.get(k);
+		const match = big.has(k);
+		if (match) {
+			if (val !== v) {
+				return true;
+			}
 		}
 	}
 	return false;
@@ -93,7 +112,12 @@ export function equals(labels1: Set, labels2: Set): boolean {
 		return false;
 	}
 	for (const [k, v] of labels1.entries()) {
-		if (!labels2.has(k) || labels2.get(k) !== v) {
+		const value = labels2.get(k);
+		const ok = labels2.has(k);
+		if (!ok) {
+			return false;
+		}
+		if (value !== v) {
 			return false;
 		}
 	}
@@ -109,10 +133,11 @@ export function convertSelectorToLabelsMap(
 	if (selector.length === 0) {
 		return [labelsMap, undefined];
 	}
-	for (const label of selector.split(",")) {
+	const labels = selector.split(",");
+	for (const label of labels) {
 		const l = label.split("=");
 		if (l.length !== 2) {
-			return [labelsMap, new Error(`invalid selector: ${l.join(",")}`)];
+			return [labelsMap, new Error(`invalid selector: [${l.join(" ")}]`)];
 		}
 		const key = (l[0] ?? "").trim();
 		const keyErr = validateLabelKey(key, toPath(...opts));
