@@ -68,6 +68,11 @@ export function joinHostPort(host: string, port: string): string {
 	return `${host}:${port}`;
 }
 
+// Models go stdlib net.IP.IsUnspecified.
+export function isUnspecifiedIP(ip: number[] | undefined): boolean {
+	return ip !== undefined && (formatIP(ip) === "0.0.0.0" || formatIP(ip) === "::");
+}
+
 function parseIPv4Sloppy(value: string): number[] | undefined {
 	const parts = value.split(".");
 	if (parts.length !== 4) {

@@ -4178,7 +4178,15 @@ browser.describe("generateAPIPodStatusHostNetworkPodIPs", () => {
 		const testKubelet = newTestKubelet(false);
 		try {
 			const kl = testKubelet.kubelet;
-			kl.nodeAddresses = test.nodeAddresses;
+			const node = {
+				metadata: { name: "test-node" },
+				status: { addresses: test.nodeAddresses },
+			};
+			kl.nodeLister = {
+				get: async () => [node, undefined],
+				list: async (_selector: Selector) => [[node], undefined],
+			};
+			kl.cachedNode = node;
 			const pod = podWithUIDNameNs("12345", "test-pod", "test-namespace");
 			pod.spec = {
 				containers: [],
