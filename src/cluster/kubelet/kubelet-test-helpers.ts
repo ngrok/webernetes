@@ -500,6 +500,7 @@ export function newTestKubeletWithImageList(
 		crashLoopBackOff: newBackOff(10 * 1000, 300 * 1000, fakeClock),
 		clock: fakeClock,
 		nodeIPs: ["127.0.0.1", "::1"],
+		nodeStatusMaxImages: 50,
 	});
 	kubelet.statusManager = new StatusManagerImpl({
 		clock: fakeClock,

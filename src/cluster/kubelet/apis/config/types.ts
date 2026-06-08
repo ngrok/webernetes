@@ -10,4 +10,5 @@ export interface KubeletConfiguration {
 	minimumGCAgeMs: number;
 	maxPerPodContainerCount: number;
 	maxContainerCount: number;
+	nodeStatusMaxImages: number;
 }

@@ -2,7 +2,6 @@ import type {
 	V1Container,
 	V1ContainerStatus,
 	V1Node,
-	V1NodeAddress,
 	V1Pod,
 	V1PodStatus,
 	V1Service,
@@ -98,6 +97,7 @@ import {
 	type SourcesReady,
 } from "./config";
 import { Configurer } from "./network/dns";
+import * as nodestatus from "./nodestatus";
 import { newReasonCache } from "./reason-cache";
 import { newRuntimeState, type RuntimeState } from "./runtime";
 import { newPodContainerDeletor, type PodContainerDeletor } from "./pod-container-deletor";
@@ -203,7 +203,7 @@ interface KubeletOptions {
 	crashLoopBackOff: Backoff;
 	clock: Clock;
 	nodeIPs: string[];
-	nodeAddresses: V1NodeAddress[] | undefined;
+	nodeStatusMaxImages: number;
 }
 
 const masterServices = new Set(["kubernetes"]);
@@ -334,7 +334,7 @@ export function newMainKubelet(
 		crashLoopBackOff: newBackOff(initialCrashLoopBackOffMs, maxCrashLoopBackOffMs, kubeDeps.clock),
 		clock: kubeDeps.clock,
 		nodeIPs: normalizedNodeIPs,
-		nodeAddresses: kubeDeps.node.status?.addresses,
+		nodeStatusMaxImages: kubeCfg.nodeStatusMaxImages,
 	});
 	kubelet.statusManager = new StatusManagerImpl({
 		clock: kubeDeps.clock,
@@ -555,8 +555,10 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 	reasonCache = newReasonCache();
 	// Package-visible for upstream-parity tests that mirror kubelet_pods_test.go.
 	nodeIPs: string[];
-	// Package-visible for upstream-parity tests that mirror kubelet_pods_test.go.
-	nodeAddresses: V1NodeAddress[] | undefined;
+	// Models kubernetes/pkg/kubelet/kubelet.go Kubelet.nodeStatusMaxImages.
+	nodeStatusMaxImages: number;
+	// Models kubernetes/pkg/kubelet/kubelet.go Kubelet.setNodeStatusFuncs.
+	setNodeStatusFuncs: nodestatus.Setter[] = [];
 	private readonly ctx: context.Context;
 	private readonly cancelContext: context.CancelFunc;
 	private syncLoopPromise: Promise<void> | undefined;
@@ -576,11 +578,11 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 		this.serviceLister = options.serviceLister;
 		this.serviceHasSynced = options.serviceHasSynced;
 		this.nodeIPs = [...options.nodeIPs];
+		this.nodeStatusMaxImages = options.nodeStatusMaxImages;
 		this.cachedNode = options.cachedNode;
 		this.nodeLister = options.nodeLister;
 		this.nodeHasSynced = options.nodeHasSynced;
 		this.podConfig = options.podConfig;
-		this.nodeAddresses = options.nodeAddresses;
 		this.sourcesReady = options.sourcesReady;
 		this.clock = options.clock;
 		this.ctx = options.ctx;
@@ -617,6 +619,7 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 		if (options.podWorkers) {
 			this.podWorkers = options.podWorkers;
 		}
+		this.setNodeStatusFuncs = this.defaultNodeStatusFuncs();
 	}
 
 	// Models kubernetes/pkg/kubelet/kubelet.go PodCPUAndMemoryStats.
@@ -1810,7 +1813,7 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 			if (runtimeVal.length > 0) {
 				runtimeVal = expansion.expand(runtimeVal, mappingFunc);
 			} else if (envVar.valueFrom?.fieldRef) {
-				const [fieldValue, fieldErr] = this.podFieldSelectorRuntimeValue(
+				const [fieldValue, fieldErr] = await this.podFieldSelectorRuntimeValue(
 					ctx,
 					envVar.valueFrom.fieldRef,
 					pod,
@@ -1837,13 +1840,13 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 	}
 
 	// Models kubernetes/pkg/kubelet/kubelet_pods.go podFieldSelectorRuntimeValue.
-	private podFieldSelectorRuntimeValue(
+	private async podFieldSelectorRuntimeValue(
 		ctx: context.Context,
 		fs: { apiVersion?: string; fieldPath: string },
 		pod: V1Pod,
 		podIP: string,
 		podIPs: string[],
-	): [value: string, err: Error | undefined] {
+	): Promise<[value: string, err: Error | undefined]> {
 		const [internalFieldPath, , convertErr] = convertDownwardAPIFieldLabel(
 			fs.apiVersion ?? "",
 			fs.fieldPath,
@@ -1861,11 +1864,11 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 			case "spec.serviceAccountName":
 				return [pod.spec?.serviceAccountName ?? "", undefined];
 			case "status.hostIP": {
-				const [hostIPs, err] = this.getHostIPsAnyWay(ctx);
+				const [hostIPs, err] = await this.getHostIPsAnyWay(ctx);
 				return [hostIPs[0] ?? "", err];
 			}
 			case "status.hostIPs": {
-				const [hostIPs, err] = this.getHostIPsAnyWay(ctx);
+				const [hostIPs, err] = await this.getHostIPsAnyWay(ctx);
 				return [hostIPs.join(","), err];
 			}
 			case "status.podIP":
@@ -2013,7 +2016,7 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 				generateAllContainersRestartingCondition(pod, podStatus, oldPodStatus, s.phase),
 			);
 		}
-		const [hostIPs, hostIPsErr] = this.getHostIPsAnyWay(ctx);
+		const [hostIPs, hostIPsErr] = await this.getHostIPsAnyWay(ctx);
 		if (hostIPsErr) {
 			// Upstream logs this error. The simulator has no kubelet logger here.
 		} else {
@@ -2062,23 +2065,76 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 		return this.nodeLister.get(this.nodeName);
 	}
 
-	// Models kubernetes/pkg/kubelet/kubelet_getters.go getHostIPsAnyWay.
-	private getHostIPsAnyWay(ctx: context.Context): [hostIPs: string[], err: Error | undefined] {
-		const err = ctx.err();
-		if (err) {
-			return [[], err];
+	// Models kubernetes/pkg/kubelet/kubelet_getters.go getNodeAnyWay.
+	private async getNodeAnyWay(
+		ctx: context.Context,
+	): Promise<[node: V1Node | undefined, err: Error | undefined]> {
+		const [node, err] = await this.getNode(ctx);
+		if (!err && node) {
+			return [node, undefined];
 		}
-		if (this.nodeAddresses) {
-			return getNodeHostIPs({ status: { addresses: this.nodeAddresses } });
-		}
-		return getNodeHostIPs({
-			status: {
-				addresses: this.nodeIPs.map((address) => ({
-					type: "InternalIP",
-					address,
-				})),
+		return this.initialNode(ctx);
+	}
+
+	// Models kubernetes/pkg/kubelet/kubelet_node_status.go Kubelet.initialNode.
+	private async initialNode(
+		ctx: context.Context,
+	): Promise<[node: V1Node | undefined, err: Error | undefined]> {
+		const node: V1Node = {
+			metadata: {
+				name: this.nodeName,
 			},
-		});
+		};
+		await this.setNodeStatus(ctx, node);
+		return [node, undefined];
+	}
+
+	// Models kubernetes/pkg/kubelet/kubelet_node_status.go Kubelet.setNodeStatus.
+	private async setNodeStatus(ctx: context.Context, node: V1Node): Promise<void> {
+		for (const f of this.setNodeStatusFuncs) {
+			const err = await f(ctx, node);
+			if (err) {
+				// Upstream logs the setter error and continues with the remaining setters.
+			}
+		}
+	}
+
+	// Models kubernetes/pkg/kubelet/kubelet_node_status.go Kubelet.defaultNodeStatusFuncs.
+	private defaultNodeStatusFuncs(): nodestatus.Setter[] {
+		const setters: nodestatus.Setter[] = [];
+		setters.push(
+			nodestatus.nodeAddress(
+				this.nodeIPs,
+				(_nodeIP) => undefined,
+				this.hostname,
+				false,
+				(nodeIP) => [nodeIP, nodeIP ? undefined : new Error("node IP is not configured")],
+			),
+			// MachineInfo is intentionally omitted: the simulator does not model
+			// cAdvisor, container managers, or node resource capacity.
+			nodestatus.versionInfo(
+				() => [{ kernelVersion: "", containerOsVersion: "" }, undefined],
+				() => this.containerRuntime.type(),
+				(ctx) => this.containerRuntime.version(ctx),
+			),
+			nodestatus.daemonEndpoints({}),
+			nodestatus.images(this.nodeStatusMaxImages, (ctx) => this.containerRuntime.listImages(ctx)),
+			nodestatus.goRuntime(),
+			nodestatus.runtimeHandlers(() => this.runtimeState.runtimeHandlers()),
+			nodestatus.nodeFeatures(() => this.runtimeState.runtimeFeatures()),
+		);
+		return setters;
+	}
+
+	// Models kubernetes/pkg/kubelet/kubelet_getters.go getHostIPsAnyWay.
+	private async getHostIPsAnyWay(
+		ctx: context.Context,
+	): Promise<[hostIPs: string[], err: Error | undefined]> {
+		const [node, err] = await this.getNodeAnyWay(ctx);
+		if (err || !node) {
+			return [[], err ?? new Error("node not found")];
+		}
+		return getNodeHostIPs(node);
 	}
 
 	// Models kubernetes/pkg/kubelet/kubelet_pods.go sortPodIPs.

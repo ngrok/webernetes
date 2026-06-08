@@ -92,6 +92,7 @@ export class Cluster {
 			minimumGCAgeMs: 0,
 			maxPerPodContainerCount: 1,
 			maxContainerCount: -1,
+			nodeStatusMaxImages: 50,
 			clusterDomain: "cluster.local",
 		};
 
