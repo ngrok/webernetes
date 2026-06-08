@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import { browser } from "../test/describe";
-import { errRange, errSyntax, NumError, parseInt, parseUint } from "./strconv";
+import { appendQuote, errRange, errSyntax, NumError, parseInt, parseUint, quote } from "./strconv";
 
 function numErr(fn: string, num: string, err: Error): NumError {
 	return new NumError(fn, num, err);
@@ -111,7 +111,30 @@ const parseBaseTests = [
 	{ arg: 37, err: new NumError("ParseInt", "0", new Error("invalid base 37")) },
 ];
 
+interface QuoteUpstreamTestCase {
+	in: string;
+	out: string;
+}
+
+// Mirrors the ASCII/control-character subset of go stdlib strconv/quote_test.go quotetests.
+// Cases that depend on invalid UTF-8 byte strings or Go's Unicode print tables are omitted.
+const quoteTests: QuoteUpstreamTestCase[] = [
+	{ in: "\x07\b\f\r\n\t\v", out: `"\\a\\b\\f\\r\\n\\t\\v"` },
+	{ in: "\\", out: '"\\\\"' },
+	{ in: "\x04", out: `"\\x04"` },
+	{ in: "\x7f", out: `"\\x7f"` },
+];
+
 browser.describe("strconv", () => {
+	// Models go stdlib strconv/quote_test.go TestQuote.
+	it("TestQuote", () => {
+		for (const test of quoteTests) {
+			expect(quote(test.in)).toBe(test.out);
+			const dst = appendQuote(["abc"], test.in);
+			expect(dst.join("")).toBe(`abc${test.out}`);
+		}
+	});
+
 	// Models go stdlib strconv/number_test.go TestParseUint32.
 	it("TestParseUint32", () => {
 		for (const test of parseUint32Tests) {

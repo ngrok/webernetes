@@ -1042,6 +1042,15 @@ browser.describe("makeEnvironmentVariables", () => {
 						},
 					},
 					{
+						name: "POD_NODE_NAME_LEGACY",
+						valueFrom: {
+							fieldRef: {
+								apiVersion: "v1",
+								fieldPath: "spec.host",
+							},
+						},
+					},
+					{
 						name: "POD_SERVICE_ACCOUNT_NAME",
 						valueFrom: {
 							fieldRef: {
@@ -1094,6 +1103,7 @@ browser.describe("makeEnvironmentVariables", () => {
 				{ name: "POD_NAME", value: "dapi-test-pod-name" },
 				{ name: "POD_NAMESPACE", value: "downward-api" },
 				{ name: "POD_NODE_NAME", value: "node-name" },
+				{ name: "POD_NODE_NAME_LEGACY", value: "node-name" },
 				{ name: "POD_SERVICE_ACCOUNT_NAME", value: "special" },
 				{ name: "POD_IP", value: "1.2.3.4" },
 				{ name: "POD_IPS", value: "1.2.3.4,fd00::6" },

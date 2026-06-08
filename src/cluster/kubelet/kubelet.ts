@@ -109,6 +109,8 @@ import {
 } from "../../apimachinery/pkg/util/validation/validation";
 import { Set as LabelSet } from "../../apimachinery/pkg/labels/labels";
 import { everything, type Selector } from "../../apimachinery/pkg/labels/selector";
+import { convertDownwardAPIFieldLabel } from "../../apis/core/pods/helpers";
+import { extractFieldPathAsString } from "../../fieldpath/fieldpath";
 import { getNodeHostIPs } from "../../util/node";
 import { isIPv4, isIPv6, parseIPSloppy } from "../../utils/net";
 import { untilWithContext } from "../../apimachinery/pkg/util/wait/backoff";
@@ -1840,13 +1842,18 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 		podIP: string,
 		podIPs: string[],
 	): [value: string, err: Error | undefined] {
+		const [internalFieldPath, , convertErr] = convertDownwardAPIFieldLabel(
+			fs.apiVersion ?? "",
+			fs.fieldPath,
+			"",
+		);
+		if (convertErr) {
+			return ["", convertErr];
+		}
+
 		const sortedPodIPs = this.sortPodIPs([...podIPs]);
 		const selectedPodIP = sortedPodIPs[0] ?? podIP;
-		switch (fs.fieldPath) {
-			case "metadata.name":
-				return [pod.metadata?.name ?? "", undefined];
-			case "metadata.namespace":
-				return [pod.metadata?.namespace ?? "default", undefined];
+		switch (internalFieldPath) {
 			case "spec.nodeName":
 				return [pod.spec?.nodeName ?? "", undefined];
 			case "spec.serviceAccountName":
@@ -1863,9 +1870,8 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 				return [selectedPodIP, undefined];
 			case "status.podIPs":
 				return [sortedPodIPs.join(","), undefined];
-			default:
-				return ["", new Error(`unsupported pod field selector: ${fs.fieldPath}`)];
 		}
+		return extractFieldPathAsString(pod, internalFieldPath);
 	}
 
 	// Models kubernetes/pkg/kubelet/network/dns/dns.go Configurer.GetPodDNS.

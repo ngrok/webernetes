@@ -19,6 +19,21 @@ export class NumError extends Error {
 	}
 }
 
+// Models go stdlib strconv.Quote.
+export function quote(s: string): string {
+	return appendQuote([], s).join("");
+}
+
+// Models go stdlib strconv.AppendQuote.
+export function appendQuote(dst: string[], s: string): string[] {
+	dst.push('"');
+	for (const char of s) {
+		appendEscapedRune(dst, char);
+	}
+	dst.push('"');
+	return dst;
+}
+
 // Models go stdlib strconv.ParseUint.
 export function parseUint(
 	s: string,
@@ -272,26 +287,44 @@ function bitSizeError(fn: string, str: string, bitSize: number): NumError {
 	return new NumError(fn, str, new Error(`invalid bit size ${bitSize}`));
 }
 
-function quote(s: string): string {
-	let out = '"';
-	for (const c of s) {
-		switch (c) {
-			case "\\":
-				out += "\\\\";
-				break;
-			case '"':
-				out += '\\"';
-				break;
-			case "\0":
-				out += "\\x00";
-				break;
-			default:
-				out += c;
-				break;
-		}
+// Models go stdlib strconv.appendEscapedRune for the Quote path.
+function appendEscapedRune(dst: string[], r: string): void {
+	switch (r) {
+		case '"':
+			dst.push('\\"');
+			return;
+		case "\\":
+			dst.push("\\\\");
+			return;
+		case "\x07":
+			dst.push("\\a");
+			return;
+		case "\b":
+			dst.push("\\b");
+			return;
+		case "\f":
+			dst.push("\\f");
+			return;
+		case "\n":
+			dst.push("\\n");
+			return;
+		case "\r":
+			dst.push("\\r");
+			return;
+		case "\t":
+			dst.push("\\t");
+			return;
+		case "\v":
+			dst.push("\\v");
+			return;
 	}
-	out += '"';
-	return out;
+
+	const codePoint = r.codePointAt(0) ?? 0;
+	if (codePoint < 0x20 || codePoint === 0x7f) {
+		dst.push(`\\x${codePoint.toString(16).padStart(2, "0")}`);
+		return;
+	}
+	dst.push(r);
 }
 
 const maxUint64 = (1n << 64n) - 1n;
