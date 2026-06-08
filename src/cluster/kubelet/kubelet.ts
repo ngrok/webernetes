@@ -47,7 +47,12 @@ import type { RunContainerOptions, RuntimeHelper } from "./container";
 import { PodManager } from "./pod";
 import { ProbeManagerImpl, ResultsManager } from "./prober";
 import type { ProbeManager, ProbeUpdate } from "./prober";
-import { PodWorkersImpl, type PodWorkers, type SyncPodResult } from "./pod-workers";
+import {
+	PodWorkersImpl,
+	type PodWorkers,
+	type PodWorkerSync,
+	type SyncPodResult,
+} from "./pod-workers";
 import type { EventRecorder } from "../../client-go/tools/record/event";
 import { StatusManagerImpl, type PodDeletionSafetyProvider, type StatusManager } from "./status";
 import { ContainerDied, ContainerRemoved, GenericPLEG, type PodLifecycleEvent } from "./pleg";
@@ -1542,18 +1547,21 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 
 	// Models kubernetes/pkg/kubelet/kubelet_pods.go isAdmittedPodTerminal.
 	private isAdmittedPodTerminal(pod: V1Pod): boolean {
-		if (isPodPhaseTerminal(pod.status?.phase)) {
+		if (pod.status?.phase === "Succeeded" || pod.status?.phase === "Failed") {
 			return true;
 		}
 		const status = this.statusManager.getPodStatus(pod.metadata?.uid ?? "");
-		return isPodPhaseTerminal(status?.phase);
+		if (status?.phase === "Succeeded" || status?.phase === "Failed") {
+			return true;
+		}
+		return false;
 	}
 
 	// Models kubernetes/pkg/kubelet/kubelet_pods.go filterTerminalPodsToDelete.
 	private filterTerminalPodsToDelete(
 		allPods: V1Pod[],
 		runningRuntimePods: RuntimePod[],
-		workingPods: Map<string, unknown>,
+		workingPods: Map<string, PodWorkerSync>,
 	): Map<string, V1Pod> {
 		const terminalPodsToDelete = new Map<string, V1Pod>();
 		for (const pod of allPods) {
