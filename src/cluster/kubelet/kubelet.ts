@@ -1250,9 +1250,6 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 	async handlePodUpdates(ctx: context.Context, pods: V1Pod[]): Promise<void> {
 		const start = this.clock.now();
 		for (const pod of pods) {
-			if (ctx.err() || pod.spec?.nodeName !== this.nodeName || !pod.metadata?.name) {
-				continue;
-			}
 			this.podManager.updatePod(pod);
 			const [resolvedPod, mirrorPod, wasMirror] = this.podManager.getPodAndMirrorPod(pod);
 			if (wasMirror && !resolvedPod) {
@@ -1299,12 +1296,13 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 	}
 
 	// Models kubernetes/pkg/kubelet/kubelet.go HandlePodReconcile.
-	async handlePodReconcile(ctx: context.Context, pods: V1Pod[]): Promise<void> {
+	async handlePodReconcile(_ctx: context.Context, pods: V1Pod[]): Promise<void> {
 		for (const pod of pods) {
-			if (ctx.err() || pod.spec?.nodeName !== this.nodeName || !pod.metadata?.name) {
+			this.podManager.updatePod(pod);
+			const [resolvedPod, , wasMirror] = this.podManager.getPodAndMirrorPod(pod);
+			if (wasMirror && !resolvedPod) {
 				continue;
 			}
-			this.podManager.updatePod(pod);
 		}
 	}
 
