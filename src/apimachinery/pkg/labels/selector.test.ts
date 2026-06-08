@@ -52,8 +52,8 @@ import {
 	errorTypeInvalid,
 	errorTypeNotSupported,
 	FieldError,
-	type FieldAggregateError,
 } from "../util/validation/field/errors";
+import type { Aggregate } from "../util/errors/errors";
 
 browser.describe("labels selector", () => {
 	// Models staging/src/k8s.io/apimachinery/pkg/labels/selector_test.go TestSelectorParse.
@@ -1156,8 +1156,11 @@ function fieldAggregateSummary(err: Error | undefined) {
 	if (!err) {
 		return undefined;
 	}
-	const aggregate = err as FieldAggregateError;
-	return aggregate.errors.map(({ type, field, badValue }) => ({ type, field, badValue }));
+	const aggregate = err as Aggregate;
+	return aggregate.errors.map((err) => {
+		const fieldErr = err as FieldError;
+		return { type: fieldErr.type, field: fieldErr.field, badValue: fieldErr.badValue };
+	});
 }
 
 // Models staging/src/k8s.io/apimachinery/pkg/labels/selector_test.go expectMatchNothing.

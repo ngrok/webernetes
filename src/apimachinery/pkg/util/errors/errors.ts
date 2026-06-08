@@ -1,3 +1,5 @@
+import { newString } from "../sets/string";
+
 // Models staging/src/k8s.io/apimachinery/pkg/util/errors/errors.go MessageCountMap.
 export type MessageCountMap = Map<string, number>;
 
@@ -15,7 +17,7 @@ export class Aggregate extends AggregateError {
 
 	// Models staging/src/k8s.io/apimachinery/pkg/util/errors/errors.go aggregate.Is.
 	is(target: Error): boolean {
-		return this.visit((err) => err === target || err.message === target.message);
+		return this.visit((err) => err === target || errorString(err) === errorString(target));
 	}
 
 	// Models staging/src/k8s.io/apimachinery/pkg/util/errors/errors.go aggregate.visit.
@@ -59,26 +61,34 @@ function error(agg: Error[]): string {
 		return "";
 	}
 	if (agg.length === 1) {
-		return agg[0]?.message ?? "";
+		return agg[0] ? errorString(agg[0]) : "";
 	}
-	const seenErrs = new Set<string>();
+	const seenErrs = newString();
 	let result = "";
 	visit(agg, (err) => {
-		const msg = err.message;
+		const msg = errorString(err);
 		if (seenErrs.has(msg)) {
 			return false;
 		}
-		seenErrs.add(msg);
-		if (seenErrs.size > 1) {
+		seenErrs.insert(msg);
+		if (seenErrs.len() > 1) {
 			result += ", ";
 		}
 		result += msg;
 		return false;
 	});
-	if (seenErrs.size === 1) {
+	if (seenErrs.len() === 1) {
 		return result;
 	}
 	return `[${result}]`;
+}
+
+function errorString(err: Error): string {
+	const candidate = err as Error & { error?: unknown };
+	if (typeof candidate.error === "function") {
+		return candidate.error();
+	}
+	return err.message;
 }
 
 function visit(agg: Error[], f: (err: Error) => boolean): boolean {
