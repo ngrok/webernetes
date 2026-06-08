@@ -75,7 +75,9 @@ import {
 	generatePodInitializedCondition,
 	generatePodReadyCondition,
 	generatePodReadyToStartContainersCondition,
+	needToReconcilePodReadiness,
 } from "./status";
+import { podIsEvicted } from "./eviction";
 import {
 	newPodConfig,
 	newSourcesReady,
@@ -1273,17 +1275,17 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 	// Models kubernetes/pkg/kubelet/kubelet.go HandlePodRemoves.
 	async handlePodRemoves(ctx: context.Context, pods: V1Pod[]): Promise<void> {
 		const start = this.clock.now();
-		for (const removedPod of pods) {
-			this.podManager.removePod(removedPod);
+		for (const pod of pods) {
+			this.podManager.removePod(pod);
 			// Kubernetes forgets pod certificates and allocation manager state here.
 			// Those subsystems are outside the simulator's current scope.
-			const [pod, mirrorPod, wasMirror] = this.podManager.getPodAndMirrorPod(removedPod);
+			const [resolvedPod, mirrorPod, wasMirror] = this.podManager.getPodAndMirrorPod(pod);
 			if (wasMirror) {
-				if (!pod) {
+				if (!resolvedPod) {
 					continue;
 				}
 				await this.podWorkers.updatePod(ctx, {
-					pod,
+					pod: resolvedPod,
 					mirrorPod,
 					updateType: "update",
 					startTime: start,
@@ -1291,7 +1293,7 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 				continue;
 			}
 
-			await this.deletePod(ctx, removedPod);
+			await this.deletePod(ctx, pod);
 		}
 
 		// Kubernetes retries pending resizes after pod removal. The simulator does
@@ -1299,14 +1301,39 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 	}
 
 	// Models kubernetes/pkg/kubelet/kubelet.go HandlePodReconcile.
-	async handlePodReconcile(_ctx: context.Context, pods: V1Pod[]): Promise<void> {
+	async handlePodReconcile(ctx: context.Context, pods: V1Pod[]): Promise<void> {
+		const start = this.clock.now();
 		for (const pod of pods) {
+			const _oldPod = this.podManager.getPodByUid(pod.metadata?.uid ?? "");
 			this.podManager.updatePod(pod);
-			const [resolvedPod, , wasMirror] = this.podManager.getPodAndMirrorPod(pod);
+			const [resolvedPod, mirrorPod, wasMirror] = this.podManager.getPodAndMirrorPod(pod);
 			if (wasMirror && !resolvedPod) {
 				continue;
 			}
+			if (!resolvedPod) {
+				continue;
+			}
+
+			if (needToReconcilePodReadiness(resolvedPod)) {
+				await this.podWorkers.updatePod(ctx, {
+					pod: resolvedPod,
+					mirrorPod,
+					updateType: "sync",
+					startTime: start,
+				});
+			}
+
+			if (podIsEvicted(resolvedPod.status)) {
+				const [podStatus, podStatusErr] = await this.podCache.get(resolvedPod.metadata?.uid ?? "");
+				if (!podStatusErr && podStatus) {
+					this.containerDeletor.deleteContainersInPod("", podStatus, true);
+				}
+			}
 		}
+
+		// Kubernetes retries pending resizes here when in-place pod vertical
+		// scaling is enabled. The simulator does not model allocationManager
+		// resize state.
 	}
 
 	// Models kubernetes/pkg/kubelet/kubelet.go HandlePodSyncs.

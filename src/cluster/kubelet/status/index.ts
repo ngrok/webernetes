@@ -1,6 +1,7 @@
 export {
 	isPodStatusByKubeletEqual,
 	mergePodStatus,
+	needToReconcilePodReadiness,
 	normalizeStatus,
 	StatusManagerImpl,
 	updateLastTransitionTime,

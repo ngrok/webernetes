@@ -915,6 +915,30 @@ export function isPodStatusByKubeletEqual(oldStatus: V1PodStatus, status: V1PodS
 	return deepEqual(dropUndefinedFields(oldCopy), dropUndefinedFields(statusCopy));
 }
 
+// Models kubernetes/pkg/kubelet/status/status_manager.go NeedToReconcilePodReadiness.
+export function needToReconcilePodReadiness(pod: V1Pod): boolean {
+	if ((pod.spec?.readinessGates?.length ?? 0) === 0) {
+		return false;
+	}
+	const podStatus = pod.status ?? {};
+	const podReadyCondition = generatePodReadyCondition(
+		pod,
+		podStatus,
+		podStatus.conditions,
+		podStatus.containerStatuses,
+		podStatus.phase,
+	);
+	const [i, curCondition] = podutil.getPodConditionFromList(podStatus.conditions, "Ready");
+	if (
+		i >= 0 &&
+		(curCondition?.status !== podReadyCondition.status ||
+			curCondition.message !== podReadyCondition.message)
+	) {
+		return true;
+	}
+	return false;
+}
+
 // Models kubernetes/pkg/kubelet/status/status_manager.go normalizeStatus.
 export function normalizeStatus(pod: V1Pod, status: V1PodStatus): V1PodStatus {
 	let bytesPerStatus = maxPodTerminationMessageLogLength;
