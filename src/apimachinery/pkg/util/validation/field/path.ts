@@ -85,3 +85,7 @@ export function newPath(name: string, ...moreNames: string[]): Path {
 	}
 	return result;
 }
+
+export function childPath(path: Path | undefined, name: string): Path {
+	return path ? path.child(name) : newPath(name);
+}
