@@ -2140,23 +2140,29 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 	// Models kubernetes/pkg/kubelet/kubelet_pods.go sortPodIPs.
 	sortPodIPs(podIPs: string[]): string[] {
 		const ips: string[] = [];
-		const appendFirstMatching = (valid: (ip: number[] | undefined) => boolean): void => {
-			for (const ipString of podIPs) {
-				const ip = parseIPSloppy(ipString);
-				if (ip && valid(ip)) {
-					ips.push(formatIP(ip));
-					break;
-				}
-			}
-		};
-
-		const firstNodeIP = parseIPSloppy(this.nodeIPs[0] ?? "");
-		if (!firstNodeIP || isIPv4(firstNodeIP)) {
-			appendFirstMatching(isIPv4);
-			appendFirstMatching(isIPv6);
+		let validPrimaryIP: (ip: number[] | undefined) => ip is number[];
+		let validSecondaryIP: (ip: number[] | undefined) => ip is number[];
+		if (this.nodeIPs.length === 0 || isIPv4(parseIPSloppy(this.nodeIPs[0] ?? ""))) {
+			validPrimaryIP = isIPv4;
+			validSecondaryIP = isIPv6;
 		} else {
-			appendFirstMatching(isIPv6);
-			appendFirstMatching(isIPv4);
+			validPrimaryIP = isIPv6;
+			validSecondaryIP = isIPv4;
+		}
+
+		for (const ipString of podIPs) {
+			const ip = parseIPSloppy(ipString);
+			if (validPrimaryIP(ip)) {
+				ips.push(formatIP(ip));
+				break;
+			}
+		}
+		for (const ipString of podIPs) {
+			const ip = parseIPSloppy(ipString);
+			if (validSecondaryIP(ip)) {
+				ips.push(formatIP(ip));
+				break;
+			}
 		}
 		return ips;
 	}

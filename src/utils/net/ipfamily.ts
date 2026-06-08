@@ -31,7 +31,7 @@ export function ipFamilyOfString(ip: string): IPFamily {
 }
 
 // Models vendor/k8s.io/utils/net/ipfamily.go IsIPv6.
-export function isIPv6(netIP: number[] | undefined): boolean {
+export function isIPv6(netIP: number[] | undefined): netIP is number[] {
 	return ipFamilyOf(netIP) === ipv6;
 }
 
@@ -41,7 +41,7 @@ export function isIPv6String(ip: string): boolean {
 }
 
 // Models vendor/k8s.io/utils/net/ipfamily.go IsIPv4.
-export function isIPv4(netIP: number[] | undefined): boolean {
+export function isIPv4(netIP: number[] | undefined): netIP is number[] {
 	return ipFamilyOf(netIP) === ipv4;
 }
 
