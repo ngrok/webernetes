@@ -1,5 +1,3 @@
-// oxlint-disable jest/no-standalone-expect
-// oxlint-disable jest/no-conditional-expect
 // oxlint-disable jest/expect-expect
 import { expect, it } from "vitest";
 import type { V1ObjectReference, V1Pod } from "../../../../client";
