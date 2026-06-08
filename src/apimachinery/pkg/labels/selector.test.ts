@@ -13,6 +13,7 @@ import {
 	notIn,
 } from "../selection/operator";
 import {
+	binaryOperators,
 	closedParToken,
 	commaToken,
 	doesNotExistToken,
@@ -325,15 +326,6 @@ browser.describe("labels selector", () => {
 
 	// Models staging/src/k8s.io/apimachinery/pkg/labels/selector_test.go TestParseOperator.
 	it("TestParseOperator", () => {
-		const binaryOperatorList = [
-			inOperator,
-			notIn,
-			equals,
-			doubleEquals,
-			notEquals,
-			greaterThan,
-			lessThan,
-		].join(", ");
 		const testcases: Array<{ token: string; expectedError: Error | undefined }> = [
 			{ token: "in", expectedError: undefined },
 			{ token: "=", expectedError: undefined },
@@ -344,15 +336,17 @@ browser.describe("labels selector", () => {
 			{ token: "!=", expectedError: undefined },
 			{
 				token: "!",
-				expectedError: new Error(`found '${doesNotExist}', expected: ${binaryOperatorList}`),
+				expectedError: new Error(
+					`found '${doesNotExist}', expected: ${binaryOperators.join(", ")}`,
+				),
 			},
 			{
 				token: "exists",
-				expectedError: new Error(`found '${exists}', expected: ${binaryOperatorList}`),
+				expectedError: new Error(`found '${exists}', expected: ${binaryOperators.join(", ")}`),
 			},
 			{
 				token: "(",
-				expectedError: new Error(`found '(', expected: ${binaryOperatorList}`),
+				expectedError: new Error(`found '(', expected: ${binaryOperators.join(", ")}`),
 			},
 		];
 		for (const testcase of testcases) {
