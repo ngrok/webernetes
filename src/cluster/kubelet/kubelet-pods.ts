@@ -1,5 +1,9 @@
 import type { V1ContainerStatus, V1Pod, V1PodStatus } from "../../client";
-import { containerShouldRestart, getContainerStatus } from "../api/v1/pod/util";
+import {
+	containerShouldRestart,
+	getContainerStatus,
+	isRestartableInitContainer,
+} from "../api/v1/pod/util";
 import { isStaticPod } from "./types/pod-update";
 
 // Models kubernetes/pkg/kubelet/kubelet_pods.go truncatePodHostnameIfNeeded hostnameMaxLen.
@@ -25,9 +29,61 @@ export function getPhase(
 	pod: V1Pod,
 	info: V1ContainerStatus[],
 	podIsTerminal: boolean,
+	podHasInitialized: boolean,
 ): NonNullable<V1PodStatus["phase"]> {
 	const spec = pod.spec;
+	let pendingRestartableInitContainers = 0;
+	let pendingRegularInitContainers = 0;
 	let failedInitializationNotRestartable = 0;
+
+	for (const container of spec?.initContainers ?? []) {
+		if (isRestartableInitContainer(container)) {
+			continue;
+		}
+
+		const containerStatus = getContainerStatus(info, container.name);
+		const ok = containerStatus !== undefined;
+		if (!ok) {
+			pendingRegularInitContainers++;
+			continue;
+		}
+
+		switch (true) {
+			case containerStatus.state?.running !== undefined:
+				pendingRegularInitContainers++;
+				break;
+			case containerStatus.state?.terminated !== undefined: {
+				const exitCode = containerStatus.state.terminated.exitCode;
+				if (exitCode !== 0) {
+					let restartable = containerShouldRestart(container, spec, exitCode);
+					restartable =
+						restartable || containerStatus.state.terminated.reason === "RestartingAllContainers";
+					if (!restartable) {
+						failedInitializationNotRestartable++;
+					}
+				}
+				break;
+			}
+			case containerStatus.state?.waiting !== undefined:
+				if (containerStatus.lastState?.terminated) {
+					const exitCode = containerStatus.lastState.terminated.exitCode;
+					if (exitCode !== 0) {
+						let restartable = containerShouldRestart(container, spec, exitCode);
+						restartable =
+							restartable ||
+							containerStatus.lastState.terminated.reason === "RestartingAllContainers";
+						if (!restartable) {
+							failedInitializationNotRestartable++;
+						}
+					}
+				} else {
+					pendingRegularInitContainers++;
+				}
+				break;
+			default:
+				pendingRegularInitContainers++;
+		}
+	}
 
 	// counters for restartable init and regular containers
 	let unknown = 0;
@@ -36,6 +92,40 @@ export function getPhase(
 	let stopped = 0;
 	let stoppedNotRestartable = 0;
 	let succeeded = 0;
+
+	for (const container of spec?.initContainers ?? []) {
+		if (!isRestartableInitContainer(container)) {
+			continue;
+		}
+
+		const containerStatus = getContainerStatus(info, container.name);
+		const ok = containerStatus !== undefined;
+		if (!ok) {
+			unknown++;
+			continue;
+		}
+
+		switch (true) {
+			case containerStatus.state?.running !== undefined:
+				if (containerStatus.started === undefined || !containerStatus.started) {
+					pendingRestartableInitContainers++;
+				}
+				running++;
+				break;
+			case containerStatus.state?.terminated !== undefined:
+				break;
+			case containerStatus.state?.waiting !== undefined:
+				if (containerStatus.lastState?.terminated) {
+					break;
+				}
+				pendingRestartableInitContainers++;
+				waiting++;
+				break;
+			default:
+				pendingRestartableInitContainers++;
+				unknown++;
+		}
+	}
 
 	for (const container of spec?.containers ?? []) {
 		const containerStatus = getContainerStatus(info, container.name);
@@ -89,6 +179,8 @@ export function getPhase(
 	}
 
 	switch (true) {
+		case pendingRegularInitContainers > 0 ||
+			(pendingRestartableInitContainers > 0 && !podHasInitialized):
 		case waiting > 0:
 			// One or more containers has not been started
 			return "Pending";

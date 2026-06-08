@@ -26,6 +26,7 @@ import {
 	errPodNotFound,
 	findContainerByName,
 	findPod,
+	hasAnyActiveRegularContainerStarted,
 	isHostNetworkPod,
 	newContainerGC,
 	newRuntimeCache,
@@ -61,6 +62,7 @@ import { StatusManagerImpl, type PodDeletionSafetyProvider, type StatusManager }
 import { ContainerDied, ContainerRemoved, GenericPLEG, type PodLifecycleEvent } from "./pleg";
 import { networkNotReadyErrorMsg } from "./errors";
 import * as podutil from "../api/v1/pod/util";
+import * as utilpod from "../util/pod/pod";
 import { isServiceIPSet } from "../apis/core/v1/helper/helpers";
 import { getPodQOS } from "../apis/core/v1/helper/qos/qos";
 import { fromServices } from "./envvars";
@@ -112,7 +114,7 @@ import { everything, type Selector } from "../../apimachinery/pkg/labels/selecto
 import { convertDownwardAPIFieldLabel } from "../../apis/core/pods/helpers";
 import { extractFieldPathAsString } from "../../fieldpath/fieldpath";
 import { getNodeHostIPs } from "../../util/node";
-import { isIPv4, isIPv6, parseIPSloppy } from "../../utils/net";
+import { ipFamilyOfString, isIPv4, isIPv6, parseIPSloppy } from "../../utils/net";
 import { untilWithContext } from "../../apimachinery/pkg/util/wait/backoff";
 
 // Models kubernetes/pkg/kubelet/kubelet.go maxWaitForContainerRuntime.
@@ -780,7 +782,7 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 		// Kubernetes updates resize/allocation-manager pod status here. The
 		// simulator does not model pod resource allocation or in-place resizing.
 
-		const apiPodStatus = this.generateAPIPodStatus(ctx, pod, podStatus, false);
+		const apiPodStatus = await this.generateAPIPodStatus(ctx, pod, podStatus, false);
 		podStatus.ips = (apiPodStatus.podIPs ?? [])
 			.map((podIP) => podIP.ip)
 			.filter((ip): ip is string => ip !== undefined);
@@ -883,7 +885,7 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 		gracePeriod: number | undefined,
 		podStatusFn: ((status: V1PodStatus) => void) | undefined,
 	): Promise<Error | undefined> {
-		const apiPodStatus = this.generateAPIPodStatus(ctx, pod, podStatus, false);
+		const apiPodStatus = await this.generateAPIPodStatus(ctx, pod, podStatus, false);
 		podStatusFn?.(apiPodStatus);
 		await this.statusManager.setPodStatus(pod, apiPodStatus);
 
@@ -969,7 +971,7 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 		// simulator does not model DRA, volumes, or CSI resources.
 		await this.statusManager.setPodStatus(
 			pod,
-			this.generateAPIPodStatus(ctx, pod, stoppedPodStatus, true),
+			await this.generateAPIPodStatus(ctx, pod, stoppedPodStatus, true),
 		);
 		return undefined;
 	}
@@ -994,7 +996,7 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 		pod: V1Pod,
 		podStatus: PodRuntimeStatus,
 	): Promise<Error | undefined> {
-		const apiPodStatus = this.generateAPIPodStatus(ctx, pod, podStatus, true);
+		const apiPodStatus = await this.generateAPIPodStatus(ctx, pod, podStatus, true);
 		await this.statusManager.setPodStatus(pod, apiPodStatus);
 
 		await this.statusManager.terminatePod(pod);
@@ -1912,50 +1914,66 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 
 	// Models kubernetes/pkg/kubelet/kubelet_pods.go generateAPIPodStatus.
 	// Package-visible for upstream-parity tests that mirror kubelet_test.go.
-	generateAPIPodStatus(
+	async generateAPIPodStatus(
 		ctx: context.Context,
 		pod: V1Pod,
 		podStatus: PodRuntimeStatus,
 		podIsTerminal: boolean,
-	): V1PodStatus {
+	): Promise<V1PodStatus> {
 		const oldPodStatus =
 			this.statusManager.getPodStatus(pod.metadata?.uid ?? "") ?? pod.status ?? {};
-		const status = this.convertStatusToAPIStatus(ctx, pod, podStatus, oldPodStatus);
-		status.phase = getPhase(pod, status.containerStatuses ?? [], podIsTerminal);
-		if (
-			status.phase !== "Failed" &&
-			status.phase !== "Succeeded" &&
-			(oldPodStatus.phase === "Failed" || oldPodStatus.phase === "Succeeded")
-		) {
-			status.phase = oldPodStatus.phase;
+		const s = this.convertStatusToAPIStatus(ctx, pod, podStatus, oldPodStatus);
+		const allStatus = [...(s.containerStatuses ?? []), ...(s.initContainerStatuses ?? [])];
+		s.phase = getPhase(
+			pod,
+			allStatus,
+			podIsTerminal,
+			hasAnyActiveRegularContainerStarted(pod.spec, podStatus),
+		);
+
+		// Perform a three-way merge between the statuses from the status manager,
+		// runtime, and generated status to ensure terminal status is correctly set.
+		if (s.phase !== "Failed" && s.phase !== "Succeeded") {
+			switch (true) {
+				case oldPodStatus.phase === "Failed" || oldPodStatus.phase === "Succeeded":
+					s.phase = oldPodStatus.phase;
+					break;
+				case pod.status?.phase === "Failed" || pod.status?.phase === "Succeeded":
+					s.phase = pod.status?.phase;
+					break;
+			}
 		}
-		if (
-			status.phase !== "Failed" &&
-			status.phase !== "Succeeded" &&
-			(pod.status?.phase === "Failed" || pod.status?.phase === "Succeeded")
-		) {
-			status.phase = pod.status.phase;
+
+		if (s.phase === oldPodStatus.phase) {
+			s.reason = oldPodStatus.reason;
+			s.message = oldPodStatus.message;
+			if ((s.reason ?? "").length === 0) {
+				s.reason = pod.status?.reason;
+			}
+			if ((s.message ?? "").length === 0) {
+				s.message = pod.status?.message;
+			}
 		}
-		if (pod.status?.phase === "Failed" || pod.status?.phase === "Succeeded") {
-			status.phase = pod.status.phase;
-		}
-		if (status.phase === oldPodStatus.phase) {
-			status.reason = oldPodStatus.reason || pod.status?.reason;
-			status.message = oldPodStatus.message || pod.status?.message;
-		} else {
-			delete status.reason;
-			delete status.message;
-		}
+
 		for (const handler of this.podSyncHandlers) {
 			const result = handler.shouldEvict(pod);
 			if (result.evict) {
-				status.phase = "Failed";
-				status.reason = result.reason;
-				status.message = result.message;
+				s.phase = "Failed";
+				s.reason = result.reason;
+				s.message = result.message;
 				break;
 			}
 		}
-		this.probeManager.updatePodStatus(ctx, pod, status);
+
+		// Pods are not allowed to transition out of terminal phases.
+		if (
+			(pod.status?.phase === "Failed" || pod.status?.phase === "Succeeded") &&
+			s.phase !== pod.status?.phase
+		) {
+			s.phase = pod.status.phase;
+		}
+
+		this.probeManager.updatePodStatus(ctx, pod, s);
 		const conditions = (pod.status?.conditions ?? []).filter(
 			(condition) => !kubetypes.podConditionByKubelet(condition.type),
 		);
@@ -1963,62 +1981,76 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 			oldPodStatus.conditions,
 			"DisruptionTarget",
 		);
+		s.conditions = conditions;
 		if (disruptionCondition) {
-			const existingIndex = conditions.findIndex(
-				(condition) => condition.type === disruptionCondition.type,
-			);
-			if (existingIndex >= 0) {
-				conditions[existingIndex] = disruptionCondition;
-			} else {
-				conditions.push(disruptionCondition);
-			}
+			s.conditions = utilpod.replaceOrAppendPodCondition(s.conditions, disruptionCondition);
 		}
-		const allContainerStatuses = status.containerStatuses ?? [];
-		status.conditions = [
-			...conditions,
-			generatePodReadyToStartContainersCondition(pod, oldPodStatus, podStatus),
-			generatePodInitializedCondition(pod, oldPodStatus, allContainerStatuses, status.phase),
+		s.conditions.push(generatePodReadyToStartContainersCondition(pod, oldPodStatus, podStatus));
+		const allContainerStatuses = [
+			...(s.initContainerStatuses ?? []),
+			...(s.containerStatuses ?? []),
 		];
-		status.conditions = [
-			...status.conditions,
-			generatePodReadyCondition(
-				pod,
+		s.conditions.push(
+			generatePodInitializedCondition(pod, oldPodStatus, allContainerStatuses, s.phase),
+		);
+		s.conditions.push(
+			generatePodReadyCondition(pod, oldPodStatus, s.conditions, allContainerStatuses, s.phase),
+		);
+		s.conditions.push(
+			generateContainersReadyCondition(pod, oldPodStatus, allContainerStatuses, s.phase),
+		);
+		s.conditions.push({
+			type: "PodScheduled",
+			observedGeneration: podutil.calculatePodConditionObservedGeneration(
 				oldPodStatus,
-				status.conditions,
-				allContainerStatuses,
-				status.phase,
+				pod.metadata?.generation ?? 0,
+				"PodScheduled",
 			),
-			generateContainersReadyCondition(pod, oldPodStatus, allContainerStatuses, status.phase),
-			{
-				type: "PodScheduled",
-				observedGeneration: podutil.calculatePodConditionObservedGeneration(
-					oldPodStatus,
-					pod.metadata?.generation ?? 0,
-					"PodScheduled",
-				),
-				status: "True",
-			},
-		];
+			status: "True",
+		});
 		if (allContainersCouldRestart(pod.spec)) {
-			status.conditions.push(
-				generateAllContainersRestartingCondition(pod, podStatus, oldPodStatus, status.phase),
+			s.conditions.push(
+				generateAllContainersRestartingCondition(pod, podStatus, oldPodStatus, s.phase),
 			);
 		}
 		const [hostIPs, hostIPsErr] = this.getHostIPsAnyWay(ctx);
-		if (!hostIPsErr && hostIPs.length > 0) {
-			status.hostIP = hostIPs[0];
-			status.hostIPs = hostIPs.map((ip) => ({ ip }));
+		if (hostIPsErr) {
+			// Upstream logs this error. The simulator has no kubelet logger here.
+		} else {
+			if (
+				s.hostIP !== undefined &&
+				s.hostIP !== "" &&
+				ipFamilyOfString(s.hostIP) !== ipFamilyOfString(hostIPs[0] ?? "")
+			) {
+				await this.recorder.eventf(
+					pod,
+					"Warning",
+					"HostIPsIPFamilyMismatch",
+					"Kubelet detected an IPv%s node IP (%s), but the cloud provider selected an IPv%s node IP (%s); pass an explicit `--node-ip` to kubelet to fix this.",
+					ipFamilyOfString(s.hostIP),
+					s.hostIP,
+					ipFamilyOfString(hostIPs[0] ?? ""),
+					hostIPs[0] ?? "",
+				);
+			}
+			s.hostIP = hostIPs[0];
+			s.hostIPs = [{ ip: s.hostIP }];
+			if (hostIPs.length === 2) {
+				s.hostIPs.push({ ip: hostIPs[1] });
+			}
 			if (isHostNetworkPod(pod)) {
-				if (!status.podIP) {
-					status.podIP = hostIPs[0];
-					status.podIPs = [{ ip: status.podIP }];
+				if (!s.podIP) {
+					s.podIP = hostIPs[0];
+					s.podIPs = [{ ip: s.podIP }];
 				}
-				if (hostIPs.length === 2 && (status.podIPs?.length ?? 0) === 1) {
-					status.podIPs = [...(status.podIPs ?? []), { ip: hostIPs[1] }];
+				if (hostIPs.length === 2 && (s.podIPs?.length ?? 0) === 1) {
+					if (ipFamilyOfString(s.podIPs?.[0]?.ip ?? "") !== ipFamilyOfString(hostIPs[1])) {
+						s.podIPs = [...(s.podIPs ?? []), { ip: hostIPs[1] }];
+					}
 				}
 			}
 		}
-		return status;
+		return s;
 	}
 
 	// Models kubernetes/pkg/kubelet/kubelet_getters.go GetNode.

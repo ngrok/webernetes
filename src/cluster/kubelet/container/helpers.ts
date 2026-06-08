@@ -254,6 +254,26 @@ export function hasAnyRegularContainerStarted(
 	return false;
 }
 
+// Models kubernetes/pkg/kubelet/container/helpers.go HasAnyActiveRegularContainerStarted.
+export function hasAnyActiveRegularContainerStarted(
+	spec: V1PodSpec | undefined,
+	podStatus: PodRuntimeStatus | undefined,
+): boolean {
+	if (podStatus === undefined) {
+		return false;
+	}
+
+	const containerNames = new Set((spec?.containers ?? []).map((container) => container.name));
+	for (const status of podStatus.activeContainerStatuses ?? []) {
+		if (!containerNames.has(status.name)) {
+			continue;
+		}
+		return true;
+	}
+
+	return false;
+}
+
 function isIPv6String(value: string): boolean {
 	return value.includes(":");
 }

@@ -4,9 +4,11 @@ import type { V1Container, V1Pod, V1PodCondition, V1PodStatus } from "../../../c
 import {
 	expandContainerCommandOnlyStatic,
 	hashContainer,
+	hasAnyActiveRegularContainerStarted,
 	shouldAllContainersRestart,
 } from "./helpers";
 import { buildContainerID, type PodStatus, type Status } from "./runtime";
+import type { PodSandboxState, PodSandboxStatus } from "../../cri";
 
 browser.describe("hashContainer", () => {
 	it("matches the upstream Kubernetes container hash fixture", () => {
@@ -307,6 +309,87 @@ function podStatus(containerStatuses: Status[]): PodStatus {
 		containerStatuses,
 		sandboxStatuses: [],
 		timestamp: new Date(0),
+	};
+}
+
+// Models kubernetes/pkg/kubelet/container/helpers_test.go TestHasAnyActiveRegularContainerStarted.
+browser.describe("hasAnyActiveRegularContainerStarted", () => {
+	it.each([
+		{
+			desc: "pod has no active container",
+			spec: {
+				initContainers: [{ name: "init" }],
+				containers: [{ name: "regular" }],
+			},
+			podStatus: {
+				...podStatus([]),
+				sandboxStatuses: [podSandboxStatus("old", "NotReady")],
+			},
+			expected: false,
+		},
+		{
+			desc: "pod is initializing",
+			spec: {
+				initContainers: [{ name: "init" }],
+				containers: [{ name: "regular" }],
+			},
+			podStatus: {
+				...podStatus([]),
+				sandboxStatuses: [podSandboxStatus("current", "Ready")],
+				activeContainerStatuses: [containerStatus({ name: "init", state: "Running" })],
+			},
+			expected: false,
+		},
+		{
+			desc: "pod has initialized",
+			spec: {
+				initContainers: [{ name: "init" }],
+				containers: [{ name: "regular" }],
+			},
+			podStatus: {
+				...podStatus([]),
+				sandboxStatuses: [podSandboxStatus("current", "Ready")],
+				activeContainerStatuses: [
+					containerStatus({ name: "init", state: "Exited" }),
+					containerStatus({ name: "regular", state: "Running" }),
+				],
+			},
+			expected: true,
+		},
+		{
+			desc: "pod is re-initializing after the sandbox recreation",
+			spec: {
+				initContainers: [{ name: "init" }],
+				containers: [{ name: "regular" }],
+			},
+			podStatus: {
+				...podStatus([]),
+				sandboxStatuses: [
+					podSandboxStatus("current", "Ready"),
+					podSandboxStatus("old", "NotReady"),
+				],
+				activeContainerStatuses: [containerStatus({ name: "init", state: "Running" })],
+			},
+			expected: false,
+		},
+	] satisfies Array<{
+		desc: string;
+		spec: NonNullable<V1Pod["spec"]>;
+		podStatus: PodStatus;
+		expected: boolean;
+	}>)("$desc", (test) => {
+		expect(hasAnyActiveRegularContainerStarted(test.spec, test.podStatus)).toBe(test.expected);
+	});
+});
+
+function podSandboxStatus(id: string, state: PodSandboxState): PodSandboxStatus {
+	return {
+		id,
+		state,
+		metadata: { name: "", namespace: "", uid: "", attempt: 0 },
+		createdAt: 0,
+		labels: {},
+		annotations: {},
 	};
 }
 

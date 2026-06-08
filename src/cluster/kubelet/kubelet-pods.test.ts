@@ -157,11 +157,31 @@ function waitingStateWithLastTermination(cName: string): V1ContainerStatus {
 	});
 }
 
+function waitingStateWithNonZeroTermination(cName: string): V1ContainerStatus {
+	return newContainerStatus({
+		name: cName,
+		state: { waiting: {} },
+		lastState: {
+			terminated: {
+				exitCode: 1,
+			},
+		},
+	});
+}
+
 // Models kubernetes/pkg/kubelet/kubelet_pods_test.go stoppedState.
 function stoppedState(cName: string): V1ContainerStatus {
 	return newContainerStatus({
 		name: cName,
 		state: { terminated: { exitCode: 0 } },
+	});
+}
+
+function startedState(cName: string): V1ContainerStatus {
+	return newContainerStatus({
+		name: cName,
+		started: true,
+		state: { running: {} },
 	});
 }
 
@@ -326,6 +346,10 @@ function podPhaseStatus(
 	return { containerStatuses };
 }
 
+function podPhaseInfo(pod: V1Pod): V1ContainerStatus[] {
+	return [...(pod.status?.initContainerStatuses ?? []), ...(pod.status?.containerStatuses ?? [])];
+}
+
 // Models kubernetes/pkg/kubelet/kubelet_pods_test.go TestPodPhaseWithRestartAlways.
 browser.describe("podPhaseWithRestartAlways", () => {
 	const desiredState = {
@@ -423,7 +447,343 @@ browser.describe("podPhaseWithRestartAlways", () => {
 			test.pod,
 			test.pod.status?.containerStatuses ?? [],
 			test.podIsTerminal ?? false,
+			false,
 		);
+		expect(status).toBe(test.status);
+	});
+});
+
+// Models kubernetes/pkg/kubelet/kubelet_pods_test.go TestPodPhaseWithRestartAlwaysInitContainers.
+browser.describe("podPhaseWithRestartAlwaysInitContainers", () => {
+	const desiredState = {
+		nodeName: "machine",
+		initContainers: [{ name: "containerX" }],
+		containers: [{ name: "containerA" }, { name: "containerB" }],
+		restartPolicy: "Always" as const,
+	};
+
+	const tests: PodPhaseTestCase[] = [
+		{ pod: { spec: desiredState, status: {} }, status: "Pending", test: "empty, waiting" },
+		{
+			pod: {
+				spec: desiredState,
+				status: { initContainerStatuses: [runningState("containerX")] },
+			},
+			status: "Pending",
+			test: "init container running",
+		},
+		{
+			pod: {
+				spec: desiredState,
+				status: { initContainerStatuses: [failedState("containerX")] },
+			},
+			status: "Pending",
+			test: "init container terminated non-zero",
+		},
+		{
+			pod: {
+				spec: desiredState,
+				status: { initContainerStatuses: [waitingStateWithLastTermination("containerX")] },
+			},
+			status: "Pending",
+			test: "init container waiting, terminated zero",
+		},
+		{
+			pod: {
+				spec: desiredState,
+				status: { initContainerStatuses: [waitingStateWithNonZeroTermination("containerX")] },
+			},
+			status: "Pending",
+			test: "init container waiting, terminated non-zero",
+		},
+		{
+			pod: {
+				spec: desiredState,
+				status: { initContainerStatuses: [waitingState("containerX")] },
+			},
+			status: "Pending",
+			test: "init container waiting, not terminated",
+		},
+		{
+			pod: {
+				spec: desiredState,
+				status: {
+					initContainerStatuses: [succeededState("containerX")],
+					containerStatuses: [runningState("containerA"), runningState("containerB")],
+				},
+			},
+			status: "Running",
+			test: "init container succeeded",
+		},
+	];
+
+	it.each(tests)("$test", (test) => {
+		const status = getPhase(test.pod, podPhaseInfo(test.pod), false, false);
+		expect(status).toBe(test.status);
+	});
+});
+
+// Models kubernetes/pkg/kubelet/kubelet_pods_test.go TestPodPhaseWithRestartAlwaysRestartableInitContainers.
+browser.describe("podPhaseWithRestartAlwaysRestartableInitContainers", () => {
+	const desiredState = {
+		nodeName: "machine",
+		initContainers: [{ name: "containerX", restartPolicy: "Always" as const }],
+		containers: [{ name: "containerA" }, { name: "containerB" }],
+		restartPolicy: "Always" as const,
+	};
+
+	const tests: Array<PodPhaseTestCase & { podHasInitialized: boolean }> = [
+		{
+			pod: { spec: desiredState, status: {} },
+			podIsTerminal: false,
+			podHasInitialized: false,
+			status: "Pending",
+			test: "empty, waiting",
+		},
+		{
+			pod: {
+				spec: desiredState,
+				status: { initContainerStatuses: [runningState("containerX")] },
+			},
+			podIsTerminal: false,
+			podHasInitialized: false,
+			status: "Pending",
+			test: "restartable init container running",
+		},
+		{
+			pod: {
+				spec: desiredState,
+				status: { initContainerStatuses: [stoppedState("containerX")] },
+			},
+			podIsTerminal: false,
+			podHasInitialized: false,
+			status: "Pending",
+			test: "restartable init container stopped",
+		},
+		{
+			pod: {
+				spec: desiredState,
+				status: { initContainerStatuses: [waitingStateWithLastTermination("containerX")] },
+			},
+			podIsTerminal: false,
+			podHasInitialized: false,
+			status: "Pending",
+			test: "restartable init container waiting, terminated zero",
+		},
+		{
+			pod: {
+				spec: desiredState,
+				status: { initContainerStatuses: [waitingStateWithNonZeroTermination("containerX")] },
+			},
+			podIsTerminal: false,
+			podHasInitialized: false,
+			status: "Pending",
+			test: "restartable init container waiting, terminated non-zero",
+		},
+		{
+			pod: {
+				spec: desiredState,
+				status: { initContainerStatuses: [waitingState("containerX")] },
+			},
+			podIsTerminal: false,
+			podHasInitialized: false,
+			status: "Pending",
+			test: "restartable init container waiting, not terminated",
+		},
+		{
+			pod: {
+				spec: desiredState,
+				status: {
+					initContainerStatuses: [startedState("containerX")],
+					containerStatuses: [runningState("containerA")],
+				},
+			},
+			podIsTerminal: false,
+			podHasInitialized: true,
+			status: "Pending",
+			test: "restartable init container started, 1/2 regular container running",
+		},
+		{
+			pod: {
+				spec: desiredState,
+				status: {
+					initContainerStatuses: [startedState("containerX")],
+					containerStatuses: [runningState("containerA"), runningState("containerB")],
+				},
+			},
+			podIsTerminal: false,
+			podHasInitialized: true,
+			status: "Running",
+			test: "restartable init container started, all regular containers running",
+		},
+		{
+			pod: {
+				spec: desiredState,
+				status: {
+					initContainerStatuses: [runningState("containerX")],
+					containerStatuses: [runningState("containerA"), runningState("containerB")],
+				},
+			},
+			podIsTerminal: false,
+			podHasInitialized: true,
+			status: "Running",
+			test: "restartable init container running, all regular containers running",
+		},
+		{
+			pod: {
+				spec: desiredState,
+				status: {
+					initContainerStatuses: [stoppedState("containerX")],
+					containerStatuses: [runningState("containerA"), runningState("containerB")],
+				},
+			},
+			podIsTerminal: false,
+			podHasInitialized: true,
+			status: "Running",
+			test: "restartable init container stopped, all regular containers running",
+		},
+		{
+			pod: {
+				spec: desiredState,
+				status: {
+					initContainerStatuses: [waitingStateWithLastTermination("containerX")],
+					containerStatuses: [runningState("containerA"), runningState("containerB")],
+				},
+			},
+			podIsTerminal: false,
+			podHasInitialized: true,
+			status: "Running",
+			test: "backoff crashloop restartable init container, all regular containers running",
+		},
+		{
+			pod: {
+				spec: desiredState,
+				status: {
+					initContainerStatuses: [failedState("containerX")],
+					containerStatuses: [succeededState("containerA"), succeededState("containerB")],
+				},
+			},
+			podIsTerminal: true,
+			podHasInitialized: true,
+			status: "Succeeded",
+			test: "all regular containers succeeded and restartable init container failed with restart always, but the pod is terminal",
+		},
+		{
+			pod: {
+				spec: desiredState,
+				status: {
+					initContainerStatuses: [succeededState("containerX")],
+					containerStatuses: [succeededState("containerA"), succeededState("containerB")],
+				},
+			},
+			podIsTerminal: true,
+			podHasInitialized: true,
+			status: "Succeeded",
+			test: "all regular containers succeeded and restartable init container succeeded with restart always, but the pod is terminal",
+		},
+		{
+			pod: {
+				spec: desiredState,
+				status: {
+					initContainerStatuses: [runningState("containerX")],
+					containerStatuses: [runningState("containerA"), runningState("containerB")],
+				},
+			},
+			podIsTerminal: false,
+			podHasInitialized: false,
+			status: "Pending",
+			test: "re-initializing the pod after the sandbox is recreated",
+		},
+	];
+
+	it.each(tests)("$test", (test) => {
+		const status = getPhase(
+			test.pod,
+			podPhaseInfo(test.pod),
+			test.podIsTerminal ?? false,
+			test.podHasInitialized,
+		);
+		expect(status).toBe(test.status);
+	});
+});
+
+// Models kubernetes/pkg/kubelet/kubelet_pods_test.go TestPodPhaseWithRestartAlwaysAndPodHasRun.
+browser.describe("podPhaseWithRestartAlwaysAndPodHasRun", () => {
+	const desiredState = {
+		nodeName: "machine",
+		initContainers: [
+			{ name: "containerX" },
+			{ name: "containerY", restartPolicy: "Always" as const },
+		],
+		containers: [{ name: "containerA" }],
+		restartPolicy: "Always" as const,
+	};
+
+	const tests: Array<PodPhaseTestCase & { podHasInitialized: boolean }> = [
+		{
+			pod: {
+				spec: desiredState,
+				status: {
+					initContainerStatuses: [runningState("containerX"), runningState("containerY")],
+					containerStatuses: [runningState("containerA")],
+				},
+			},
+			podHasInitialized: false,
+			status: "Pending",
+			test: "regular init containers, restartable init container and regular container are all running",
+		},
+		{
+			pod: {
+				spec: desiredState,
+				status: {
+					initContainerStatuses: [runningState("containerX"), runningState("containerY")],
+					containerStatuses: [stoppedState("containerA")],
+				},
+			},
+			podHasInitialized: false,
+			status: "Pending",
+			test: "regular containers is stopped, restartable init container and regular int container are both running",
+		},
+		{
+			pod: {
+				spec: desiredState,
+				status: {
+					initContainerStatuses: [succeededState("containerX"), runningState("containerY")],
+					containerStatuses: [stoppedState("containerA")],
+				},
+			},
+			podHasInitialized: false,
+			status: "Pending",
+			test: "re-created sandbox: regular init container is succeeded, restartable init container is running, old regular containers is stopped",
+		},
+		{
+			pod: {
+				spec: desiredState,
+				status: {
+					initContainerStatuses: [succeededState("containerX"), runningState("containerY")],
+					containerStatuses: [stoppedState("containerA")],
+				},
+			},
+			podHasInitialized: true,
+			status: "Running",
+			test: "regular init container is succeeded, restartable init container is running, regular containers is stopped",
+		},
+		{
+			pod: {
+				spec: desiredState,
+				status: {
+					initContainerStatuses: [succeededState("containerX"), runningState("containerY")],
+					containerStatuses: [runningState("containerA")],
+				},
+			},
+			podHasInitialized: true,
+			status: "Running",
+			test: "regular init container is succeeded, restartable init container and regular containers are both running",
+		},
+	];
+
+	it.each(tests)("$test", (test) => {
+		const status = getPhase(test.pod, podPhaseInfo(test.pod), false, test.podHasInitialized);
 		expect(status).toBe(test.status);
 	});
 });
@@ -493,7 +853,231 @@ browser.describe("podPhaseWithRestartNever", () => {
 			test.pod,
 			test.pod.status?.containerStatuses ?? [],
 			test.podIsTerminal ?? false,
+			false,
 		);
+		expect(status).toBe(test.status);
+	});
+});
+
+// Models kubernetes/pkg/kubelet/kubelet_pods_test.go TestPodPhaseWithRestartNeverInitContainers.
+browser.describe("podPhaseWithRestartNeverInitContainers", () => {
+	const desiredState = {
+		nodeName: "machine",
+		initContainers: [{ name: "containerX" }],
+		containers: [{ name: "containerA" }, { name: "containerB" }],
+		restartPolicy: "Never" as const,
+	};
+
+	const tests: PodPhaseTestCase[] = [
+		{ pod: { spec: desiredState, status: {} }, status: "Pending", test: "empty, waiting" },
+		{
+			pod: {
+				spec: desiredState,
+				status: { initContainerStatuses: [runningState("containerX")] },
+			},
+			status: "Pending",
+			test: "init container running",
+		},
+		{
+			pod: {
+				spec: desiredState,
+				status: { initContainerStatuses: [failedState("containerX")] },
+			},
+			status: "Failed",
+			test: "init container terminated non-zero",
+		},
+		{
+			pod: {
+				spec: desiredState,
+				status: { initContainerStatuses: [waitingStateWithLastTermination("containerX")] },
+			},
+			status: "Pending",
+			test: "init container waiting, terminated zero",
+		},
+		{
+			pod: {
+				spec: desiredState,
+				status: { initContainerStatuses: [waitingStateWithNonZeroTermination("containerX")] },
+			},
+			status: "Failed",
+			test: "init container waiting, terminated non-zero",
+		},
+		{
+			pod: {
+				spec: desiredState,
+				status: { initContainerStatuses: [waitingState("containerX")] },
+			},
+			status: "Pending",
+			test: "init container waiting, not terminated",
+		},
+		{
+			pod: {
+				spec: desiredState,
+				status: {
+					initContainerStatuses: [succeededState("containerX")],
+					containerStatuses: [runningState("containerA"), runningState("containerB")],
+				},
+			},
+			status: "Running",
+			test: "init container succeeded",
+		},
+	];
+
+	it.each(tests)("$test", (test) => {
+		const status = getPhase(test.pod, podPhaseInfo(test.pod), false, false);
+		expect(status).toBe(test.status);
+	});
+});
+
+// Models kubernetes/pkg/kubelet/kubelet_pods_test.go TestPodPhaseWithRestartNeverRestartableInitContainers.
+browser.describe("podPhaseWithRestartNeverRestartableInitContainers", () => {
+	const desiredState = {
+		nodeName: "machine",
+		initContainers: [{ name: "containerX", restartPolicy: "Always" as const }],
+		containers: [{ name: "containerA" }, { name: "containerB" }],
+		restartPolicy: "Never" as const,
+	};
+
+	const tests: Array<PodPhaseTestCase & { podHasInitialized: boolean }> = [
+		{
+			pod: { spec: desiredState, status: {} },
+			podHasInitialized: false,
+			status: "Pending",
+			test: "empty, waiting",
+		},
+		{
+			pod: {
+				spec: desiredState,
+				status: { initContainerStatuses: [runningState("containerX")] },
+			},
+			podHasInitialized: false,
+			status: "Pending",
+			test: "restartable init container running",
+		},
+		{
+			pod: {
+				spec: desiredState,
+				status: { initContainerStatuses: [stoppedState("containerX")] },
+			},
+			podHasInitialized: false,
+			status: "Pending",
+			test: "restartable init container stopped",
+		},
+		{
+			pod: {
+				spec: desiredState,
+				status: { initContainerStatuses: [waitingStateWithLastTermination("containerX")] },
+			},
+			podHasInitialized: false,
+			status: "Pending",
+			test: "restartable init container waiting, terminated zero",
+		},
+		{
+			pod: {
+				spec: desiredState,
+				status: { initContainerStatuses: [waitingStateWithNonZeroTermination("containerX")] },
+			},
+			podHasInitialized: false,
+			status: "Pending",
+			test: "restartable init container waiting, terminated non-zero",
+		},
+		{
+			pod: {
+				spec: desiredState,
+				status: { initContainerStatuses: [waitingState("containerX")] },
+			},
+			podHasInitialized: false,
+			status: "Pending",
+			test: "restartable init container waiting, not terminated",
+		},
+		{
+			pod: {
+				spec: desiredState,
+				status: {
+					initContainerStatuses: [startedState("containerX")],
+					containerStatuses: [runningState("containerA")],
+				},
+			},
+			podHasInitialized: true,
+			status: "Pending",
+			test: "restartable init container started, one main container running",
+		},
+		{
+			pod: {
+				spec: desiredState,
+				status: {
+					initContainerStatuses: [startedState("containerX")],
+					containerStatuses: [succeededState("containerA"), succeededState("containerB")],
+				},
+			},
+			podHasInitialized: true,
+			status: "Running",
+			test: "restartable init container started, main containers succeeded",
+		},
+		{
+			pod: {
+				spec: desiredState,
+				status: {
+					initContainerStatuses: [runningState("containerX")],
+					containerStatuses: [succeededState("containerA"), succeededState("containerB")],
+				},
+			},
+			podHasInitialized: true,
+			status: "Running",
+			test: "restartable init container re-running, main containers succeeded",
+		},
+		{
+			pod: {
+				spec: desiredState,
+				status: {
+					initContainerStatuses: [succeededState("containerX")],
+					containerStatuses: [succeededState("containerA"), succeededState("containerB")],
+				},
+			},
+			podHasInitialized: true,
+			status: "Succeeded",
+			test: "all containers succeeded",
+		},
+		{
+			pod: {
+				spec: desiredState,
+				status: {
+					initContainerStatuses: [failedState("containerX")],
+					containerStatuses: [succeededState("containerA"), succeededState("containerB")],
+				},
+			},
+			podHasInitialized: true,
+			status: "Succeeded",
+			test: "restartable init container terminated non-zero, main containers succeeded",
+		},
+		{
+			pod: {
+				spec: desiredState,
+				status: {
+					initContainerStatuses: [waitingStateWithLastTermination("containerX")],
+					containerStatuses: [succeededState("containerA"), succeededState("containerB")],
+				},
+			},
+			podHasInitialized: true,
+			status: "Succeeded",
+			test: "backoff crashloop restartable init container, main containers succeeded",
+		},
+		{
+			pod: {
+				spec: desiredState,
+				status: {
+					initContainerStatuses: [waitingStateWithNonZeroTermination("containerX")],
+					containerStatuses: [succeededState("containerA"), succeededState("containerB")],
+				},
+			},
+			podHasInitialized: true,
+			status: "Succeeded",
+			test: "backoff crashloop with non-zero restartable init container, main containers succeeded",
+		},
+	];
+
+	it.each(tests)("$test", (test) => {
+		const status = getPhase(test.pod, podPhaseInfo(test.pod), false, test.podHasInitialized);
 		expect(status).toBe(test.status);
 	});
 });
@@ -574,6 +1158,7 @@ browser.describe("podPhaseWithRestartOnFailure", () => {
 			test.pod,
 			test.pod.status?.containerStatuses ?? [],
 			test.podIsTerminal ?? false,
+			false,
 		);
 		expect(status).toBe(test.status);
 	});
@@ -696,7 +1281,81 @@ browser.describe("podPhaseWithContainerRestartPolicy", () => {
 				containerStatuses: tc.statuses,
 			},
 		};
-		const phase = getPhase(pod, tc.statuses, tc.podIsTerminal ?? false);
+		const phase = getPhase(pod, tc.statuses, tc.podIsTerminal ?? false, true);
+		expect(phase).toBe(tc.expectedPhase);
+	});
+});
+
+// Models kubernetes/pkg/kubelet/kubelet_pods_test.go TestPodPhaseWithContainerRestartPolicyInitContainers.
+browser.describe("podPhaseWithContainerRestartPolicyInitContainers", () => {
+	interface ContainerRestartPolicyInitTestCase {
+		name: string;
+		spec: NonNullable<V1Pod["spec"]>;
+		statuses: V1ContainerStatus[];
+		podIsTerminal?: boolean;
+		expectedPhase: NonNullable<V1PodStatus["phase"]>;
+	}
+
+	const containerRestartPolicyAlways = "Always" as const;
+	const containerRestartPolicyOnFailure = "OnFailure" as const;
+	const containerRestartPolicyNever = "Never" as const;
+
+	const tests: ContainerRestartPolicyInitTestCase[] = [
+		{
+			name: "init container with restart policy Never failed",
+			spec: {
+				initContainers: [
+					{
+						name: "failed-container",
+						restartPolicy: containerRestartPolicyNever,
+					},
+				],
+				containers: [{ name: "container" }],
+				restartPolicy: "Always",
+			},
+			statuses: [failedState("failed-container")],
+			expectedPhase: "Failed",
+		},
+		{
+			name: "init container with restart policy OnFailure failed",
+			spec: {
+				initContainers: [
+					{
+						name: "failed-container",
+						restartPolicy: containerRestartPolicyOnFailure,
+					},
+				],
+				containers: [{ name: "container" }],
+				restartPolicy: "Never",
+			},
+			statuses: [failedState("failed-container")],
+			expectedPhase: "Pending",
+		},
+		{
+			name: "container with restart policy Always failed",
+			spec: {
+				initContainers: [
+					{
+						name: "failed-container",
+						restartPolicy: containerRestartPolicyAlways,
+					},
+				],
+				containers: [{ name: "container" }],
+				restartPolicy: "Never",
+			},
+			statuses: [failedState("failed-container")],
+			expectedPhase: "Pending",
+		},
+	];
+
+	it.each(tests)("$name", (tc) => {
+		const pod: V1Pod = {
+			spec: tc.spec,
+			status: {
+				containerStatuses: tc.statuses,
+			},
+		};
+		const phase = getPhase(pod, tc.statuses, tc.podIsTerminal ?? false, true);
 		expect(phase).toBe(tc.expectedPhase);
 	});
 });
@@ -753,7 +1412,7 @@ browser.describe("podPhaseWithRestartAllContainers", () => {
 				containerStatuses: tc.statuses,
 			},
 		};
-		const phase = getPhase(pod, tc.statuses, false);
+		const phase = getPhase(pod, tc.statuses, false, true);
 		expect(phase).toBe(tc.expectedPhase);
 	});
 });
@@ -3230,7 +3889,7 @@ browser.describe("generateAPIPodStatus", () => {
 					test.pod,
 				);
 			}
-			const actual = kl.generateAPIPodStatus(
+			const actual = await kl.generateAPIPodStatus(
 				tCtx,
 				test.pod,
 				test.currentStatus,
@@ -3277,7 +3936,7 @@ browser.describe("generateAPIPodStatus", () => {
 				nominatedNodeName: "old-node",
 			});
 
-			const actual = testKubelet.kubelet.generateAPIPodStatus(
+			const actual = await testKubelet.kubelet.generateAPIPodStatus(
 				tCtx,
 				pod,
 				{
@@ -3382,7 +4041,7 @@ browser.describe("generateAPIPodStatusPodIPs", () => {
 				kl.nodeIPs = [test.nodeIP];
 			}
 			const pod = podWithUIDNameNs("12345", "test-pod", "test-namespace");
-			const status = kl.generateAPIPodStatus(
+			const status = await kl.generateAPIPodStatus(
 				tCtx,
 				pod,
 				{
@@ -3525,7 +4184,7 @@ browser.describe("generateAPIPodStatusHostNetworkPodIPs", () => {
 				containers: [],
 				hostNetwork: true,
 			};
-			const status = kl.generateAPIPodStatus(
+			const status = await kl.generateAPIPodStatus(
 				tCtx,
 				pod,
 				{

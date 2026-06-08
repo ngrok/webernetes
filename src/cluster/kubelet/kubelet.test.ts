@@ -391,7 +391,7 @@ browser.describe("generateAPIPodStatusInvokesPodSyncHandlers", () => {
 				namespace: pod.metadata?.namespace ?? "",
 			});
 
-			const apiStatus = kubelet.generateAPIPodStatus(tCtx, pod, status, false);
+			const apiStatus = await kubelet.generateAPIPodStatus(tCtx, pod, status, false);
 			expect(apiStatus.phase).toBe("Failed");
 			expect(apiStatus.reason).toBe("Evicted");
 			expect(apiStatus.message).toBe("because");
@@ -440,7 +440,7 @@ browser.describe("generateAPIPodStatusWithSortedContainers", () => {
 			};
 
 			for (let i = 0; i < 5; i++) {
-				const apiStatus = kubelet.generateAPIPodStatus(tCtx, pod, status, false);
+				const apiStatus = await kubelet.generateAPIPodStatus(tCtx, pod, status, false);
 				expect(apiStatus.containerStatuses?.map((container) => container.name)).toEqual(
 					expectedOrder,
 				);
@@ -1002,7 +1002,7 @@ browser.describe("generateAPIPodStatusWithReasonCache", () => {
 				pod.spec = { ...pod.spec, containers: test.containers };
 				pod.status = { containerStatuses: test.oldStatuses };
 				podStatus.containerStatuses = test.statuses;
-				const apiStatus = kubelet.generateAPIPodStatus(tCtx, pod, podStatus, false);
+				const apiStatus = await kubelet.generateAPIPodStatus(tCtx, pod, podStatus, false);
 
 				verifyContainerStatuses(
 					apiStatus.containerStatuses,
@@ -1091,7 +1091,7 @@ browser.describe("generateAPIPodStatusWithDifferentRestartPolicies", () => {
 			kubelet.reasonCache.add(pod.metadata?.uid ?? "", "failed", testErrorReason, "");
 			for (const test of tests) {
 				pod.spec = { containers, restartPolicy: test.restartPolicy };
-				const apiStatus = kubelet.generateAPIPodStatus(tCtx, pod, podStatus, false);
+				const apiStatus = await kubelet.generateAPIPodStatus(tCtx, pod, podStatus, false);
 
 				verifyContainerStatuses(
 					apiStatus.containerStatuses,
@@ -1262,7 +1262,7 @@ browser.describe("generateAPIPodStatusWithContainerRestartPolicies", () => {
 			kubelet.reasonCache.add(pod.metadata?.uid ?? "", "failed", testErrorReason, "");
 			for (const test of tests) {
 				pod.spec = { containers: test.containers, restartPolicy: "Always" };
-				const apiStatus = kubelet.generateAPIPodStatus(tCtx, pod, podStatus, false);
+				const apiStatus = await kubelet.generateAPIPodStatus(tCtx, pod, podStatus, false);
 
 				verifyContainerStatuses(
 					apiStatus.containerStatuses,
