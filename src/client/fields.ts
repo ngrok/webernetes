@@ -1,48 +1,28 @@
-type FieldSelector =
-	| {
-			field: string;
-			value: string;
-			operator: "==" | "!=";
-	  }[]
-	| undefined;
+import { Set } from "../apimachinery/pkg/fields/fields";
+import { parseSelector, type Selector } from "../apimachinery/pkg/fields/selector";
+
+export type FieldSelector = Selector;
 
 export function parseFieldSelector(selector: string | undefined): FieldSelector {
-	if (!selector) {
-		return undefined;
+	const [fieldSelector, err] = parseSelector(selector ?? "");
+	if (err) {
+		throw err;
 	}
-
-	return selector
-		.split(",")
-		.map((part) => part.trim())
-		.filter(Boolean)
-		.map((part) => {
-			const match = /^([^!=]+)\s*(!=|=|==)\s*(.*)$/.exec(part);
-			if (!match) {
-				throw new Error(`Invalid field selector: ${part}`);
-			}
-			return {
-				field: match[1]?.trim() ?? "",
-				operator: match[2] === "!=" ? "!=" : "==",
-				value: match[3]?.trim() ?? "",
-			};
-		});
+	if (!fieldSelector) {
+		throw new Error(`invalid selector: ${selector ?? ""}`);
+	}
+	return fieldSelector;
 }
 
 export function fieldSelectorMatches(obj: unknown, selector: FieldSelector): boolean {
-	if (!selector) {
-		return true;
+	const fields: Record<string, string> = {};
+	for (const requirement of selector.requirements() ?? []) {
+		fields[requirement.field] = String(getField(obj, requirement.field) ?? "");
 	}
-
-	return selector.every(({ field, operator, value }) => {
-		const actual = String(getField(obj, field) ?? "");
-		return operator === "!=" ? actual !== value : actual === value;
-	});
+	return selector.matches(new Set(fields));
 }
 
 export function filterByFields<T>(items: T[], selector: FieldSelector): T[] {
-	if (!selector) {
-		return items;
-	}
 	return items.filter((item) => fieldSelectorMatches(item, selector));
 }
 
