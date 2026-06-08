@@ -87,11 +87,11 @@ export class PodManager {
 	}
 
 	// Models kubernetes/pkg/kubelet/pod/pod_manager.go GetPodsAndMirrorPods.
-	getPodsAndMirrorPods(): {
-		allPods: V1Pod[];
-		allMirrorPods: V1Pod[];
-		orphanedMirrorPodFullnames: string[];
-	} {
+	getPodsAndMirrorPods(): [
+		allPods: V1Pod[],
+		allMirrorPods: V1Pod[],
+		orphanedMirrorPodFullnames: string[],
+	] {
 		const allPods = podsMapToPods(this.podByUid);
 		const allMirrorPods = mirrorPodsMapToMirrorPods(this.mirrorPodByUid);
 		const orphanedMirrorPodFullnames: string[] = [];
@@ -101,7 +101,7 @@ export class PodManager {
 				orphanedMirrorPodFullnames.push(podFullName);
 			}
 		}
-		return { allPods, allMirrorPods, orphanedMirrorPodFullnames };
+		return [allPods, allMirrorPods, orphanedMirrorPodFullnames];
 	}
 
 	// Models kubernetes/pkg/kubelet/pod/pod_manager.go GetStaticPodToMirrorPodMap.

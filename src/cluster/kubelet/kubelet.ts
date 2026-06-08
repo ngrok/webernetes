@@ -1367,36 +1367,45 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 		this.containerDeletor.deleteContainersInPod(exitedContainerID, podStatus, removeAll);
 	}
 
+	// Models kubernetes/pkg/kubelet/kubelet.go Kubelet.PrepareDynamicResources.
 	prepareDynamicResources(_ctx: context.Context, _pod: V1Pod): undefined {
 		return undefined;
 	}
 
+	// Models kubernetes/pkg/kubelet/kubelet.go Kubelet.UnprepareDynamicResources.
 	unprepareDynamicResources(_ctx: context.Context, _pod: V1Pod): undefined {
 		return undefined;
 	}
 
+	// Models kubernetes/pkg/kubelet/kubelet.go Kubelet.RequestPodReinspect.
 	requestPodReinspect(podUID: string): void {
 		this.pleg.requestReinspect(podUID);
 	}
 
+	// Models kubernetes/pkg/kubelet/kubelet.go Kubelet.RequestPodRelist.
 	requestPodRelist(podUID: string): void {
 		this.pleg.requestRelist(podUID);
 	}
 
+	// Models kubernetes/pkg/kubelet/kubelet.go Kubelet.OnPodSandboxReady.
 	onPodSandboxReady(_ctx: context.Context, _pod: V1Pod): undefined {
 		return undefined;
 	}
 
 	// Models kubernetes/pkg/kubelet/kubelet_pods.go HandlePodCleanups.
 	async handlePodCleanups(ctx: context.Context): Promise<Error | undefined> {
-		const {
-			allPods,
-			allMirrorPods: mirrorPods,
-			orphanedMirrorPodFullnames,
-		} = this.podManager.getPodsAndMirrorPods();
+		const [allPods, _, orphanedMirrorPodFullnames] = this.podManager.getPodsAndMirrorPods();
 
 		// Stop the workers for terminated pods not in the config source
 		const workingPods = await this.podWorkers.syncKnownPods(allPods);
+
+		const allPodsByUid = new Set<string>();
+		for (const pod of allPods) {
+			const uid = pod.metadata?.uid;
+			if (uid) {
+				allPodsByUid.add(uid);
+			}
+		}
 
 		// Identify the set of pods that have workers, which should be all pods
 		// from config that are not terminated, as well as any terminating pods
@@ -1425,13 +1434,7 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 		this.probeManager.cleanupPods(possiblyRunningPods);
 
 		// Remove orphaned pod statuses not in the total list of known config pods
-		this.statusManager.removeOrphanedStatuses(
-			new Set(
-				[...allPods, ...mirrorPods]
-					.map((pod) => pod.metadata?.uid)
-					.filter((uid): uid is string => uid !== undefined),
-			),
-		);
+		this.statusManager.removeOrphanedStatuses(allPodsByUid);
 
 		// Kubernetes removes allocation manager state, user namespaces, pod dirs,
 		// volumes, and cgroups here. Those subsystems are outside the simulator's
@@ -1463,7 +1466,6 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 				updateType: "create",
 				pod,
 				mirrorPod,
-				startTime: this.clock.now(),
 			});
 			workingPods.set(uid, {
 				state: "SyncPod",
@@ -1481,7 +1483,6 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 			await this.podWorkers.updatePod(ctx, {
 				updateType: "kill",
 				pod,
-				startTime: this.clock.now(),
 			});
 		}
 
@@ -1496,7 +1497,6 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 					killPodOptions: {
 						podTerminationGracePeriodSecondsOverride: 1,
 					},
-					startTime: this.clock.now(),
 				});
 
 				// the running pod is now known as well
