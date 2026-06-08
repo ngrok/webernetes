@@ -1250,6 +1250,9 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 	async handlePodUpdates(ctx: context.Context, pods: V1Pod[]): Promise<void> {
 		const start = this.clock.now();
 		for (const pod of pods) {
+			// Upstream uses oldPod in some vertical scaling code paths that we don't
+			// have.
+			const _oldPod = this.podManager.getPodByUid(pod.metadata?.uid ?? "");
 			this.podManager.updatePod(pod);
 			const [resolvedPod, mirrorPod, wasMirror] = this.podManager.getPodAndMirrorPod(pod);
 			if (wasMirror && !resolvedPod) {
