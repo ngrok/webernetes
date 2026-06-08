@@ -4,6 +4,8 @@
 import { expect, it } from "vitest";
 import { newFakeRecorder } from "../../client-go/tools/record/fake";
 import { newContainerStatus } from "../../client";
+import { Set as LabelSet } from "../../apimachinery/pkg/labels/labels";
+import type { Selector } from "../../apimachinery/pkg/labels/selector";
 import type {
 	V1Container,
 	V1ContainerStatus,
@@ -280,8 +282,11 @@ function buildService(
 class testServiceLister implements ServiceLister {
 	constructor(private readonly services: V1Service[] = []) {}
 
-	async list(): Promise<[services: V1Service[], err: Error | undefined]> {
-		return [this.services, undefined];
+	async list(selector: Selector): Promise<[services: V1Service[], err: Error | undefined]> {
+		return [
+			this.services.filter((service) => selector.matches(new LabelSet(service.metadata?.labels))),
+			undefined,
+		];
 	}
 }
 

@@ -1,5 +1,6 @@
 import type { V1Node, V1Pod, V1PodSpec } from "../../client";
 import { KubeConfig } from "../../client";
+import { Set as LabelSet } from "../../apimachinery/pkg/labels/labels";
 import { Clock } from "../../clock";
 import { Channel } from "../../go/channel";
 import * as context from "../../go/context";
@@ -468,12 +469,15 @@ export function newTestKubeletWithImageList(
 			resolverConfig: "",
 		}),
 		serviceLister: {
-			list: async () => [[], undefined],
+			list: async (_selector) => [[], undefined],
 		},
 		serviceHasSynced: () => true,
 		nodeLister: {
 			get: async (name) => [name === testKubeletHostname ? node : undefined, undefined],
-			list: async () => [[node], undefined],
+			list: async (selector) => [
+				[node].filter((candidate) => selector.matches(new LabelSet(candidate.metadata?.labels))),
+				undefined,
+			],
 		},
 		nodeHasSynced: () => true,
 		cachedNode: node,

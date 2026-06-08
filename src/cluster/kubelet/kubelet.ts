@@ -107,6 +107,8 @@ import {
 	isDNS1123Label,
 	isDNS1123Subdomain,
 } from "../../apimachinery/pkg/util/validation/validation";
+import { Set as LabelSet } from "../../apimachinery/pkg/labels/labels";
+import { everything, type Selector } from "../../apimachinery/pkg/labels/selector";
 import { getNodeHostIPs } from "../../util/node";
 import { isIPv4, isIPv6, parseIPSloppy } from "../../utils/net";
 import { untilWithContext } from "../../apimachinery/pkg/util/wait/backoff";
@@ -431,21 +433,26 @@ export function newMainKubelet(
 
 // Models kubernetes/pkg/kubelet/kubelet.go serviceLister.
 export interface ServiceLister {
-	list(): Promise<[services: V1Service[], err: Error | undefined]>;
+	list(selector: Selector): Promise<[services: V1Service[], err: Error | undefined]>;
 }
 
 // Models kubernetes/pkg/kubelet/kubelet.go nodeLister.
 export interface NodeLister {
 	get(name: string): Promise<[node: V1Node | undefined, err: Error | undefined]>;
-	list(): Promise<[nodes: V1Node[], err: Error | undefined]>;
+	list(selector: Selector): Promise<[nodes: V1Node[], err: Error | undefined]>;
 }
 
 function newAPIServiceLister(kubeClient: KubeClient): ServiceLister {
 	return {
-		async list() {
+		async list(selector) {
 			try {
 				const services = await kubeClient.corev1.listServiceForAllNamespaces();
-				return [services.items, undefined];
+				return [
+					services.items.filter((service) =>
+						selector.matches(new LabelSet(service.metadata?.labels)),
+					),
+					undefined,
+				];
 			} catch (error) {
 				return [[], error instanceof Error ? error : new Error(String(error))];
 			}
@@ -463,10 +470,13 @@ function newAPINodeLister(kubeClient: KubeClient): NodeLister {
 				return [undefined, error instanceof Error ? error : new Error(String(error))];
 			}
 		},
-		async list() {
+		async list(selector) {
 			try {
 				const nodes = await kubeClient.corev1.listNode();
-				return [nodes.items, undefined];
+				return [
+					nodes.items.filter((node) => selector.matches(new LabelSet(node.metadata?.labels))),
+					undefined,
+				];
 			} catch (error) {
 				return [[], error instanceof Error ? error : new Error(String(error))];
 			}
@@ -1730,7 +1740,7 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 		if (!this.serviceLister) {
 			return [m, undefined];
 		}
-		const [services, servicesErr] = await this.serviceLister.list();
+		const [services, servicesErr] = await this.serviceLister.list(everything());
 		if (servicesErr) {
 			return [m, new Error("failed to list services when setting up env vars")];
 		}
@@ -1785,12 +1795,16 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 		if (serviceEnvErr) {
 			return [result, serviceEnvErr];
 		}
+
+		// Upstream maps ConfigMap and Secret env references here but we don't
+		// support that yet.
+
 		const tmpEnv = new Map<string, string>();
-		const mapping = expansion.mappingFuncFor(tmpEnv, serviceEnv);
+		const mappingFunc = expansion.mappingFuncFor(tmpEnv, serviceEnv);
 		for (const envVar of container.env ?? []) {
 			let runtimeVal = envVar.value ?? "";
 			if (runtimeVal.length > 0) {
-				runtimeVal = expansion.expand(runtimeVal, mapping);
+				runtimeVal = expansion.expand(runtimeVal, mappingFunc);
 			} else if (envVar.valueFrom?.fieldRef) {
 				const [fieldValue, fieldErr] = this.podFieldSelectorRuntimeValue(
 					ctx,
