@@ -1627,21 +1627,23 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 	generatePodHostNameAndDomain(
 		pod: V1Pod,
 	): [hostname: string, hostDomain: string, err: Error | undefined] {
-		const namespace = pod.metadata?.namespace ?? "default";
+		const clusterDomain = this.dnsConfigurer.clusterDomain;
+		const namespace = pod.metadata?.namespace ?? "";
 		const podName = pod.metadata?.name ?? "";
-		const hostnameOverride = pod.spec?.hostnameOverride;
-		if (hostnameOverride !== undefined) {
-			const validationErrors = isDNS1123Subdomain(hostnameOverride);
+
+		if (pod.spec?.hostnameOverride !== undefined) {
+			const hostname = pod.spec.hostnameOverride;
+			const validationErrors = isDNS1123Subdomain(hostname);
 			if (validationErrors.length !== 0) {
 				return [
 					"",
 					"",
 					new Error(
-						`pod HostnameOverride "${hostnameOverride}" is not a valid DNS subdomain: ${validationErrors.join(";")}`,
+						`pod HostnameOverride "${hostname}" is not a valid DNS subdomain: ${validationErrors.join(";")}`,
 					),
 				];
 			}
-			const [truncatedHostname, err] = truncatePodHostnameIfNeeded(podName, hostnameOverride);
+			const [truncatedHostname, err] = truncatePodHostnameIfNeeded(podName, hostname);
 			if (err) {
 				return ["", "", err];
 			}
@@ -1649,42 +1651,41 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 		}
 
 		let hostname = podName;
-		if ((pod.spec?.hostname ?? "").length > 0) {
-			const podHostname = pod.spec?.hostname ?? "";
-			const validationErrors = isDNS1123Label(podHostname);
+		if (pod.spec?.hostname && pod.spec.hostname.length > 0) {
+			const validationErrors = isDNS1123Label(pod.spec.hostname);
 			if (validationErrors.length !== 0) {
 				return [
 					"",
 					"",
 					new Error(
-						`pod Hostname "${podHostname}" is not a valid DNS label: ${validationErrors.join(";")}`,
+						`pod Hostname "${pod.spec.hostname}" is not a valid DNS label: ${validationErrors.join(";")}`,
 					),
 				];
 			}
-			hostname = podHostname;
-		}
-		const [truncatedHostname, hostnameErr] = truncatePodHostnameIfNeeded(podName, hostname);
-		if (hostnameErr) {
-			return ["", "", hostnameErr];
+			hostname = pod.spec.hostname;
 		}
 
-		const clusterDomain = this.dnsConfigurer.clusterDomain;
+		const [resolvedHostname, err] = truncatePodHostnameIfNeeded(podName, hostname);
+		if (err) {
+			return ["", "", err];
+		}
+		hostname = resolvedHostname;
+
 		let hostDomain = "";
-		if ((pod.spec?.subdomain ?? "").length > 0) {
-			const podSubdomain = pod.spec?.subdomain ?? "";
-			const validationErrors = isDNS1123Label(podSubdomain);
+		if (pod.spec?.subdomain && pod.spec.subdomain.length > 0) {
+			const validationErrors = isDNS1123Label(pod.spec.subdomain);
 			if (validationErrors.length !== 0) {
 				return [
 					"",
 					"",
 					new Error(
-						`pod Subdomain "${podSubdomain}" is not a valid DNS label: ${validationErrors.join(";")}`,
+						`pod Subdomain "${pod.spec.subdomain}" is not a valid DNS label: ${validationErrors.join(";")}`,
 					),
 				];
 			}
-			hostDomain = `${podSubdomain}.${namespace}.svc.${clusterDomain}`;
+			hostDomain = `${pod.spec.subdomain}.${namespace}.svc.${clusterDomain}`;
 		}
-		return [truncatedHostname, hostDomain, undefined];
+		return [hostname, hostDomain, undefined];
 	}
 
 	// Models kubernetes/pkg/kubelet/kubelet_pods.go GenerateRunContainerOptions.
