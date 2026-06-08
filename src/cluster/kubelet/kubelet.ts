@@ -15,7 +15,7 @@ import * as time from "../../go/time";
 import * as expansion from "../../third_party/forked/golang/expansion";
 import type { Backoff } from "../../client-go/util/flowcontrol/backoff";
 import { newBackOff } from "../../client-go/util/flowcontrol/backoff";
-import type { DnsConfig, ExecResult, ImageManagerService, RuntimeService } from "../cri";
+import type { DnsConfig, ImageManagerService, RuntimeService } from "../cri";
 import {
 	allContainersCouldRestart,
 	containerShouldRestart,
@@ -24,6 +24,8 @@ import {
 import {
 	convertPodStatusToRunningPod,
 	errPodNotFound,
+	findContainerByName,
+	findPod,
 	isHostNetworkPod,
 	newContainerGC,
 	newRuntimeCache,
@@ -35,6 +37,7 @@ import {
 } from "./container";
 import type {
 	CommandRunner,
+	Container,
 	EnvVar,
 	Pod as RuntimePod,
 	PodStatus as PodRuntimeStatus,
@@ -492,7 +495,8 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 	private readonly podConfig: PodConfig;
 	// Package-visible for upstream-parity tests that mirror kubelet_test.go.
 	sourcesReady: SourcesReady;
-	private readonly runtimeService: RuntimeService | undefined;
+	// Package-visible for Cluster fake exec adapter.
+	readonly runtimeService: RuntimeService | undefined;
 	private readonly imageService: ImageManagerService | undefined;
 	// Package-visible for upstream-parity tests and Server wiring that mirror kubelet_test.go.
 	containerRuntime!: KubeletRuntime;
@@ -1583,45 +1587,40 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 		return terminalPodsToDelete;
 	}
 
-	async exec(
-		namespace: string,
-		podName: string,
-		containerName: string | undefined,
-		argv: string[],
-	): Promise<ExecResult> {
-		const [runtimePods, runtimePodsErr] = await this.containerRuntime.getPods(this.ctx, false);
-		if (runtimePodsErr) {
-			throw runtimePodsErr;
-		}
-		const runtimePod = runtimePods.find(
-			(pod) => pod.namespace === namespace && pod.name === podName,
-		);
-		if (!runtimePod) {
-			throw new Error(`pod ${namespace}/${podName} is not running on node ${this.nodeName}`);
-		}
-		const container = containerName
-			? runtimePod.containers.find((candidate) => candidate.name === containerName)
-			: runtimePod.containers.length === 1
-				? runtimePod.containers[0]
-				: undefined;
-		if (!container) {
-			throw new Error(
-				containerName
-					? `container ${containerName} not found in pod ${namespace}/${podName}`
-					: `container name is required for pod ${namespace}/${podName}`,
-			);
-		}
-		if (!this.runtimeService) {
-			throw new Error("remote runtime service is not configured");
-		}
-		const [response, err] = await this.runtimeService.execSync(this.ctx, container.id.id, argv);
+	// Models kubernetes/pkg/kubelet/kubelet_pods.go Kubelet.findContainer.
+	async findContainer(
+		ctx: context.Context,
+		podFullName: string,
+		podUID: string,
+		containerName: string,
+	): Promise<[container: Container | undefined, err: Error | undefined]> {
+		const [runtimePods, err] = await this.containerRuntime.getPods(ctx, false);
 		if (err) {
-			throw err;
+			return [undefined, err];
 		}
-		if (!response) {
-			throw new Error("execSync returned no response");
+		podUID = this.podManager.translatePodUid(podUID);
+		const pod = findPod(runtimePods, podFullName, podUID);
+		return [findContainerByName(pod, containerName), undefined];
+	}
+
+	// Models kubernetes/pkg/kubelet/kubelet_pods.go Kubelet.RunInContainer.
+	async runInContainer(
+		ctx: context.Context,
+		podFullName: string,
+		podUID: string,
+		containerName: string,
+		cmd: string[],
+	): Promise<[output: string, err: Error | undefined]> {
+		const [container, err] = await this.findContainer(ctx, podFullName, podUID, containerName);
+		if (err) {
+			return ["", err];
 		}
-		return response;
+		if (!container) {
+			return ["", new Error(`container not found (${JSON.stringify(containerName)})`)];
+		}
+		// Upstream passes timeout 0. The simulator's command runner treats
+		// undefined as no timeout; 0 would time out immediately.
+		return await this.runner.runInContainer(ctx, container.id, cmd, undefined);
 	}
 
 	// Models kubernetes/pkg/kubelet/kubelet_pods.go GeneratePodHostNameAndDomain.

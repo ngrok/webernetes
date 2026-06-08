@@ -19,6 +19,7 @@ import { Scheduler } from "./images/scheduler";
 import { type NodePortRange, ServiceStore } from "./storage";
 import { applyResources } from "./apply";
 import type { KubeletConfiguration } from "./kubelet/apis/config";
+import { buildPodFullName } from "./kubelet/container";
 
 const DEFAULT_NODE_PORT_RANGE: NodePortRange = {
 	from: 30000,
@@ -246,7 +247,42 @@ export class Cluster {
 		if (!server) {
 			throw new Error(`node ${nodeName} not found`);
 		}
-		return await server.kubelet.exec(namespace, podName, containerName, argv);
+
+		const podFullName = buildPodFullName(podName, namespace);
+		const resolvedContainerName =
+			containerName ??
+			((pod.spec?.containers?.length ?? 0) === 1 ? pod.spec?.containers?.[0]?.name : undefined);
+		if (!resolvedContainerName) {
+			throw new Error(`container name is required for pod ${namespace}/${podName}`);
+		}
+
+		const [container, findErr] = await server.kubelet.findContainer(
+			this.ctx,
+			podFullName,
+			pod.metadata?.uid ?? "",
+			resolvedContainerName,
+		);
+		if (findErr) {
+			throw findErr;
+		}
+		if (!container) {
+			throw new Error(`container not found (${JSON.stringify(resolvedContainerName)})`);
+		}
+		if (!server.kubelet.runtimeService) {
+			throw new Error("remote runtime service is not configured");
+		}
+		const [response, err] = await server.kubelet.runtimeService.execSync(
+			this.ctx,
+			container.id.id,
+			argv,
+		);
+		if (err) {
+			throw err;
+		}
+		if (!response) {
+			throw new Error("execSync returned no response");
+		}
+		return response;
 	}
 
 	// Mimics kubectl's client-side apply for object literals. This intentionally
