@@ -1,3 +1,8 @@
+import {
+	isLabelValue,
+	labelValueMaxLength as contentLabelValueMaxLength,
+} from "../../api/validate/content/kube";
+
 // Models staging/src/k8s.io/apimachinery/pkg/util/validation/validation.go dns1123LabelFmt.
 const dns1123LabelFmt = "[a-z0-9]([-a-z0-9]*[a-z0-9])?";
 const dns1123LabelRegexp = new RegExp(`^${dns1123LabelFmt}$`);
@@ -56,3 +61,9 @@ export function isDNS1123Subdomain(value: string): string[] {
 	}
 	return errors;
 }
+
+// Models staging/src/k8s.io/apimachinery/pkg/util/validation/validation.go LabelValueMaxLength.
+export const labelValueMaxLength = contentLabelValueMaxLength;
+
+// Models staging/src/k8s.io/apimachinery/pkg/util/validation/validation.go IsValidLabelValue.
+export const isValidLabelValue = isLabelValue;
