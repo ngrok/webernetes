@@ -1,8 +1,31 @@
 import { expect, it } from "vitest";
 
+import { select } from "../go/channel";
 import { browser } from "../test/describe";
 import { waitFor } from "../test/wait";
 import { Cluster } from "./cluster";
+import type { Kubelet } from "./kubelet";
+import { ProbeManagerImpl } from "./kubelet/prober";
+
+async function probeResultChannelsAreOpen(kubelet: Kubelet): Promise<boolean> {
+	const probeManager = kubelet.probeManager;
+	if (!(probeManager instanceof ProbeManagerImpl)) {
+		throw new Error("expected kubelet probe manager implementation");
+	}
+	for (const updates of [
+		probeManager.livenessManager.updates(),
+		probeManager.readinessManager.updates(),
+		probeManager.startupManager.updates(),
+	]) {
+		const open = await select()
+			.case(updates, ({ ok }) => ok)
+			.default(() => true);
+		if (!open) {
+			return false;
+		}
+	}
+	return true;
+}
 
 browser.describe("Cluster nodes", () => {
 	it("publishes server IP addresses on node status", async () => {
@@ -36,7 +59,7 @@ browser.describe("Cluster shutdown", () => {
 
 			for (const server of cluster.servers) {
 				expect(server.kubelet.isSyncLoopExited()).toBe(true);
-				await expect(server.kubelet.probeResultChannelsAreOpen()).resolves.toBe(true);
+				await expect(probeResultChannelsAreOpen(server.kubelet)).resolves.toBe(true);
 			}
 		} finally {
 			await cluster.close();
@@ -84,7 +107,7 @@ browser.describe("Cluster shutdown", () => {
 			for (const server of cluster.servers) {
 				expect(server.kubelet.isSyncLoopExited()).toBe(true);
 				expect(server.kubelet.probeWorkerCount()).toBe(0);
-				await expect(server.kubelet.probeResultChannelsAreOpen()).resolves.toBe(true);
+				await expect(probeResultChannelsAreOpen(server.kubelet)).resolves.toBe(true);
 				expect(server.runtime.sandboxCount()).toBe(0);
 				expect(server.runtime.containerCount()).toBe(0);
 				expect(server.runtime.processCount()).toBe(0);

@@ -1851,8 +1851,8 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 			return ["", convertErr];
 		}
 
-		const sortedPodIPs = this.sortPodIPs([...podIPs]);
-		const selectedPodIP = sortedPodIPs[0] ?? podIP;
+		podIPs = this.sortPodIPs([...podIPs]);
+		podIP = podIPs[0] ?? podIP;
 		switch (internalFieldPath) {
 			case "spec.nodeName":
 				return [pod.spec?.nodeName ?? "", undefined];
@@ -1867,14 +1867,14 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 				return [hostIPs.join(","), err];
 			}
 			case "status.podIP":
-				return [selectedPodIP, undefined];
+				return [podIP, undefined];
 			case "status.podIPs":
-				return [sortedPodIPs.join(","), undefined];
+				return [podIPs.join(","), undefined];
 		}
 		return extractFieldPathAsString(pod, internalFieldPath);
 	}
 
-	// Models kubernetes/pkg/kubelet/network/dns/dns.go Configurer.GetPodDNS.
+	// Models kubernetes/pkg/kubelet/kubelet_network.go Kubelet.GetPodDNS.
 	async getPodDNS(
 		ctx: context.Context,
 		pod: V1Pod,
@@ -1882,43 +1882,32 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 		return await this.dnsConfigurer.getPodDNS(ctx, pod);
 	}
 
+	// Models kubernetes/pkg/kubelet/kubelet_pods.go Kubelet.GetPodCgroupParent.
 	getPodCgroupParent(_pod: V1Pod): string {
 		return "";
 	}
 
+	// Models kubernetes/pkg/kubelet/kubelet_getters.go Kubelet.GetPodDir.
 	getPodDir(podUID: string): string {
 		return `/pods/${podUID}`;
 	}
 
+	// Models kubernetes/pkg/kubelet/kubelet_getters.go Kubelet.getPodContainerDir.
 	private getPodContainerDir(podUID: string, containerName: string): string {
 		return `${this.getPodDir(podUID)}/containers/${containerName}`;
 	}
 
+	// Models kubernetes/pkg/kubelet/kubelet_getters.go Kubelet.GetExtraSupplementalGroupsForPod.
 	getExtraSupplementalGroupsForPod(_pod: V1Pod): number[] {
 		return [];
 	}
 
+	// Models kubernetes/pkg/kubelet/kubelet_pods.go Kubelet.GetOrCreateUserNamespaceMappings.
 	getOrCreateUserNamespaceMappings(
 		_pod: V1Pod | undefined,
 		_runtimeHandler: string,
 	): [userNamespace: undefined, err: undefined] {
 		return [undefined, undefined];
-	}
-
-	async probeResultChannelsAreOpen(): Promise<boolean> {
-		for (const updates of [
-			this.livenessManager.updates(),
-			this.readinessManager.updates(),
-			this.startupManager.updates(),
-		]) {
-			const open = await select()
-				.case(updates, ({ ok }) => ok)
-				.default(() => true);
-			if (!open) {
-				return false;
-			}
-		}
-		return true;
 	}
 
 	// Models kubernetes/pkg/kubelet/kubelet_pods.go generateAPIPodStatus.
