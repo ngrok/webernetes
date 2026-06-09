@@ -1,3 +1,7 @@
+/*!
+ * SPDX-License-Identifier: Apache-2.0
+ * Derived from Kubernetes, translated and modified for Webernetes.
+ */
 import { errCommandTimedOut } from "../../cri-client/pkg";
 import { isExitError } from "../../kubelet/container";
 import type { ProbeResult } from "../probe";

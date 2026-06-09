@@ -1,3 +1,7 @@
+/*!
+ * SPDX-License-Identifier: Apache-2.0
+ * Derived from Kubernetes, translated and modified for Webernetes.
+ */
 import { expect, it } from "vitest";
 import { browser } from "../../../../../test/describe";
 import { isDNS1123Label, isDNS1123Subdomain, isDNS1123SubdomainCaseless } from "./dns";

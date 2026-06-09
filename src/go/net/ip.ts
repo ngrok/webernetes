@@ -1,3 +1,7 @@
+/*!
+ * SPDX-License-Identifier: Apache-2.0
+ * Derived from Kubernetes, translated and modified for Webernetes.
+ */
 // Models vendor/k8s.io/utils/internal/third_party/forked/golang/net/ip.go ParseIP.
 export function parseIP(value: string): number[] | undefined {
 	for (const char of value) {

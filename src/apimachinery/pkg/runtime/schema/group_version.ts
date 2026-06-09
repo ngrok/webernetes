@@ -1,3 +1,7 @@
+/*!
+ * SPDX-License-Identifier: Apache-2.0
+ * Derived from Kubernetes, translated and modified for Webernetes.
+ */
 // Models staging/src/k8s.io/apimachinery/pkg/runtime/schema/group_version.go GroupKind.
 export class GroupKind {
 	constructor(

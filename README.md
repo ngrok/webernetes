@@ -4,6 +4,10 @@ Webernetes is a browser-friendly simulation of selected Kubernetes components.
 This map focuses on the current simulator implementation: substantial components
 owned by the kubelet, then the central subsystems those components own or create.
 
+Webernetes is not affiliated with, endorsed by, or sponsored by the Kubernetes
+project, the Cloud Native Computing Foundation, or The Linux Foundation.
+Kubernetes is a trademark of The Linux Foundation.
+
 ## Kubelet Component Map
 
 Nodes link to the local TypeScript implementation and, where the implementation

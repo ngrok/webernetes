@@ -1,3 +1,7 @@
+/*!
+ * SPDX-License-Identifier: Apache-2.0
+ * Derived from Kubernetes, translated and modified for Webernetes.
+ */
 import { Channel, select, type ChannelReceive } from "../../../go/channel";
 import * as context from "../../../go/context";
 import { RWMutex } from "../../../go/sync/mutex";

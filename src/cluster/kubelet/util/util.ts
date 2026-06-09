@@ -1,3 +1,7 @@
+/*!
+ * SPDX-License-Identifier: Apache-2.0
+ * Derived from Kubernetes, translated and modified for Webernetes.
+ */
 import type { V1Container, V1ContainerStatus } from "../../../client";
 
 // Models kubernetes/pkg/kubelet/util/util.go GetContainerByIndex.

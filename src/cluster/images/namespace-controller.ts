@@ -1,3 +1,7 @@
+/*!
+ * SPDX-License-Identifier: Apache-2.0
+ * Derived from Kubernetes, translated and modified for Webernetes.
+ */
 import * as k8s from "../../client";
 import { isNotFoundError } from "../../client/errors";
 import { retryConflicts } from "../../retry";

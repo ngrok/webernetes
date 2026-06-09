@@ -1,3 +1,7 @@
+/*!
+ * SPDX-License-Identifier: Apache-2.0
+ * Derived from Kubernetes, translated and modified for Webernetes.
+ */
 import type { V1Node, V1Pod, V1PodSpec } from "../../client";
 import { KubeConfig } from "../../client";
 import { Set as LabelSet } from "../../apimachinery/pkg/labels/labels";

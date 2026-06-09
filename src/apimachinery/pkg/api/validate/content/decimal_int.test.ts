@@ -1,3 +1,7 @@
+/*!
+ * SPDX-License-Identifier: Apache-2.0
+ * Derived from Kubernetes, translated and modified for Webernetes.
+ */
 // oxlint-disable jest/no-conditional-expect
 import { expect, it } from "vitest";
 import { browser } from "../../../../../test/describe";

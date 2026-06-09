@@ -1,3 +1,7 @@
+/*!
+ * SPDX-License-Identifier: Apache-2.0
+ * Derived from Kubernetes, translated and modified for Webernetes.
+ */
 import { expect, it, vi } from "vitest";
 
 import type { ListOptions } from "../../../apimachinery/pkg/apis/meta/v1/types";

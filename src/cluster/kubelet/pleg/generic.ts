@@ -1,3 +1,7 @@
+/*!
+ * SPDX-License-Identifier: Apache-2.0
+ * Derived from Kubernetes, translated and modified for Webernetes.
+ */
 import type { Clock } from "../../../clock";
 import { Channel, select, type ReadOnlyChannel } from "../../../go/channel";
 import type * as context from "../../../go/context";

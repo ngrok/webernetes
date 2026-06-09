@@ -1,3 +1,7 @@
+/*!
+ * SPDX-License-Identifier: Apache-2.0
+ * Derived from Kubernetes, translated and modified for Webernetes.
+ */
 // Models Go src/sync/waitgroup.go WaitGroup.
 export class WaitGroup {
 	private counter = 0;

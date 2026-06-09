@@ -1,3 +1,7 @@
+/*!
+ * SPDX-License-Identifier: Apache-2.0
+ * Derived from Kubernetes, translated and modified for Webernetes.
+ */
 /* eslint-disable jest/no-conditional-expect, jest/valid-expect */
 import { expect, it } from "vitest";
 

@@ -1,3 +1,7 @@
+/*!
+ * SPDX-License-Identifier: Apache-2.0
+ * Derived from Kubernetes, translated and modified for Webernetes.
+ */
 // Models staging/src/k8s.io/apimachinery/pkg/api/validate/content/path.go pathSegmentNameMayNotBe.
 const pathSegmentNameMayNotBe = [".", ".."];
 

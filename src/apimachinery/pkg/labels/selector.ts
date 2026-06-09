@@ -1,3 +1,7 @@
+/*!
+ * SPDX-License-Identifier: Apache-2.0
+ * Derived from Kubernetes, translated and modified for Webernetes.
+ */
 import { isLabelKey } from "../api/validate/content/kube";
 import type { Operator } from "../selection/operator";
 import {

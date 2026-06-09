@@ -1,3 +1,7 @@
+/*!
+ * SPDX-License-Identifier: Apache-2.0
+ * Derived from Kubernetes, translated and modified for Webernetes.
+ */
 import { equals, notEquals } from "../selection/operator";
 import type { Fields, Set } from "./fields";
 import type { Requirements } from "./requirements";

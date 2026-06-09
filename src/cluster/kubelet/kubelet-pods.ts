@@ -1,3 +1,7 @@
+/*!
+ * SPDX-License-Identifier: Apache-2.0
+ * Derived from Kubernetes, translated and modified for Webernetes.
+ */
 import type { V1ContainerStatus, V1Pod, V1PodStatus } from "../../client";
 import {
 	containerShouldRestart,

@@ -1,3 +1,7 @@
+/*!
+ * SPDX-License-Identifier: Apache-2.0
+ * Derived from Kubernetes, translated and modified for Webernetes.
+ */
 // Models kubernetes/pkg/kubelet/types/pod_status.go PodConditionsByKubelet.
 export const podConditionsByKubelet = [
 	"PodScheduled",

@@ -1,3 +1,7 @@
+/*!
+ * SPDX-License-Identifier: Apache-2.0
+ * Derived from Kubernetes, translated and modified for Webernetes.
+ */
 // Models staging/src/k8s.io/apimachinery/pkg/util/sets/string.go String.
 export class StringSet extends globalThis.Set<string> {
 	constructor(items: string[] = []) {

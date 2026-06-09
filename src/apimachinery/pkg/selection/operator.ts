@@ -1,3 +1,7 @@
+/*!
+ * SPDX-License-Identifier: Apache-2.0
+ * Derived from Kubernetes, translated and modified for Webernetes.
+ */
 // Models staging/src/k8s.io/apimachinery/pkg/selection/operator.go Operator.
 export type Operator = "!" | "=" | "==" | "in" | "!=" | "notin" | "exists" | "gt" | "lt";
 

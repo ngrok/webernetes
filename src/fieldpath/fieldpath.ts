@@ -1,3 +1,7 @@
+/*!
+ * SPDX-License-Identifier: Apache-2.0
+ * Derived from Kubernetes, translated and modified for Webernetes.
+ */
 import type { V1Pod } from "../client";
 import { isQualifiedName } from "../apimachinery/pkg/api/validate/content/kube";
 import { appendQuote } from "../go/strconv";

@@ -1,3 +1,7 @@
+/*!
+ * SPDX-License-Identifier: Apache-2.0
+ * Derived from Kubernetes, translated and modified for Webernetes.
+ */
 import type { KubernetesObject } from "../../../client/types";
 import { Channel, type ReadOnlyChannel } from "../../../go/channel";
 import { newCond } from "../../../go/sync/cond";

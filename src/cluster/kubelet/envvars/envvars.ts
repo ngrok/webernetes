@@ -1,3 +1,7 @@
+/*!
+ * SPDX-License-Identifier: Apache-2.0
+ * Derived from Kubernetes, translated and modified for Webernetes.
+ */
 import type { V1EnvVar, V1Service } from "../../../client";
 import { joinHostPort } from "../../../go/net";
 import { isServiceIPSet } from "../../apis/core/v1/helper/helpers";

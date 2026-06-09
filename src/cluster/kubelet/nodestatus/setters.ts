@@ -1,3 +1,7 @@
+/*!
+ * SPDX-License-Identifier: Apache-2.0
+ * Derived from Kubernetes, translated and modified for Webernetes.
+ */
 import type { V1Node, V1NodeDaemonEndpoints } from "../../../client";
 import { newNodeSystemInfo } from "../../../client";
 import { formatIP, isUnspecifiedIP } from "../../../go/net";

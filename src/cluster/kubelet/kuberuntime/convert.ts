@@ -1,3 +1,7 @@
+/*!
+ * SPDX-License-Identifier: Apache-2.0
+ * Derived from Kubernetes, translated and modified for Webernetes.
+ */
 import type { Image as ImageFromCRI, ImageSpec as ImageSpecFromCRI } from "../../cri";
 import type { ImageSpec } from "../container";
 

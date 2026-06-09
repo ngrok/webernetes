@@ -1,3 +1,7 @@
+/*!
+ * SPDX-License-Identifier: Apache-2.0
+ * Derived from Kubernetes, translated and modified for Webernetes.
+ */
 /* eslint-disable jest/expect-expect */
 import { it } from "vitest";
 import { Aggregate, newAggregate } from "../../../apimachinery/pkg/util/errors/errors";

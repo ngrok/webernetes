@@ -1,3 +1,7 @@
+/*!
+ * SPDX-License-Identifier: Apache-2.0
+ * Derived from Kubernetes, translated and modified for Webernetes.
+ */
 import { newLRU, type Cache } from "../../lru";
 import type { PodSyncResult } from "./container";
 

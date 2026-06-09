@@ -1,3 +1,7 @@
+/*!
+ * SPDX-License-Identifier: Apache-2.0
+ * Derived from Kubernetes, translated and modified for Webernetes.
+ */
 import type { V1Container, V1Pod, V1PodStatus, V1Probe } from "../../../client";
 import type { EventRecorder } from "../../../client-go/tools/record/event";
 import type { Clock } from "../../../clock";

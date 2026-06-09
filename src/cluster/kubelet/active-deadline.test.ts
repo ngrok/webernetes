@@ -1,3 +1,7 @@
+/*!
+ * SPDX-License-Identifier: Apache-2.0
+ * Derived from Kubernetes, translated and modified for Webernetes.
+ */
 import { expect, it } from "vitest";
 import type { V1Pod, V1PodSpec, V1PodStatus } from "../../client";
 import { newFakeRecorder } from "../../client-go/tools/record/fake";

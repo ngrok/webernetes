@@ -1,3 +1,7 @@
+/*!
+ * SPDX-License-Identifier: Apache-2.0
+ * Derived from Kubernetes, translated and modified for Webernetes.
+ */
 import * as context from "../../../../go/context";
 import { select } from "../../../../go/channel";
 import type { ConditionWithContextFunc } from "./delay";

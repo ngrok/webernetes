@@ -1,3 +1,7 @@
+/*!
+ * SPDX-License-Identifier: Apache-2.0
+ * Derived from Kubernetes, translated and modified for Webernetes.
+ */
 import type * as context from "../../../go/context";
 import { parseIP as parseIPSloppy } from "../../../go/net";
 import type { PodSandboxStatus } from "../../cri";

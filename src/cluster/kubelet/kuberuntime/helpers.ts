@@ -1,3 +1,7 @@
+/*!
+ * SPDX-License-Identifier: Apache-2.0
+ * Derived from Kubernetes, translated and modified for Webernetes.
+ */
 import type { V1Container, V1Pod } from "../../../client";
 import * as fnv from "../../../fnv";
 import type {

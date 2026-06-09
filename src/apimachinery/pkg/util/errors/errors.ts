@@ -1,3 +1,7 @@
+/*!
+ * SPDX-License-Identifier: Apache-2.0
+ * Derived from Kubernetes, translated and modified for Webernetes.
+ */
 import { newString } from "../sets/string";
 
 // Models staging/src/k8s.io/apimachinery/pkg/util/errors/errors.go MessageCountMap.

@@ -1,3 +1,7 @@
+/*!
+ * SPDX-License-Identifier: Apache-2.0
+ * Derived from Kubernetes, translated and modified for Webernetes.
+ */
 // Models staging/src/k8s.io/client-go/util/watchlist/watch_list.go unSupportedWatchListSemantics.
 export interface UnsupportedWatchListSemantics {
 	isWatchListSemanticsUnsupported(): boolean;
