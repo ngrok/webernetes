@@ -32,6 +32,7 @@ import {
 	networkReady,
 	PodStatusCache,
 	runtimeReady,
+	shouldAllContainersRestart,
 	type Runtime,
 	toAPIPod,
 } from "./container";
@@ -2182,6 +2183,7 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 		}
 
 		apiPodStatus.qosClass = getPodQOS(pod);
+		const podRestarting = shouldAllContainersRestart(pod, podStatus, oldPodStatus);
 		apiPodStatus.containerStatuses = this.convertToAPIContainerStatuses(
 			ctx,
 			pod,
@@ -2191,14 +2193,33 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 			undefined,
 			false,
 			false,
-			false,
+			podRestarting,
 		);
-		if ((pod.spec?.initContainers?.length ?? 0) > 0) {
-			apiPodStatus.initContainerStatuses = [];
-		}
-		if ((pod.spec?.ephemeralContainers?.length ?? 0) > 0) {
-			apiPodStatus.ephemeralContainerStatuses = [];
-		}
+		apiPodStatus.initContainerStatuses = this.convertToAPIContainerStatuses(
+			ctx,
+			pod,
+			podStatus,
+			oldPodStatus.initContainerStatuses ?? [],
+			pod.spec?.initContainers ?? [],
+			undefined,
+			(pod.spec?.initContainers?.length ?? 0) > 0,
+			true,
+			podRestarting,
+		);
+		const ecSpecs: V1Container[] = (pod.spec?.ephemeralContainers ?? []).map(
+			({ targetContainerName: _targetContainerName, ...container }) => container,
+		);
+		apiPodStatus.ephemeralContainerStatuses = this.convertToAPIContainerStatuses(
+			ctx,
+			pod,
+			podStatus,
+			oldPodStatus.ephemeralContainerStatuses ?? [],
+			ecSpecs,
+			undefined,
+			(pod.spec?.initContainers?.length ?? 0) > 0,
+			false,
+			podRestarting,
+		);
 		return apiPodStatus;
 	}
 
