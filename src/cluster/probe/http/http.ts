@@ -7,14 +7,14 @@ import { Channel, select } from "../../../go/channel";
 import * as context from "../../../go/context";
 import * as time from "../../../go/time";
 import * as http from "../../cni/http";
-import { NetworkError, type ClusterNetwork } from "../../cni";
+import { NetworkError, type ClusterNetwork, type FetchOrigin } from "../../cni";
 import type { ProbeResult } from "../probe";
 
 // Models kubernetes/pkg/probe/http/http.go maxRespBodyLength.
 const maxRespBodyLength = (10 * 1) << 10;
 
 export interface GetHTTPInterface {
-	do(ctx: context.Context, req: http.Request): Promise<http.Response>;
+	do(ctx: context.Context, origin: FetchOrigin, req: http.Request): Promise<http.Response>;
 }
 
 export class HTTPProber {
@@ -31,12 +31,13 @@ export class HTTPProber {
 
 	// Models kubernetes/pkg/probe/http/http.go Probe.
 	async probe(
+		origin: FetchOrigin,
 		req: http.Request,
 		timeoutMs: number,
 	): Promise<[ProbeResult, string, Error | undefined]> {
 		const [ctx, cancel] = context.withCancel(this.ctx);
 		const resultCh = new Channel<[ProbeResult, string, Error | undefined]>(1);
-		void doHTTPProbe(ctx, req, this.client).then(
+		void doHTTPProbe(ctx, origin, req, this.client).then(
 			(result) => resultCh.trySend(result),
 			(error) => {
 				resultCh.trySend([
@@ -68,12 +69,13 @@ export class HTTPProber {
 // Models kubernetes/pkg/probe/http/http.go DoHTTPProbe.
 export async function doHTTPProbe(
 	ctx: context.Context,
+	origin: FetchOrigin,
 	req: http.Request,
 	client: GetHTTPInterface,
 ): Promise<[ProbeResult, string, Error | undefined]> {
 	let res: http.Response;
 	try {
-		res = await client.do(ctx, req);
+		res = await client.do(ctx, origin, req);
 	} catch (error) {
 		if (
 			error instanceof NetworkError &&
@@ -100,8 +102,8 @@ class ClusterNetworkHTTPClient implements GetHTTPInterface {
 		readonly _followNonLocalRedirects: boolean,
 	) {}
 
-	async do(ctx: context.Context, req: http.Request): Promise<http.Response> {
-		return await this.network.fetch(ctx, req.url.toString(), {
+	async do(ctx: context.Context, origin: FetchOrigin, req: http.Request): Promise<http.Response> {
+		return await this.network.fetch(ctx, origin, req.url.toString(), {
 			method: req.method,
 			headers: headerEntries(req.header),
 			body: req.body,

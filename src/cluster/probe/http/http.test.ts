@@ -8,7 +8,7 @@ import { expect, it } from "vitest";
 import { Clock } from "../../../clock";
 import * as context from "../../../go/context";
 import { browser } from "../../../test/describe";
-import { ClusterNetwork } from "../../cni";
+import { ClusterNetwork, type FetchOrigin } from "../../cni";
 import * as http from "../../cni/http";
 import { PodSandboxInstance } from "../../cri";
 import type { ProbeResult } from "../probe";
@@ -16,6 +16,11 @@ import { doHTTPProbe, HTTPProber, type GetHTTPInterface } from "./http";
 import { formatURL, newProbeRequest } from "./request";
 
 const failureCode = -1;
+const testOrigin: FetchOrigin = {
+	apiVersion: "v1",
+	kind: "Pod",
+	metadata: { name: "test-pod", namespace: "default", uid: "test-pod-uid" },
+};
 
 type HTTPHandler = (w: ResponseRecorder, r: http.Request) => void | Promise<void>;
 
@@ -44,7 +49,7 @@ class HandlerHTTPClient implements GetHTTPInterface {
 		private readonly followNonLocalRedirects = true,
 	) {}
 
-	async do(_ctx: context.Context, req: http.Request): Promise<http.Response> {
+	async do(_ctx: context.Context, _origin: FetchOrigin, req: http.Request): Promise<http.Response> {
 		let current = req;
 		for (let redirects = 0; ; redirects++) {
 			const res = await this.doOnce(current);
@@ -161,7 +166,7 @@ browser.describe("HTTPProber cancellation", () => {
 			return { status: 200, body: "late" };
 		});
 		const prober = new HTTPProber(context.background(), clock, network);
-		const probePromise = prober.probe(networkRequest(host, 8080), 1000);
+		const probePromise = prober.probe(testOrigin, networkRequest(host, 8080), 1000);
 
 		await Promise.resolve();
 		clock.step(1000);
@@ -182,7 +187,7 @@ browser.describe("HTTPProber cancellation", () => {
 			return { status: 200, body: "late" };
 		});
 		const prober = new HTTPProber(parentCtx, clock, network);
-		const probePromise = prober.probe(networkRequest(host, 8080), 10_000);
+		const probePromise = prober.probe(testOrigin, networkRequest(host, 8080), 10_000);
 
 		await Promise.resolve();
 		cancel();
@@ -447,6 +452,7 @@ browser.describe("TestHTTPProbeChecker", () => {
 			const req = request("/", test.reqHeaders);
 			const [health, output, err] = await doHTTPProbe(
 				context.background(),
+				testOrigin,
 				req,
 				new HandlerHTTPClient(test.handler, followNonLocalRedirects),
 			);
@@ -534,6 +540,7 @@ browser.describe("TestHTTPProbeChecker_NonLocalRedirects", () => {
 			let req = request(target);
 			let [result] = await doHTTPProbe(
 				context.background(),
+				testOrigin,
 				req,
 				new HandlerHTTPClient(handler, false),
 			);
@@ -541,7 +548,12 @@ browser.describe("TestHTTPProbeChecker_NonLocalRedirects", () => {
 
 			target = `/redirect?loc=${encodeURIComponent(test.redirect)}`;
 			req = request(target);
-			[result] = await doHTTPProbe(context.background(), req, new HandlerHTTPClient(handler, true));
+			[result] = await doHTTPProbe(
+				context.background(),
+				testOrigin,
+				req,
+				new HandlerHTTPClient(handler, true),
+			);
 			expect(result).toBe(test.expectNonLocalResult);
 		}
 	});
@@ -580,13 +592,19 @@ browser.describe("TestHTTPProbeChecker_HostHeaderPreservedAfterRedirect", () => 
 			let req = request("/redirect", headers);
 			let [result] = await doHTTPProbe(
 				context.background(),
+				testOrigin,
 				req,
 				new HandlerHTTPClient(handler, false),
 			);
 			expect(result).toBe(test.expectedResult);
 
 			req = request("/redirect", headers);
-			[result] = await doHTTPProbe(context.background(), req, new HandlerHTTPClient(handler, true));
+			[result] = await doHTTPProbe(
+				context.background(),
+				testOrigin,
+				req,
+				new HandlerHTTPClient(handler, true),
+			);
 			expect(result).toBe(test.expectedResult);
 		}
 	});
@@ -618,6 +636,7 @@ browser.describe("TestHTTPProbeChecker_PayloadTruncated", () => {
 		const req = request("/success", { Host: [successHostHeader] });
 		const [result, body, err] = await doHTTPProbe(
 			context.background(),
+			testOrigin,
 			req,
 			new HandlerHTTPClient(handler, false),
 		);
@@ -652,6 +671,7 @@ browser.describe("TestHTTPProbeChecker_PayloadNormal", () => {
 		const req = request("/success", { Host: [successHostHeader] });
 		const [result, body, err] = await doHTTPProbe(
 			context.background(),
+			testOrigin,
 			req,
 			new HandlerHTTPClient(handler, false),
 		);

@@ -152,7 +152,7 @@ class LifecycleHandlerRunner implements HandlerRunner {
 		}
 		const headers = (httpGet.httpHeaders ?? []).map((h) => [h.name, h.value ?? ""] as const);
 		try {
-			const response = await this.network.fetch(ctx, `http://${host}:${port}${path}`, {
+			const response = await this.network.fetch(ctx, pod, `http://${host}:${port}${path}`, {
 				headers,
 			});
 			if (response.status < 200 || response.status >= 400) {

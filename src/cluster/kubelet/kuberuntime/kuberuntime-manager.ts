@@ -1685,6 +1685,7 @@ export class KubeGenericRuntimeManager implements Runtime, CommandRunner {
 				labels: newPodLabels(pod),
 				annotations: newPodAnnotations(pod),
 				portMappings: podPortMappings(pod),
+				pod,
 			},
 			undefined,
 		];

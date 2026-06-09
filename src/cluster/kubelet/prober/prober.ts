@@ -177,7 +177,7 @@ export class Prober {
 			if (err || !req) {
 				return ["unknown", "", err];
 			}
-			return await this.http.probe(req, timeoutMs);
+			return await this.http.probe(pod, req, timeoutMs);
 		}
 		if (probe.tcpSocket) {
 			const [port, err] = resolveContainerPort(probe.tcpSocket.port, container);

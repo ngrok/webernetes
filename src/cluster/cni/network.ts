@@ -1,9 +1,17 @@
 import { CIDR, ipToNumber } from "../../net";
-import { type DnsHandler, DnsListener, type DnsRequest, type DnsResponse } from "./dns";
+import {
+	type DnsHandler,
+	DnsListener,
+	type DnsRecordType,
+	type DnsRequest,
+	type DnsResponse,
+} from "./dns";
 import { NetworkError } from "./error";
 import * as http from "./http";
 import { Channel, select } from "../../go/channel";
 import * as context from "../../go/context";
+import type { V1Node, V1Pod } from "../../client";
+import type { DnsConfig } from "../cri/runtime/v1/api";
 import type { ServiceInstance, ServicePort } from "./service";
 import type { PodSandboxInstance } from "../cri/runtime";
 
@@ -26,6 +34,12 @@ interface ServiceEndpointRoute {
 interface PodCIDRAllocator {
 	cidr: CIDR;
 	cursor?: string;
+}
+
+export type FetchOrigin = V1Pod | V1Node;
+
+export interface ClusterNetworkOptions {
+	clusterDNS?: readonly string[];
 }
 
 class TargetList {
@@ -71,10 +85,23 @@ function isIpLiteral(host: string): boolean {
 	return ipToNumber(host) !== undefined;
 }
 
+function isLocalhost(host: string): boolean {
+	return host === "localhost" || host === "127.0.0.1";
+}
+
+function isPodOrigin(origin: FetchOrigin): origin is V1Pod {
+	return origin.kind === "Pod" || (origin.spec !== undefined && "containers" in origin.spec);
+}
+
+function isNodeOrigin(origin: FetchOrigin): origin is V1Node {
+	return origin.kind === "Node" || (origin.status !== undefined && "addresses" in origin.status);
+}
+
 export class ClusterNetwork {
 	private podIpAllocators = new Map<string, PodCIDRAllocator>();
 	private podsBySandboxId = new Map<string, PodSandboxInstance>();
 	private podsByIp = new Map<string, PodSandboxInstance>();
+	private podDnsConfigsByUid = new Map<string, DnsConfig>();
 	private nodeIpsByName = new Map<string, Set<string>>();
 	private nodeNamesByIp = new Map<string, Set<string>>();
 	private httpListeners = new Map<string, http.Handler>();
@@ -85,6 +112,8 @@ export class ClusterNetwork {
 	private serviceEndpointRoutes = new Map<string, ServiceEndpointRoute>();
 	private targetListsByServicePort = new Map<string, TargetList>();
 
+	constructor(private readonly options: ClusterNetworkOptions = {}) {}
+
 	setupPodSandbox(pod: PodSandboxInstance, podCIDR: string): NetworkRegistration {
 		if (this.podsBySandboxId.has(pod.id)) {
 			throw new NetworkError(`pod sandbox ${pod.id} is already registered`);
@@ -92,6 +121,9 @@ export class ClusterNetwork {
 		const ip = this.allocatePodIp(podCIDR);
 		this.podsBySandboxId.set(pod.id, pod);
 		this.podsByIp.set(ip, pod);
+		if (pod.config.dnsConfig) {
+			this.podDnsConfigsByUid.set(pod.uid, pod.config.dnsConfig);
+		}
 		return new NetworkRegistration(this, pod.id, pod.uid, ip);
 	}
 
@@ -157,6 +189,9 @@ export class ClusterNetwork {
 		}
 		this.podsBySandboxId.delete(podSandboxId);
 		this.podsByIp.delete(pod.ip);
+		if (![...this.podsBySandboxId.values()].some((candidate) => candidate.uid === pod.uid)) {
+			this.podDnsConfigsByUid.delete(pod.uid);
+		}
 		for (const key of [...this.httpListeners.keys()]) {
 			if (key.startsWith(`${pod.ip}:`)) {
 				this.httpListeners.delete(key);
@@ -219,12 +254,27 @@ export class ClusterNetwork {
 
 	async fetch(
 		ctx: context.Context,
+		origin: FetchOrigin,
 		target: http.FetchInput,
 		init: http.FetchInit = {},
 	): Promise<http.Response> {
 		const url = this.parseHttpTarget(target);
-		if (!isIpLiteral(url.hostname)) {
-			throw new NetworkError(`network fetch target ${url.hostname} must be an IP address`);
+		if (isLocalhost(url.hostname)) {
+			const originalHost = url.host;
+			const resolved = this.originIP(origin);
+			if (!resolved) {
+				throw new NetworkError(`could not resolve ${url.hostname}`);
+			}
+			url.hostname = resolved;
+			init = withHostHeader(init, originalHost);
+		} else if (!isIpLiteral(url.hostname)) {
+			const originalHost = url.host;
+			const resolved = await this.resolveHostname(origin, url.hostname);
+			if (!resolved) {
+				throw new NetworkError(`could not resolve ${url.hostname}`);
+			}
+			url.hostname = resolved;
+			init = withHostHeader(init, originalHost);
 		}
 
 		const service = this.servicesByClusterIp.get(url.hostname);
@@ -249,6 +299,25 @@ export class ClusterNetwork {
 		} catch {
 			return { rcode: "SERVFAIL", answers: [] };
 		}
+	}
+
+	async resolveDns(
+		origin: FetchOrigin,
+		name: string,
+		type: DnsRecordType = "A",
+	): Promise<DnsResponse> {
+		const dnsConfig = this.dnsConfigForOrigin(origin);
+		const serverIp = dnsConfig?.servers[0];
+		if (!serverIp) {
+			return { rcode: "NXDOMAIN", answers: [] };
+		}
+		for (const candidate of dnsLookupCandidates(name, dnsConfig.searches, dnsConfig.options)) {
+			const response = await this.sendDns(`${serverIp}:53`, { name: candidate, type });
+			if (response.rcode !== "NXDOMAIN" || response.answers.length > 0) {
+				return response;
+			}
+		}
+		return { rcode: "NXDOMAIN", answers: [] };
 	}
 
 	bindHttp(podSandboxId: string, ip: string, port: number, handler: http.Handler): http.Listener {
@@ -317,6 +386,57 @@ export class ClusterNetwork {
 			throw new NetworkError(`Service ${service.namespace}/${service.name} has no ready endpoints`);
 		}
 		return parseEndpointTarget(target);
+	}
+
+	private async resolveHostname(origin: FetchOrigin, name: string): Promise<string | undefined> {
+		const response = await this.resolveDns(origin, name, "A");
+		// TODO(samwho): should we look for multiple A records and return one at
+		// random? Or return all maybe?
+		const answer = response.answers.find((value) => value.type === "A");
+		return answer?.type === "A" ? answer.address : undefined;
+	}
+
+	private dnsConfigForOrigin(origin: FetchOrigin): DnsConfig | undefined {
+		const uid = origin.metadata?.uid;
+		if (uid) {
+			const podDnsConfig = this.podDnsConfigsByUid.get(uid);
+			if (podDnsConfig) {
+				return podDnsConfig;
+			}
+		}
+		const clusterDNS = this.options.clusterDNS ?? [];
+		if (clusterDNS.length === 0) {
+			return undefined;
+		}
+		return { servers: [...clusterDNS], searches: [], options: [] };
+	}
+
+	private originIP(origin: FetchOrigin): string | undefined {
+		return this.podOriginIP(origin) ?? this.nodeOriginIP(origin);
+	}
+
+	private podOriginIP(origin: FetchOrigin): string | undefined {
+		if (!isPodOrigin(origin)) {
+			return undefined;
+		}
+		const uid = origin.metadata?.uid;
+		if (uid) {
+			const sandbox = [...this.podsBySandboxId.values()].find((candidate) => candidate.uid === uid);
+			if (sandbox) {
+				return sandbox.ip;
+			}
+		}
+		return origin.status?.podIP ?? origin.status?.podIPs?.[0]?.ip;
+	}
+
+	private nodeOriginIP(origin: FetchOrigin): string | undefined {
+		if (!isNodeOrigin(origin)) {
+			return undefined;
+		}
+		return (
+			origin.status?.addresses?.find((address) => address.type === "InternalIP")?.address ??
+			origin.status?.addresses?.find((address) => address.type === "ExternalIP")?.address
+		);
 	}
 
 	private routeFetchEndpoint(endpoint: NetworkEndpoint): NetworkEndpoint {
@@ -423,6 +543,80 @@ function normalizeHeaders(headers: http.HeadersInit | undefined): http.Header {
 		append(name, value);
 	}
 	return normalized;
+}
+
+function withHostHeader(init: http.FetchInit, host: string): http.FetchInit {
+	const headers = headerEntries(init.headers);
+	if (!headers.some(([key]) => key.toLowerCase() === "host")) {
+		headers.push(["Host", host]);
+	}
+	return { ...init, headers };
+}
+
+function headerEntries(headers: http.HeadersInit | undefined): Array<[string, string]> {
+	const entries: Array<[string, string]> = [];
+	if (!headers) {
+		return entries;
+	}
+	if (
+		typeof headers === "object" &&
+		"forEach" in headers &&
+		typeof headers.forEach === "function"
+	) {
+		headers.forEach((value, name) => entries.push([name, value]));
+		return entries;
+	}
+	if (Symbol.iterator in Object(headers)) {
+		for (const [name, value] of headers as Iterable<readonly [string, string]>) {
+			entries.push([name, value]);
+		}
+		return entries;
+	}
+	for (const [name, value] of Object.entries(headers)) {
+		entries.push([name, value]);
+	}
+	return entries;
+}
+
+function dnsLookupCandidates(
+	name: string,
+	searches: readonly string[] = [],
+	options: readonly string[] = [],
+): string[] {
+	const trimmedName = name.trim();
+	if (trimmedName.endsWith(".")) {
+		return [trimmedName.slice(0, -1)];
+	}
+
+	const ndots = dnsNdots(options);
+	const absoluteFirst = dotCount(trimmedName) >= ndots;
+	const searched = searches.map((search) => `${trimmedName}.${search.replace(/\.$/, "")}`);
+	return uniqueStrings(absoluteFirst ? [trimmedName, ...searched] : [...searched, trimmedName]);
+}
+
+function dnsNdots(options: readonly string[]): number {
+	for (const option of options) {
+		const match = /^ndots:(\d+)$/.exec(option);
+		if (match) {
+			return Number(match[1]);
+		}
+	}
+	return 1;
+}
+
+function dotCount(value: string): number {
+	return [...value].filter((character) => character === ".").length;
+}
+
+function uniqueStrings(values: readonly string[]): string[] {
+	const seen = new Set<string>();
+	return values.filter((value) => {
+		if (seen.has(value)) {
+			return false;
+		}
+		seen.add(value);
+		return true;
+	});
 }
 
 export class NetworkRegistration {

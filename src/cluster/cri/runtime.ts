@@ -4,10 +4,8 @@ import * as context from "../../go/context";
 import * as time from "../../go/time";
 import type { KubeConfig } from "../../client/config";
 import { CoreV1Api, DiscoveryV1Api, type KubeClient } from "../../client";
-import { ipToNumber } from "../../net";
 import { newCommandTimedOutError } from "../cri-client/pkg";
-import type { DnsHandler, DnsListener, DnsRecordType, DnsResponse } from "../cni/dns";
-import { NetworkError } from "../cni/error";
+import type { DnsHandler, DnsListener } from "../cni/dns";
 import * as http from "../cni/http";
 import { ClusterNetwork, type NetworkRegistration } from "../cni/network";
 import { parseContainerID } from "../kubelet/container/runtime";
@@ -83,47 +81,6 @@ class ProcessExit extends Error {
 	}
 }
 
-function dnsLookupCandidates(
-	name: string,
-	searches: readonly string[] = [],
-	options: readonly string[] = [],
-): string[] {
-	const trimmedName = name.trim();
-	if (trimmedName.endsWith(".")) {
-		return [trimmedName.slice(0, -1)];
-	}
-
-	const ndots = dnsNdots(options);
-	const absoluteFirst = dotCount(trimmedName) >= ndots;
-	const searched = searches.map((search) => `${trimmedName}.${search.replace(/\.$/, "")}`);
-	return uniqueStrings(absoluteFirst ? [trimmedName, ...searched] : [...searched, trimmedName]);
-}
-
-function dnsNdots(options: readonly string[]): number {
-	for (const option of options) {
-		const match = /^ndots:(\d+)$/.exec(option);
-		if (match) {
-			return Number(match[1]);
-		}
-	}
-	return 1;
-}
-
-function dotCount(value: string): number {
-	return [...value].filter((character) => character === ".").length;
-}
-
-function uniqueStrings(values: readonly string[]): string[] {
-	const seen = new Set<string>();
-	return values.filter((value) => {
-		if (seen.has(value)) {
-			return false;
-		}
-		seen.add(value);
-		return true;
-	});
-}
-
 function isMissingExecutable(cmd: readonly string[], exitCode: number, stderr: string): boolean {
 	const command = cmd[0];
 	return command !== undefined && exitCode === 127 && stderr === `${command}: not found\n`;
@@ -142,52 +99,6 @@ function containerHash(config: ContainerConfig): number {
 	}
 	const parsed = Number.parseInt(value, 16);
 	return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function parseHttpUrl(target: http.FetchInput): URL {
-	let url: URL;
-	try {
-		url = new URL(target.toString());
-	} catch (error) {
-		throw new NetworkError(`invalid HTTP target ${target}`, { cause: error });
-	}
-	if (url.protocol !== "http:") {
-		throw new NetworkError(`unsupported protocol ${url.protocol}`);
-	}
-	return url;
-}
-
-function withHostHeader(init: http.FetchInit, host: string): http.FetchInit {
-	const headers = httpFetchHeaders(init.headers);
-	if (!headers.some(([key]) => key.toLowerCase() === "host")) {
-		headers.push(["Host", host]);
-	}
-	return { ...init, headers };
-}
-
-function httpFetchHeaders(headers: http.HeadersInit | undefined): Array<[string, string]> {
-	const entries: Array<[string, string]> = [];
-	if (!headers) {
-		return entries;
-	}
-	if (
-		typeof headers === "object" &&
-		"forEach" in headers &&
-		typeof headers.forEach === "function"
-	) {
-		headers.forEach((value, name) => entries.push([name, value]));
-		return entries;
-	}
-	if (Symbol.iterator in Object(headers)) {
-		for (const [name, value] of headers as Iterable<readonly [string, string]>) {
-			entries.push([name, value]);
-		}
-		return entries;
-	}
-	for (const [name, value] of Object.entries(headers)) {
-		entries.push([name, value]);
-	}
-	return entries;
 }
 
 export type ProcessState = "Created" | "Running" | "Exited";
@@ -1150,47 +1061,15 @@ export class ProcessContext implements context.Context {
 	}
 
 	async fetch(target: http.FetchInput, init?: http.FetchInit): Promise<http.Response> {
-		const url = parseHttpUrl(target);
-		const request = init ?? {};
-		if (ipToNumber(url.hostname) !== undefined) {
-			return await this.runtime.network.fetch(this.process.ctx, url.toString(), request);
+		if (!this.pod.config.pod) {
+			throw new Error(`pod origin is not registered for sandbox ${this.pod.id}`);
 		}
-
-		const originalHost = url.host;
-		const resolved = await this.resolveHostname(url.hostname);
-		if (!resolved) {
-			throw new NetworkError(`could not resolve ${url.hostname}`);
-		}
-		url.hostname = resolved;
 		return await this.runtime.network.fetch(
 			this.process.ctx,
-			url.toString(),
-			withHostHeader(request, originalHost),
+			this.pod.config.pod,
+			target,
+			init ?? {},
 		);
-	}
-
-	async resolveDns(name: string, type: DnsRecordType = "A"): Promise<DnsResponse> {
-		const dnsConfig = this.pod.config.dnsConfig;
-		const serverIp = dnsConfig?.servers[0];
-		if (!serverIp) {
-			return { rcode: "NXDOMAIN", answers: [] };
-		}
-		for (const candidate of dnsLookupCandidates(name, dnsConfig.searches, dnsConfig.options)) {
-			const response = await this.runtime.network.sendDns(`${serverIp}:53`, {
-				name: candidate,
-				type,
-			});
-			if (response.rcode !== "NXDOMAIN" || response.answers.length > 0) {
-				return response;
-			}
-		}
-		return { rcode: "NXDOMAIN", answers: [] };
-	}
-
-	private async resolveHostname(name: string): Promise<string | undefined> {
-		const response = await this.resolveDns(name, "A");
-		const answer = response.answers.find((value) => value.type === "A");
-		return answer?.type === "A" ? answer.address : undefined;
 	}
 
 	sleep(ms: number): Promise<void> {

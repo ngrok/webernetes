@@ -70,7 +70,7 @@ export class Cluster {
 				this.exec(namespace, podName, containerName, argv),
 		});
 		this.api = new KubeClient(this.kubeConfig);
-		this.network = new ClusterNetwork();
+		this.network = new ClusterNetwork({ clusterDNS: [this.dnsServiceIp] });
 
 		this.imageRegistry = new ImageRegistry();
 		this.imageRegistry.register(PauseImage);
@@ -192,12 +192,17 @@ export class Cluster {
 	}
 
 	public async fetch(target: http.FetchInput, init: http.FetchInit = {}): Promise<http.Response> {
-		return await this.network.fetch(this.ctx, target, init);
+		return await this.network.fetch(this.ctx, this.servers[0].node, target, init);
 	}
 
 	public async fetchNodePort(nodePort: number, init: http.FetchInit = {}): Promise<http.Response> {
 		const nodeIP = this.servers[0].ipAddresses[0];
-		return await this.network.fetch(this.ctx, `http://${nodeIP}:${nodePort}`, init);
+		return await this.network.fetch(
+			this.ctx,
+			this.servers[0].node,
+			`http://${nodeIP}:${nodePort}`,
+			init,
+		);
 	}
 
 	public registerImage(image: ImageConstructor): void {
