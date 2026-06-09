@@ -8,7 +8,6 @@ import { select } from "../../../go/channel";
 import type * as context from "../../../go/context";
 import * as time from "../../../go/time";
 import type { ClusterNetwork } from "../../cni";
-import * as http from "../../cni/http";
 import type { EventRecorder } from "../../../client-go/tools/record/event";
 import { resolveContainerPort } from "../../probe/util";
 import type { HandlerRunner, Pod as RuntimePod, PodStatus as PodRuntimeStatus } from "../container";
@@ -151,14 +150,13 @@ class LifecycleHandlerRunner implements HandlerRunner {
 		if (scheme !== "http") {
 			return new Error(`unsupported lifecycle hook scheme ${httpGet.scheme}`);
 		}
-		const header: http.Header = {};
-		for (const h of httpGet.httpHeaders ?? []) {
-			header[h.name] = [h.value ?? ""];
-		}
+		const headers = (httpGet.httpHeaders ?? []).map((h) => [h.name, h.value ?? ""] as const);
 		try {
-			const response = await this.network.fetch(ctx, `http://${host}:${port}${path}`, { header });
-			if (response.statusCode < 200 || response.statusCode >= 400) {
-				return new Error(`HTTP probe failed with statuscode: ${response.statusCode}`);
+			const response = await this.network.fetch(ctx, `http://${host}:${port}${path}`, {
+				headers,
+			});
+			if (response.status < 200 || response.status >= 400) {
+				return new Error(`HTTP probe failed with statuscode: ${response.status}`);
 			}
 			return undefined;
 		} catch (error) {

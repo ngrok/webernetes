@@ -1,6 +1,17 @@
 import type * as context from "../../go/context";
 
 export type Header = Record<string, string[]>;
+export type FetchInput = string | globalThis.URL;
+export type HeadersInit =
+	| Record<string, string>
+	| Iterable<readonly [string, string]>
+	| { forEach(callback: (value: string, name: string) => void): void };
+
+export interface FetchInit {
+	method?: string;
+	headers?: HeadersInit;
+	body?: string;
+}
 
 export class URL extends globalThis.URL {
 	private readonly raw: string;
@@ -28,7 +39,7 @@ export interface Request {
 }
 
 export interface Response {
-	statusCode: number;
+	status: number;
 	header?: Header;
 	body: string;
 }

@@ -50,11 +50,11 @@ class HandlerHTTPClient implements GetHTTPInterface {
 			const res = await this.doOnce(current);
 			const location = http.headerGet(res.header, "Location");
 			if (res.statusCode < 300 || res.statusCode >= 400 || !location) {
-				return { statusCode: res.statusCode, body: res.body };
+				return { status: res.statusCode, body: res.body };
 			}
 			const nextURL = resolveURL(current.url, location);
 			if (!this.followNonLocalRedirects && nextURL.hostname !== current.url.hostname) {
-				return { statusCode: res.statusCode, body: res.body };
+				return { status: res.statusCode, body: res.body };
 			}
 			if (redirects >= 9) {
 				throw new Error("stopped after 10 redirects");
@@ -158,7 +158,7 @@ browser.describe("HTTPProber cancellation", () => {
 		const host = bindTestHTTP(network, 8080, async (ctx) => {
 			handlerDone = ctx.done().receive();
 			await handlerDone;
-			return { statusCode: 200, body: "late" };
+			return { status: 200, body: "late" };
 		});
 		const prober = new HTTPProber(context.background(), clock, network);
 		const probePromise = prober.probe(networkRequest(host, 8080), 1000);
@@ -179,7 +179,7 @@ browser.describe("HTTPProber cancellation", () => {
 		const host = bindTestHTTP(network, 8080, async (ctx) => {
 			handlerDone = ctx.done().receive();
 			await handlerDone;
-			return { statusCode: 200, body: "late" };
+			return { status: 200, body: "late" };
 		});
 		const prober = new HTTPProber(parentCtx, clock, network);
 		const probePromise = prober.probe(networkRequest(host, 8080), 10_000);

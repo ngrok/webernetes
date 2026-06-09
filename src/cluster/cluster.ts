@@ -191,13 +191,13 @@ export class Cluster {
 		);
 	}
 
-	// TODO(samwho): fold this functionality into `fetch()` such that if you
-	// fetch with a node IP, it automatically resolves to a NodePort service.
-	public async fetchNodePort(
-		nodePort: number,
-		request: Partial<http.Request> = {},
-	): Promise<http.Response> {
-		return await this.network.fetchNodePort(this.ctx, nodePort, request);
+	public async fetch(target: http.FetchInput, init: http.FetchInit = {}): Promise<http.Response> {
+		return await this.network.fetch(this.ctx, target, init);
+	}
+
+	public async fetchNodePort(nodePort: number, init: http.FetchInit = {}): Promise<http.Response> {
+		const nodeIP = this.servers[0].ipAddresses[0];
+		return await this.network.fetch(this.ctx, `http://${nodeIP}:${nodePort}`, init);
 	}
 
 	public registerImage(image: ImageConstructor): void {

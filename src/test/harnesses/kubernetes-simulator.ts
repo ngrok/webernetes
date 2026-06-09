@@ -74,30 +74,27 @@ async function fetchNodePort(
 	nodePort: number,
 	request?: NodePortRequest,
 ): Promise<NodePortResponse> {
-	const response = await cluster.fetchNodePort(nodePort, toHTTPRequest(nodePort, request));
+	const nodeIP = cluster.servers[0]?.ipAddresses[0];
+	if (!nodeIP) {
+		throw new Error("Simulator has no node IPs");
+	}
+	const path = request?.path ?? "/";
+	const pathname = path.startsWith("/") ? path : `/${path}`;
+	const url = new URL(`http://${nodeIP}:${nodePort}${pathname}`);
+	const response = await cluster.fetch(url.toString(), toHTTPRequest(request));
 	return {
-		status: response.statusCode,
+		status: response.status,
 		body: response.body,
 		headers: toNodePortHeaders(response.header),
 	};
 }
 
-function toHTTPRequest(nodePort: number, request?: NodePortRequest): Partial<http.Request> {
-	const header: http.Header = {};
-	for (const [name, value] of Object.entries(request?.headers ?? {})) {
-		header[name] = [value];
-	}
+function toHTTPRequest(request?: NodePortRequest): http.FetchInit {
 	return {
 		method: request?.method ?? "GET",
-		url: newURL("http", "127.0.0.1", nodePort, request?.path ?? "/"),
-		header,
+		headers: request?.headers,
 		body: request?.body,
 	};
-}
-
-function newURL(scheme: string, host: string, port: number, path: string): URL {
-	const pathname = path.startsWith("/") ? path : `/${path}`;
-	return new URL(`${scheme}://${host}:${port}${pathname}`);
 }
 
 function toNodePortHeaders(header: http.Header | undefined): Record<string, string> | undefined {

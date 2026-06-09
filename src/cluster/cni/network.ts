@@ -75,6 +75,8 @@ export class ClusterNetwork {
 	private podIpAllocators = new Map<string, PodCIDRAllocator>();
 	private podsBySandboxId = new Map<string, PodSandboxInstance>();
 	private podsByIp = new Map<string, PodSandboxInstance>();
+	private nodeIpsByName = new Map<string, Set<string>>();
+	private nodeNamesByIp = new Map<string, Set<string>>();
 	private httpListeners = new Map<string, http.Handler>();
 	private dnsListeners = new Map<string, DnsHandler>();
 	private servicesByKey = new Map<string, ServiceInstance>();
@@ -107,6 +109,35 @@ export class ClusterNetwork {
 			candidate = allocator.cidr.addressAfter(selected);
 		}
 		throw new NetworkError(`no free pod IPs in ${podCIDR}`);
+	}
+
+	registerNode(name: string, ipAddresses: readonly string[]): void {
+		this.unregisterNode(name);
+		const ips = new Set(ipAddresses.filter((address) => isIpLiteral(address)));
+		this.nodeIpsByName.set(name, ips);
+		for (const ip of ips) {
+			const nodeNames = this.nodeNamesByIp.get(ip) ?? new Set<string>();
+			nodeNames.add(name);
+			this.nodeNamesByIp.set(ip, nodeNames);
+		}
+	}
+
+	unregisterNode(name: string): void {
+		const ips = this.nodeIpsByName.get(name);
+		if (!ips) {
+			return;
+		}
+		this.nodeIpsByName.delete(name);
+		for (const ip of ips) {
+			const nodeNames = this.nodeNamesByIp.get(ip);
+			if (!nodeNames) {
+				continue;
+			}
+			nodeNames.delete(name);
+			if (nodeNames.size === 0) {
+				this.nodeNamesByIp.delete(ip);
+			}
+		}
 	}
 
 	private podIpAllocator(podCIDR: string): PodCIDRAllocator {
@@ -188,8 +219,8 @@ export class ClusterNetwork {
 
 	async fetch(
 		ctx: context.Context,
-		target: string,
-		init: Partial<http.Request> = {},
+		target: http.FetchInput,
+		init: http.FetchInit = {},
 	): Promise<http.Response> {
 		const url = this.parseHttpTarget(target);
 		if (!isIpLiteral(url.hostname)) {
@@ -198,29 +229,13 @@ export class ClusterNetwork {
 
 		const service = this.servicesByClusterIp.get(url.hostname);
 		const port = this.parseTargetPort(url, service);
-		const endpoint = this.routeEndpoint({ ip: url.hostname, port });
+		const endpoint = this.routeFetchEndpoint({ ip: url.hostname, port });
 		return await this.dispatchHttp(ctx, endpoint, url, init);
 	}
 
 	canConnect(host: string, port: number): boolean {
-		const endpoint = this.routeEndpoint({ ip: host, port });
+		const endpoint = this.routeFetchEndpoint({ ip: host, port });
 		return this.httpListeners.has(listenerKey(endpoint.ip, endpoint.port));
-	}
-
-	// TODO(samwho): I want to get rid of this and change it so that we track
-	// nodes and if a fetch() request is to a node IP, we treat it as a NodePort
-	// request.
-	async fetchNodePort(
-		ctx: context.Context,
-		nodePort: number,
-		init: Partial<http.Request> = {},
-	): Promise<http.Response> {
-		const route = this.servicesByNodePort.get(nodePort);
-		if (route) {
-			const endpoint = this.selectEndpoint(route.service, route.port);
-			return await this.dispatchHttp(ctx, endpoint, undefined, init);
-		}
-		throw new NetworkError(`no Service for NodePort ${nodePort}`);
 	}
 
 	async sendDns(target: string, request: DnsRequest): Promise<DnsResponse> {
@@ -268,10 +283,10 @@ export class ClusterNetwork {
 		});
 	}
 
-	private parseHttpTarget(target: string): URL {
+	private parseHttpTarget(target: http.FetchInput): URL {
 		let url: URL;
 		try {
-			url = new URL(target);
+			url = new URL(target.toString());
 		} catch (error) {
 			throw new NetworkError(`invalid HTTP target ${target}`, { cause: error });
 		}
@@ -304,6 +319,17 @@ export class ClusterNetwork {
 		return parseEndpointTarget(target);
 	}
 
+	private routeFetchEndpoint(endpoint: NetworkEndpoint): NetworkEndpoint {
+		if (this.nodeNamesByIp.has(endpoint.ip)) {
+			const route = this.servicesByNodePort.get(endpoint.port);
+			if (!route) {
+				throw new NetworkError(`no Service for NodePort ${endpoint.port}`);
+			}
+			return this.selectEndpoint(route.service, route.port);
+		}
+		return this.routeEndpoint(endpoint);
+	}
+
 	private routeEndpoint(endpoint: NetworkEndpoint): NetworkEndpoint {
 		const service = this.servicesByClusterIp.get(endpoint.ip);
 		if (!service) {
@@ -321,8 +347,8 @@ export class ClusterNetwork {
 	private async dispatchHttp(
 		ctx: context.Context,
 		endpoint: NetworkEndpoint,
-		requestURL: URL | undefined,
-		init: Partial<http.Request>,
+		requestURL: URL,
+		init: http.FetchInit,
 	): Promise<http.Response> {
 		const handler = this.httpListeners.get(listenerKey(endpoint.ip, endpoint.port));
 		if (!handler) {
@@ -332,11 +358,11 @@ export class ClusterNetwork {
 		}
 		try {
 			const responseCh = new Channel<http.Response>(1);
-			void handler(ctx, this.httpRequest(endpoint, requestURL, init)).then(
+			void handler(ctx, this.httpRequest(requestURL, init)).then(
 				(response) => responseCh.trySend(response),
 				(error) => {
 					responseCh.trySend({
-						statusCode: 500,
+						status: 500,
 						body: error instanceof Error ? error.message : "handler error",
 					});
 				},
@@ -347,44 +373,56 @@ export class ClusterNetwork {
 			if (selected.type === "canceled") {
 				throw ctx.err() ?? new Error("context canceled");
 			}
-			return selected.response ?? { statusCode: 500, body: "handler error" };
+			return selected.response ?? { status: 500, body: "handler error" };
 		} catch (error) {
 			if (ctx.err() && error === ctx.err()) {
 				throw error;
 			}
 			return {
-				statusCode: 500,
+				status: 500,
 				body: error instanceof Error ? error.message : "handler error",
 			};
 		}
 	}
 
-	private httpRequest(
-		endpoint: NetworkEndpoint,
-		url: URL | undefined,
-		init: Partial<http.Request>,
-	): http.Request {
-		const requestURL =
-			init.url ??
-			newURL(
-				url?.protocol.replace(/:$/, "") ?? "http",
-				url?.hostname ?? endpoint.ip,
-				Number(url?.port || endpoint.port),
-				`${url?.pathname ?? "/"}${url?.search ?? ""}`,
-			);
+	private httpRequest(url: URL, init: http.FetchInit): http.Request {
+		const header = normalizeHeaders(init.headers);
 		return {
 			method: init.method ?? "GET",
-			url: requestURL,
-			header: init.header ?? {},
-			host: init.host ?? http.headerGet(init.header ?? {}, "Host"),
+			url,
+			header,
+			host: http.headerGet(header, "Host"),
 			body: init.body,
 		};
 	}
 }
 
-function newURL(scheme: string, host: string, port: number, path: string): URL {
-	const pathname = path.startsWith("/") ? path : `/${path}`;
-	return new URL(`${scheme}://${host}:${port}${pathname}`);
+function normalizeHeaders(headers: http.HeadersInit | undefined): http.Header {
+	const normalized: http.Header = {};
+	if (!headers) {
+		return normalized;
+	}
+	const append = (name: string, value: string) => {
+		(normalized[name] ??= []).push(value);
+	};
+	if (
+		typeof headers === "object" &&
+		"forEach" in headers &&
+		typeof headers.forEach === "function"
+	) {
+		headers.forEach((value, name) => append(name, value));
+		return normalized;
+	}
+	if (Symbol.iterator in Object(headers)) {
+		for (const [name, value] of headers as Iterable<readonly [string, string]>) {
+			append(name, value);
+		}
+		return normalized;
+	}
+	for (const [name, value] of Object.entries(headers)) {
+		append(name, value);
+	}
+	return normalized;
 }
 
 export class NetworkRegistration {

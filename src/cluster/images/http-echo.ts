@@ -20,14 +20,14 @@ export class HttpEchoImage extends BaseImage {
 		ctx.listenHttp(options.port, async (_ctx, request) => {
 			if (`${request.url.pathname}${request.url.search}` === "/health") {
 				return {
-					statusCode: 200,
+					status: 200,
 					header: appHeaders(),
 					body: '{"status":"ok"}\n',
 				};
 			}
 
 			return {
-				statusCode: options.statusCode,
+				status: options.status,
 				header: appHeaders(),
 				body: `${text}\n`,
 			};
@@ -39,13 +39,13 @@ export class HttpEchoImage extends BaseImage {
 interface HttpEchoOptions {
 	port: number;
 	text?: string;
-	statusCode: number;
+	status: number;
 }
 
 function parseOptions(argv: readonly string[]): HttpEchoOptions {
 	const options: HttpEchoOptions = {
 		port: 5678,
-		statusCode: 200,
+		status: 200,
 	};
 
 	for (let index = 0; index < argv.length; index++) {
@@ -68,7 +68,7 @@ function parseOptions(argv: readonly string[]): HttpEchoOptions {
 				options.text = unquote(value);
 				break;
 			case "status-code":
-				options.statusCode = Number(value);
+				options.status = Number(value);
 				break;
 		}
 	}

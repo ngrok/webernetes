@@ -8,6 +8,7 @@ export class KubeProxy extends BaseImage {
 	static readonly imageVersion = "1.0";
 
 	readonly defaultCommand = ["kube-proxy"];
+	private nodeInformer: k8s.Informer<k8s.V1Node> | undefined;
 	private serviceInformer: k8s.Informer<k8s.V1Service> | undefined;
 	private endpointSliceInformer: k8s.Informer<k8s.V1EndpointSlice> | undefined;
 	private readonly services = new Map<string, k8s.V1Service>();
@@ -27,11 +28,17 @@ export class KubeProxy extends BaseImage {
 	}
 
 	private async close(): Promise<void> {
+		await this.nodeInformer?.stop();
 		await this.serviceInformer?.stop();
 		await this.endpointSliceInformer?.stop();
 	}
 
 	private async startServiceRouting(ctx: ProcessContext): Promise<void> {
+		this.nodeInformer = k8s.makeInformer(
+			ctx.kubeConfig,
+			"/api/v1/nodes",
+			async () => await ctx.api.corev1.listNode(),
+		);
 		this.serviceInformer = k8s.makeInformer(
 			ctx.kubeConfig,
 			"/api/v1/services",
@@ -42,6 +49,9 @@ export class KubeProxy extends BaseImage {
 			"/apis/discovery.k8s.io/v1/endpointslices",
 			async () => await ctx.api.discoveryv1.listEndpointSliceForAllNamespaces(),
 		);
+		this.nodeInformer.on("add", (node) => this.upsertNode(ctx, node));
+		this.nodeInformer.on("update", (node) => this.upsertNode(ctx, node));
+		this.nodeInformer.on("delete", (node) => this.deleteNode(ctx, node));
 		this.serviceInformer.on("add", (service) => this.upsertService(ctx, service));
 		this.serviceInformer.on("update", (service) => this.upsertService(ctx, service));
 		this.serviceInformer.on("delete", (service) => this.deleteService(ctx, service));
@@ -49,9 +59,28 @@ export class KubeProxy extends BaseImage {
 		this.endpointSliceInformer.on("update", (slice) => this.upsertEndpointSlice(ctx, slice));
 		this.endpointSliceInformer.on("delete", (slice) => this.deleteEndpointSlice(ctx, slice));
 
+		await this.nodeInformer.start();
 		await this.serviceInformer.start();
 		await this.endpointSliceInformer.start();
 		this.reconcileAllServices(ctx);
+	}
+
+	private upsertNode(ctx: ProcessContext, node: k8s.V1Node): void {
+		const name = node.metadata?.name;
+		if (!name) {
+			return;
+		}
+		// This is to make it possible to route to NodePort Services via the node's
+		// IP address.
+		ctx.network.registerNode(name, nodeIPAddresses(node));
+	}
+
+	private deleteNode(ctx: ProcessContext, node: k8s.V1Node): void {
+		const name = node.metadata?.name;
+		if (!name) {
+			return;
+		}
+		ctx.network.unregisterNode(name);
 	}
 
 	private upsertService(ctx: ProcessContext, service: k8s.V1Service): void {
@@ -219,6 +248,16 @@ export class KubeProxy extends BaseImage {
 
 function serviceKey(service: k8s.V1Service): string {
 	return namespacedNameKey(service.metadata?.namespace ?? "default", service.metadata?.name ?? "");
+}
+
+function nodeIPAddresses(node: k8s.V1Node): string[] {
+	const addresses: string[] = [];
+	for (const address of node.status?.addresses ?? []) {
+		if (address.type === "InternalIP" || address.type === "ExternalIP") {
+			addresses.push(address.address);
+		}
+	}
+	return addresses;
 }
 
 function endpointSliceKey(slice: k8s.V1EndpointSlice): string {

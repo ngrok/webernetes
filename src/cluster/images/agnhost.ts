@@ -22,43 +22,43 @@ export class AgnhostImage extends BaseImage {
 			switch (url.pathname) {
 				case "/healthz":
 				case "/readyz":
-					return { statusCode: 200, body: "ok\n" };
+					return { status: 200, body: "ok\n" };
 				case "/exit":
 					return this.exitResponse(ctx, url);
 				case "/echo":
 					return {
-						statusCode: Number(url.searchParams.get("code") ?? "200"),
+						status: Number(url.searchParams.get("code") ?? "200"),
 						body: url.searchParams.get("msg") ?? "ok",
 					};
 				case "/redirect":
-					return { statusCode: 302, header: { Location: ["/echo"] }, body: "" };
+					return { status: 302, header: { Location: ["/echo"] }, body: "" };
 				case "/shell":
 					return await this.shellResponse(ctx, url.searchParams.get("cmd") ?? "");
 				default:
-					return { statusCode: 404, body: "not found\n" };
+					return { status: 404, body: "not found\n" };
 			}
 		});
 		return await ctx.waitUntilKilled();
 	}
 
-	private exitResponse(ctx: ProcessContext, url: URL): { statusCode: number; body: string } {
+	private exitResponse(ctx: ProcessContext, url: URL): { status: number; body: string } {
 		const code = parseExitCode(url.searchParams.get("code"));
 		const waitMs = parseDurationMs(url.searchParams.get("wait"));
 		void (async () => {
 			await ctx.sleep(waitMs);
 			ctx.exit(code);
 		})().catch(() => {});
-		return { statusCode: 200, body: "" };
+		return { status: 200, body: "" };
 	}
 
 	private async shellResponse(
 		ctx: ProcessContext,
 		command: string,
-	): Promise<{ statusCode: number; body: string }> {
+	): Promise<{ status: number; body: string }> {
 		const process = ctx.exec(this.splitShellWords(command));
 		const code = await process.wait();
 		return {
-			statusCode: 200,
+			status: 200,
 			body: JSON.stringify({
 				output: process.stdout,
 				error: process.stderr,

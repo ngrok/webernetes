@@ -21,7 +21,7 @@ function bindTestHTTP(network: ClusterNetwork, port: number): string {
 	);
 	const registration = network.setupPodSandbox(sandbox, "10.0.0.0/24");
 	sandbox.setNetworkRegistration(registration);
-	registration.bindHttp(port, async () => ({ statusCode: 200, body: "" }));
+	registration.bindHttp(port, async () => ({ status: 200, body: "" }));
 	return registration.ip;
 }
 

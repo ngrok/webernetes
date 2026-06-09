@@ -144,10 +144,10 @@ function containerHash(config: ContainerConfig): number {
 	return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function parseHttpUrl(target: string): URL {
+function parseHttpUrl(target: http.FetchInput): URL {
 	let url: URL;
 	try {
-		url = new URL(target);
+		url = new URL(target.toString());
 	} catch (error) {
 		throw new NetworkError(`invalid HTTP target ${target}`, { cause: error });
 	}
@@ -157,12 +157,37 @@ function parseHttpUrl(target: string): URL {
 	return url;
 }
 
-function withHostHeader(request: Partial<http.Request>, host: string): Partial<http.Request> {
-	const header = { ...request.header };
-	if (!Object.keys(header).some((key) => key.toLowerCase() === "host")) {
-		header.Host = [host];
+function withHostHeader(init: http.FetchInit, host: string): http.FetchInit {
+	const headers = httpFetchHeaders(init.headers);
+	if (!headers.some(([key]) => key.toLowerCase() === "host")) {
+		headers.push(["Host", host]);
 	}
-	return { ...request, header };
+	return { ...init, headers };
+}
+
+function httpFetchHeaders(headers: http.HeadersInit | undefined): Array<[string, string]> {
+	const entries: Array<[string, string]> = [];
+	if (!headers) {
+		return entries;
+	}
+	if (
+		typeof headers === "object" &&
+		"forEach" in headers &&
+		typeof headers.forEach === "function"
+	) {
+		headers.forEach((value, name) => entries.push([name, value]));
+		return entries;
+	}
+	if (Symbol.iterator in Object(headers)) {
+		for (const [name, value] of headers as Iterable<readonly [string, string]>) {
+			entries.push([name, value]);
+		}
+		return entries;
+	}
+	for (const [name, value] of Object.entries(headers)) {
+		entries.push([name, value]);
+	}
+	return entries;
 }
 
 export type ProcessState = "Created" | "Running" | "Exited";
@@ -1124,7 +1149,7 @@ export class ProcessContext implements context.Context {
 		return listener;
 	}
 
-	async fetch(target: string, init?: Partial<http.Request>): Promise<http.Response> {
+	async fetch(target: http.FetchInput, init?: http.FetchInit): Promise<http.Response> {
 		const url = parseHttpUrl(target);
 		const request = init ?? {};
 		if (ipToNumber(url.hostname) !== undefined) {

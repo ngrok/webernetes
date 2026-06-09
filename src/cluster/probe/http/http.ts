@@ -85,13 +85,13 @@ export async function doHTTPProbe(
 		return ["failure", error instanceof Error ? error.message : String(error), undefined];
 	}
 	const body = res.body.slice(0, maxRespBodyLength);
-	if (res.statusCode >= 200 && res.statusCode < 400) {
-		if (res.statusCode >= 300) {
+	if (res.status >= 200 && res.status < 400) {
+		if (res.status >= 300) {
 			return ["warning", `Probe terminated redirects, Response body: ${body}`, undefined];
 		}
 		return ["success", body, undefined];
 	}
-	return ["failure", `HTTP probe failed with statuscode: ${res.statusCode}`, undefined];
+	return ["failure", `HTTP probe failed with statuscode: ${res.status}`, undefined];
 }
 
 class ClusterNetworkHTTPClient implements GetHTTPInterface {
@@ -101,6 +101,20 @@ class ClusterNetworkHTTPClient implements GetHTTPInterface {
 	) {}
 
 	async do(ctx: context.Context, req: http.Request): Promise<http.Response> {
-		return await this.network.fetch(ctx, req.url.toString(), req);
+		return await this.network.fetch(ctx, req.url.toString(), {
+			method: req.method,
+			headers: headerEntries(req.header),
+			body: req.body,
+		});
 	}
+}
+
+function headerEntries(headers: http.Header): Array<[string, string]> {
+	const entries: Array<[string, string]> = [];
+	for (const [name, values] of Object.entries(headers)) {
+		for (const value of values) {
+			entries.push([name, value]);
+		}
+	}
+	return entries;
 }

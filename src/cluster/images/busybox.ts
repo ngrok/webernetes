@@ -24,8 +24,8 @@ async function wget(ctx: ProcessContext, argv: readonly string[]): Promise<numbe
 	}
 	try {
 		const response = await ctx.fetch(target);
-		if (response.statusCode < 200 || response.statusCode >= 300) {
-			ctx.writeStderr(`wget: server returned status ${response.statusCode}\n`);
+		if (response.status < 200 || response.status >= 300) {
+			ctx.writeStderr(`wget: server returned status ${response.status}\n`);
 			return 1;
 		}
 		ctx.writeStdout(response.body ?? "");

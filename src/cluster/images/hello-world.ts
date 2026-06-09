@@ -12,7 +12,7 @@ export class HelloWorldImage extends BaseImage {
 			return await super.exec(ctx, argv);
 		}
 		ctx.listenHttp(8000, async () => ({
-			statusCode: 200,
+			status: 200,
 			body: "<xmp>\nHello World\n</xmp>\n",
 		}));
 		return await ctx.waitUntilKilled();
