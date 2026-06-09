@@ -11,6 +11,7 @@ browser.describe("WaitGroup", () => {
 		wg.add(1);
 		const wait = wg.wait().then(() => {
 			completed = true;
+			return undefined;
 		});
 
 		await Promise.resolve();

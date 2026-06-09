@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-CONTAINER_NAME="k8s-web-simulator-k3s"
+CONTAINER_NAME="k8s-web-simulator-k3s-1-36"
 
 if ! docker inspect --format '{{.State.Running}}' "$CONTAINER_NAME" 2>/dev/null | grep -q true; then
   echo "error: container '$CONTAINER_NAME' is not running" >&2

@@ -96,6 +96,7 @@ export function validationStabilityLevelString(v: ValidationStabilityLevel): str
 }
 
 // Models staging/src/k8s.io/apimachinery/pkg/util/validation/field/errors.go OmitValueType.
+// oxlint-disable-next-line typescript-eslint/no-extraneous-class -- Mirrors upstream sentinel type.
 export class OmitValueType {}
 
 // Models staging/src/k8s.io/apimachinery/pkg/util/validation/field/errors.go omitValue.

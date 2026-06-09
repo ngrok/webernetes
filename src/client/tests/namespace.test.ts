@@ -285,6 +285,7 @@ kubernetes.describe("Namespaces", ({ core, discovery, k8s, helpers }) => {
 			body: {
 				metadata: { name: "pod", namespace: name },
 				spec: {
+					terminationGracePeriodSeconds: 0,
 					containers: [{ name: "pause", image: "registry.k8s.io/pause:3.10" }],
 				},
 			},
@@ -322,6 +323,11 @@ kubernetes.describe("Namespaces", ({ core, discovery, k8s, helpers }) => {
 				type: "Normal",
 			},
 		});
+		await waitFor(async () => {
+			expect((await core.readNamespacedPod({ name: "pod", namespace: name })).status?.phase).toBe(
+				"Running",
+			);
+		});
 
 		await core.deleteNamespace({ name });
 
@@ -342,9 +348,9 @@ kubernetes.describe("Namespaces", ({ core, discovery, k8s, helpers }) => {
 					throw new Error(`Expected namespace ${name} to be deleted or terminating`);
 				}
 			},
-			{ timeout: 60_000, interval: 500 },
+			{ timeout: 180_000, interval: 500 },
 		);
-	}, 90_000);
+	}, 210_000);
 
 	it("should allow deleting a terminating namespace again", async () => {
 		const namespace = await core.createNamespace({

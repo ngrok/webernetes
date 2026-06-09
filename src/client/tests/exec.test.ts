@@ -1,8 +1,8 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { kubernetes } from "../../test/harnesses/kubernetes";
 
 kubernetes.describe("Exec", ({ helpers }) => {
-	const { createPod, createService, exec, getTestNamespace, waitFor, waitForPodReady } = helpers;
+	const { createPod, createService, exec, getTestNamespace, waitForPodReady } = helpers;
 	it("should execute commands in a pod with service DNS", async () => {
 		const namespace = await getTestNamespace();
 
@@ -65,15 +65,18 @@ kubernetes.describe("Exec", ({ helpers }) => {
 			`http://exec-target.${namespace}`,
 			"http://exec-target",
 		]) {
-			await waitFor(async () => {
-				const result = await exec(busybox, "busybox", ["wget", "-qO-", target]);
-				if (result.exitCode !== 0) {
-					throw new Error(`${target}: ${result.stderr || result.stdout}`);
-				}
-				expect(result.exitCode).toBe(0);
-				expect(result.stderr).toBe("");
-				expect(result.stdout).toContain("Hello World");
-			});
+			await vi.waitFor(
+				async () => {
+					const result = await exec(busybox, "busybox", ["wget", "-qO-", target]);
+					if (result.exitCode !== 0) {
+						throw new Error(`${target}: ${result.stderr || result.stdout}`);
+					}
+					expect(result.exitCode).toBe(0);
+					expect(result.stderr).toBe("");
+					expect(result.stdout).toContain("Hello World");
+				},
+				{ timeout: 30_000, interval: 500 },
+			);
 		}
 	});
 });

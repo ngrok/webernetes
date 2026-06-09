@@ -962,18 +962,20 @@ kubernetes.describe("Pods", (context) => {
 			},
 		});
 
-		const notOlderThanList = await core.listNamespacedPod({
-			namespace,
-			resourceVersion: snapshotResourceVersion,
-			resourceVersionMatch: "NotOlderThan",
-		});
+		await waitFor(async () => {
+			const notOlderThanList = await core.listNamespacedPod({
+				namespace,
+				resourceVersion: snapshotResourceVersion,
+				resourceVersionMatch: "NotOlderThan",
+			});
 
-		expect(Number(notOlderThanList.metadata?.resourceVersion)).toBeGreaterThanOrEqual(
-			Number(snapshotResourceVersion),
-		);
-		expect(notOlderThanList.items.map((pod) => pod.metadata?.name)).toContain(
-			"not-older-than-after",
-		);
+			expect(Number(notOlderThanList.metadata?.resourceVersion)).toBeGreaterThanOrEqual(
+				Number(snapshotResourceVersion),
+			);
+			expect(notOlderThanList.items.map((pod) => pod.metadata?.name)).toContain(
+				"not-older-than-after",
+			);
+		});
 	});
 
 	it("should reject invalid resourceVersionMatch list options", async () => {

@@ -15,6 +15,8 @@
     "build": "tsc -p tsconfig.build.json",
     "fmt:check": "oxfmt --check .",
     "fmt": "oxfmt --write .",
+    "k3s:setup": "tsx src/test/harnesses/kubernetes-k3s-setup-cli.ts",
+    "k3s:teardown": "tsx src/test/harnesses/kubernetes-k3s-teardown.ts",
     "lint:fix": "oxlint --fix .",
     "lint": "oxlint .",
     "prepare": "husky",
@@ -35,8 +37,10 @@
   "devDependencies": {
     "@kubernetes/client-node": "^1.4.0",
     "@testcontainers/k3s": "^11.14.0",
+    "@types/cli-progress": "^3.11.6",
     "@types/node": "^24.0.0",
     "@vitest/browser": "^3.2.4",
+    "cli-progress": "^3.12.0",
     "esbuild": "^0.25.11",
     "etcd3": "^1.1.2",
     "husky": "9.1.7",
@@ -46,6 +50,7 @@
     "oxlint-tsgolint": "^0.23.0",
     "playwright": "^1.55.0",
     "testcontainers": "^11.14.0",
+    "tsx": "^4.22.4",
     "typescript": "^6.0.3",
     "vitest": "^3.0.0"
   },
