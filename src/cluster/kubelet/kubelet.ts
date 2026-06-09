@@ -2553,9 +2553,7 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 		if (pod.metadata?.deletionTimestamp !== undefined) {
 			return false;
 		}
-		const status = podStatus.containerStatuses.find(
-			(candidate) => candidate.name === container.name,
-		);
+		const status = findContainerStatusByName(podStatus, container.name);
 		if (!status) {
 			return true;
 		}
