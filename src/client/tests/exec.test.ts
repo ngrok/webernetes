@@ -1,8 +1,9 @@
 import { expect, it, vi } from "vitest";
 import { kubernetes } from "../../test/harnesses/kubernetes";
 
-kubernetes.describe("Exec", ({ helpers }) => {
-	const { createPod, createService, exec, getTestNamespace, waitForPodReady } = helpers;
+kubernetes.describe("Exec", ({ core, helpers }) => {
+	const { createNamespace, createPod, createService, exec, getTestNamespace, waitForPodReady } =
+		helpers;
 	it("should execute commands in a pod with service DNS", async () => {
 		const namespace = await getTestNamespace();
 
@@ -79,4 +80,130 @@ kubernetes.describe("Exec", ({ helpers }) => {
 			);
 		}
 	});
+
+	it("should resolve bare service names in the caller's namespace", async () => {
+		const firstNamespace = await createNamespace("bare-dns-a-");
+		const secondNamespace = await createNamespace("bare-dns-b-");
+		const serviceName = "same-name";
+		try {
+			await createEchoPod(firstNamespace, serviceName, "first-namespace");
+			await createEchoPod(secondNamespace, serviceName, "second-namespace");
+
+			let firstBusybox = await createBusyboxPod(firstNamespace, "busybox");
+			let secondBusybox = await createBusyboxPod(secondNamespace, "busybox");
+
+			await waitForPodReady({ metadata: { name: serviceName, namespace: firstNamespace } });
+			await waitForPodReady({ metadata: { name: serviceName, namespace: secondNamespace } });
+			firstBusybox = await waitForPodReady(firstBusybox);
+			secondBusybox = await waitForPodReady(secondBusybox);
+
+			await expectBareServiceName(firstBusybox, serviceName, "first-namespace");
+			await expectBareServiceName(secondBusybox, serviceName, "second-namespace");
+		} finally {
+			await core.deleteNamespace({ name: firstNamespace });
+			await core.deleteNamespace({ name: secondNamespace });
+		}
+	});
+
+	it("should resolve localhost to the calling pod", async () => {
+		let pod = await createPod({
+			metadata: {
+				name: "localhost-fetch",
+			},
+			spec: {
+				containers: [
+					{
+						name: "echo",
+						image: "hashicorp/http-echo:1.0",
+						args: ["-listen=:5678", "-text=localhost-pod"],
+						ports: [{ name: "http", containerPort: 5678 }],
+					},
+					{
+						name: "busybox",
+						image: "busybox:1.36",
+						command: ["sleep", "3600"],
+					},
+				],
+			},
+		});
+		pod = await waitForPodReady(pod);
+
+		await vi.waitFor(
+			async () => {
+				const result = await exec(pod, "busybox", ["wget", "-qO-", "http://localhost:5678"]);
+				if (result.exitCode !== 0) {
+					throw new Error(result.stderr || result.stdout);
+				}
+				expect(result.stdout.trim()).toBe("localhost-pod");
+			},
+			{ timeout: 30_000, interval: 500 },
+		);
+	});
+
+	async function createBusyboxPod(namespace: string, name: string) {
+		return await createPod({
+			metadata: {
+				name,
+				namespace,
+			},
+			spec: {
+				containers: [
+					{
+						name: "busybox",
+						image: "busybox:1.36",
+						command: ["sleep", "3600"],
+					},
+				],
+			},
+		});
+	}
+
+	async function expectBareServiceName(
+		pod: Awaited<ReturnType<typeof createBusyboxPod>>,
+		serviceName: string,
+		expectedBody: string,
+	): Promise<void> {
+		await vi.waitFor(
+			async () => {
+				const result = await exec(pod, "busybox", ["wget", "-qO-", `http://${serviceName}`]);
+				if (result.exitCode !== 0) {
+					throw new Error(result.stderr || result.stdout);
+				}
+				expect(result.stdout.trim()).toBe(expectedBody);
+			},
+			{ timeout: 30_000, interval: 500 },
+		);
+	}
+
+	async function createEchoPod(namespace: string, name: string, text: string): Promise<void> {
+		await createPod({
+			metadata: {
+				name,
+				namespace,
+				labels: { app: `${name}-${text}` },
+			},
+			spec: {
+				containers: [
+					{
+						name: "echo",
+						image: "hashicorp/http-echo:1.0",
+						args: ["-listen=:5678", `-text=${text}`],
+						ports: [{ name: "http", containerPort: 5678 }],
+					},
+				],
+			},
+		});
+
+		await createService({
+			metadata: {
+				name,
+				namespace,
+			},
+			spec: {
+				type: "ClusterIP",
+				selector: { app: `${name}-${text}` },
+				ports: [{ name: "http", port: 80, targetPort: "http" }],
+			},
+		});
+	}
 });
