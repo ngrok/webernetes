@@ -257,6 +257,7 @@ function runtimeStatus(
 		restartCount: options.restartCount ?? 0,
 		reason: options.reason,
 		message: options.message,
+		user: options.user,
 	};
 }
 
@@ -2709,6 +2710,18 @@ browser.describe("convertToAPIContainerStatuses", () => {
 		containers: [{ name: "containerA" }, { name: "containerB" }],
 		restartPolicy: "Always" as const,
 	};
+	const desiredStateWithInitContainer = {
+		nodeName: "machine",
+		initContainers: [{ name: "init-1" }],
+		containers: [{ name: "containerA" }],
+		restartPolicy: "Always" as const,
+	};
+	const desiredStateWithSidecarContainer = {
+		nodeName: "machine",
+		initContainers: [{ name: "sidecar-1", restartPolicy: "Always" as const }],
+		containers: [{ name: "containerA" }],
+		restartPolicy: "Always" as const,
+	};
 	const now = new Date();
 
 	const upstreamTestCases: ConvertToAPIContainerStatusesUpstreamTestCase[] = [
@@ -2993,6 +3006,87 @@ browser.describe("convertToAPIContainerStatuses", () => {
 			],
 		},
 		{
+			name: "Unable to get init container status from container runtime and pod has been initialized, treat it as exited normally",
+			pod: {
+				metadata: { name: "my-pod" },
+				spec: desiredStateWithInitContainer,
+				status: {
+					containerStatuses: [],
+				},
+			},
+			currentStatus: {
+				id: "",
+				name: "",
+				namespace: "",
+				timestamp: new Date(0),
+				containerStatuses: [
+					runtimeStatus("containerA", {
+						id: new ContainerID("", "foo"),
+						startedAt: 1000,
+						state: "Running",
+					}),
+				],
+				sandboxStatuses: [],
+				ips: [],
+			},
+			previousStatus: [],
+			containers: desiredStateWithInitContainer.initContainers,
+			expected: [
+				newContainerStatus({
+					name: "init-1",
+					state: {
+						terminated: {
+							reason: "Completed",
+							message:
+								"Unable to get init container status from container runtime and pod has been initialized, treat it as exited normally",
+							exitCode: 0,
+						},
+					},
+				}),
+			],
+			hasInitContainers: true,
+			isInitContainer: true,
+		},
+		{
+			name: "Unable to get sidecar container status from container runtime and pod has been initialized, sidecar container should be waiting",
+			pod: {
+				metadata: { name: "my-pod" },
+				spec: desiredStateWithSidecarContainer,
+				status: {
+					containerStatuses: [],
+				},
+			},
+			currentStatus: {
+				id: "",
+				name: "",
+				namespace: "",
+				timestamp: new Date(0),
+				containerStatuses: [
+					runtimeStatus("containerA", {
+						id: new ContainerID("", "foo"),
+						startedAt: 1000,
+						state: "Running",
+					}),
+				],
+				sandboxStatuses: [],
+				ips: [],
+			},
+			previousStatus: [],
+			containers: desiredStateWithSidecarContainer.initContainers,
+			expected: [
+				newContainerStatus({
+					name: "sidecar-1",
+					state: {
+						waiting: {
+							reason: "PodInitializing",
+						},
+					},
+				}),
+			],
+			hasInitContainers: true,
+			isInitContainer: true,
+		},
+		{
 			// simulator only test
 			name: "running container preserves old started false when kubelet restart status changes are disabled",
 			pod: { spec: desiredState },
@@ -3116,6 +3210,115 @@ browser.describe("convertToAPIContainerStatuses", () => {
 			);
 
 			expect(currentStatus.containerStatuses).toEqual([firstStatus, secondStatus]);
+		} finally {
+			await testKubelet.cleanup();
+		}
+	});
+
+	// Simulator only test.
+	it("orders regular statuses by name and init statuses by pod spec order", async () => {
+		const tCtx = context.background();
+		const testKubelet = newTestKubelet(false);
+		const pod: V1Pod = {
+			spec: {
+				initContainers: [{ name: "initB" }, { name: "initA" }],
+				containers: [{ name: "containerB" }, { name: "containerA" }],
+			},
+		};
+		const currentStatus: PodRuntimeStatus = {
+			id: "",
+			name: "",
+			namespace: "",
+			timestamp: new Date(0),
+			containerStatuses: [
+				runtimeStatus("containerB"),
+				runtimeStatus("containerA"),
+				runtimeStatus("initA", { state: "Exited", exitCode: 0 }),
+				runtimeStatus("initB", { state: "Exited", exitCode: 0 }),
+			],
+			sandboxStatuses: [],
+			ips: [],
+		};
+
+		try {
+			const regularStatuses = testKubelet.kubelet.convertToAPIContainerStatuses(
+				tCtx,
+				pod,
+				currentStatus,
+				[],
+				pod.spec?.containers ?? [],
+				undefined,
+				false,
+				false,
+				false,
+			);
+			const initStatuses = testKubelet.kubelet.convertToAPIContainerStatuses(
+				tCtx,
+				pod,
+				currentStatus,
+				[],
+				pod.spec?.initContainers ?? [],
+				undefined,
+				true,
+				true,
+				false,
+			);
+
+			expect(regularStatuses.map((status) => status.name)).toEqual(["containerA", "containerB"]);
+			expect(initStatuses.map((status) => status.name)).toEqual(["initB", "initA"]);
+		} finally {
+			await testKubelet.cleanup();
+		}
+	});
+
+	it("propagates runtime reported container user", async () => {
+		const tCtx = context.background();
+		const testKubelet = newTestKubelet(false);
+		const pod: V1Pod = {
+			spec: {
+				containers: [{ name: "containerA" }],
+			},
+		};
+		const currentStatus: PodRuntimeStatus = {
+			id: "",
+			name: "",
+			namespace: "",
+			timestamp: new Date(0),
+			containerStatuses: [
+				runtimeStatus("containerA", {
+					user: {
+						linux: {
+							uid: 1000,
+							gid: 1001,
+							supplementalGroups: [1002, 1003],
+						},
+					},
+				}),
+			],
+			sandboxStatuses: [],
+			ips: [],
+		};
+
+		try {
+			const statuses = testKubelet.kubelet.convertToAPIContainerStatuses(
+				tCtx,
+				pod,
+				currentStatus,
+				[],
+				pod.spec?.containers ?? [],
+				undefined,
+				false,
+				false,
+				false,
+			);
+
+			expect(statuses[0]?.user).toEqual({
+				linux: {
+					uid: 1000,
+					gid: 1001,
+					supplementalGroups: [1002, 1003],
+				},
+			});
 		} finally {
 			await testKubelet.cleanup();
 		}

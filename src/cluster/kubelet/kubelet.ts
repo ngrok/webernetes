@@ -24,6 +24,7 @@ import {
 	convertPodStatusToRunningPod,
 	errPodNotFound,
 	findContainerByName,
+	findContainerStatusByName,
 	findPod,
 	hasAnyActiveRegularContainerStarted,
 	isHostNetworkPod,
@@ -69,8 +70,8 @@ import { fromServices } from "./envvars";
 import { BasicWorkQueue } from "./util/queue/work-queue";
 import type { WorkQueue } from "./util/queue/work-queue";
 import { apiserverSource, isStaticPod, type PodUpdate, type SyncPodType } from "./types/pod-update";
-import * as kubetypes from "./types/pod-status";
-import { KubeGenericRuntimeManager } from "./kuberuntime";
+import * as kubetypes from "./types";
+import { hasAnyRegularContainerCreated, KubeGenericRuntimeManager } from "./kuberuntime";
 import { getPhase, truncatePodHostnameIfNeeded } from "./kubelet-pods";
 import { newActiveDeadlineHandler } from "./active-deadline";
 import {
@@ -2232,7 +2233,7 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 		containers: V1Container[],
 		imageVolumeNames: Set<string> | undefined,
 		hasInitContainers: boolean,
-		_isInitContainer: boolean,
+		isInitContainer: boolean,
 		podRestarting: boolean,
 	): V1ContainerStatus[] {
 		if (imageVolumeNames && imageVolumeNames.size > 0) {
@@ -2254,9 +2255,7 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 				resources: {},
 			};
 			if (oldStatus) {
-				if (oldStatus.volumeMounts !== undefined) {
-					status.volumeMounts = oldStatus.volumeMounts;
-				}
+				status.volumeMounts = oldStatus.volumeMounts;
 				if (oldStatus.restartCount > status.restartCount) {
 					status.restartCount = oldStatus.restartCount;
 				}
@@ -2266,7 +2265,6 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 					status.lastState = { terminated: oldStatus.lastState.terminated };
 				}
 			}
-
 			switch (cs.state) {
 				case "Running":
 					status.state = {
@@ -2314,10 +2312,30 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 						status.restartCount = oldStatus.restartCount + 1;
 						break;
 					}
+				default:
 					status.state = { waiting: {} };
 					break;
 			}
 			return status;
+		};
+
+		const convertContainerStatusUser = (
+			cStatus: ContainerStatus,
+		): NonNullable<V1ContainerStatus["user"]> | undefined => {
+			if (!cStatus.user) {
+				return undefined;
+			}
+
+			const user: NonNullable<V1ContainerStatus["user"]> = {};
+			if (cStatus.user.linux) {
+				user.linux = {
+					uid: cStatus.user.linux.uid ?? 0,
+					gid: cStatus.user.linux.gid ?? 0,
+					supplementalGroups: cStatus.user.linux.supplementalGroups,
+				};
+			}
+
+			return user;
 		};
 
 		// Fetch old containers statuses from old pod status.
@@ -2370,7 +2388,7 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 			if (podRestarting && oldStatus.state?.waiting === undefined) {
 				const status = statuses.get(container.name);
 				if (!status) {
-					continue;
+					throw new Error(`missing initialized status for container ${container.name}`);
 				}
 				status.state = {
 					waiting: {
@@ -2401,7 +2419,7 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 
 			const status = statuses.get(container.name);
 			if (!status) {
-				continue;
+				throw new Error(`missing initialized status for container ${container.name}`);
 			}
 			const isDefaultWaitingStatus =
 				status.state?.waiting?.reason ===
@@ -2454,6 +2472,8 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 				status.started = oldStatus.started;
 			}
 
+			status.user = convertContainerStatusUser(cStatus);
+
 			if ((containerSeen.get(cName) ?? 0) === 0) {
 				statuses.set(cName, status);
 			} else {
@@ -2468,6 +2488,31 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 
 		// Handle the containers failed to be started, which should be in Waiting state.
 		for (const container of containers) {
+			if (isInitContainer) {
+				const s = findContainerStatusByName(podStatus, container.name);
+				if (s?.state === "Exited" && s.exitCode === 0) {
+					continue;
+				}
+				const isSidecar = container.restartPolicy === "Always";
+				const status = statuses.get(container.name);
+				if (
+					!s &&
+					hasAnyRegularContainerCreated(pod, podStatus) &&
+					!isSidecar &&
+					status?.state?.waiting
+				) {
+					status.state = {
+						terminated: {
+							reason: "Completed",
+							message:
+								"Unable to get init container status from container runtime and pod has been initialized, treat it as exited normally",
+							exitCode: 0,
+						},
+					};
+					statuses.set(container.name, status);
+					continue;
+				}
+			}
 			if (!this.shouldContainerBeRestarted(container, pod, podStatus)) {
 				continue;
 			}
@@ -2493,9 +2538,10 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 
 		// Sort the container statuses since clients of this interface expect the list
 		// of containers in a pod has a deterministic order.
-		return containers
-			.map((container) => statuses.get(container.name))
-			.filter((status): status is V1ContainerStatus => status !== undefined);
+		if (isInitContainer) {
+			return kubetypes.sortStatusesOfInitContainers(pod, statuses);
+		}
+		return kubetypes.sortedContainerStatuses(Array.from(statuses.values()));
 	}
 
 	// Models kubernetes/pkg/kubelet/container/helpers.go ShouldContainerBeRestarted.
