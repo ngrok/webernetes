@@ -1,8 +1,8 @@
-import type { ProcessContext } from "../cri";
 import { BaseImage } from "./base";
 
 export class PauseImage extends BaseImage {
-	override async start(context: ProcessContext): Promise<number> {
-		return await context.waitUntilKilled();
-	}
+	static readonly imageName = "registry.k8s.io/pause";
+	static readonly imageVersion = "3.10";
+
+	readonly defaultCommand = ["pause"];
 }

@@ -2,14 +2,22 @@ import type { ProcessContext } from "../cri";
 import { BaseImage } from "./base";
 
 export class HttpEchoImage extends BaseImage {
-	async start(context: ProcessContext, argv: readonly string[]): Promise<number> {
-		const options = parseOptions(argv);
-		const text = options.text ?? context.env.get("ECHO_TEXT");
+	static readonly imageName = "hashicorp/http-echo";
+	static readonly imageVersion = "1.0";
+
+	readonly defaultCommand = ["http-echo"];
+
+	override async exec(ctx: ProcessContext, argv: readonly string[]): Promise<number> {
+		if (argv[0] !== "http-echo") {
+			return await super.exec(ctx, argv);
+		}
+		const options = parseOptions(argv.slice(1));
+		const text = options.text ?? ctx.env.get("ECHO_TEXT");
 		if (!text) {
 			return 127;
 		}
 
-		context.listenHttp(options.port, async (_ctx, request) => {
+		ctx.listenHttp(options.port, async (_ctx, request) => {
 			if (`${request.url.pathname}${request.url.search}` === "/health") {
 				return {
 					statusCode: 200,
@@ -24,7 +32,7 @@ export class HttpEchoImage extends BaseImage {
 				body: `${text}\n`,
 			};
 		});
-		return await context.waitUntilKilled();
+		return await ctx.waitUntilKilled();
 	}
 }
 

@@ -5,25 +5,22 @@ import { BaseImage } from "./base";
 
 const SERVICE_TTL_SECONDS = 30;
 
-export interface CoreDNSOptions {
-	kubeConfig: k8s.KubeConfig;
-}
-
 export class CoreDNS extends BaseImage {
-	private readonly api: k8s.CoreV1Api;
+	static readonly imageName = "webernetes/coredns";
+	static readonly imageVersion = "1.0";
+
+	readonly defaultCommand = ["coredns"];
 	private serviceInformer: k8s.Informer<k8s.V1Service> | undefined;
 	private readonly services = new Map<string, k8s.V1Service>();
 
-	constructor(private readonly options: CoreDNSOptions) {
-		super();
-		this.api = options.kubeConfig.makeApiClient(k8s.CoreV1Api);
-	}
-
-	async start(context: ProcessContext, _argv: readonly string[]): Promise<number> {
-		await this.startInformer();
-		context.listenDns(53, async (request) => this.resolve(request));
+	override async exec(ctx: ProcessContext, argv: readonly string[]): Promise<number> {
+		if (argv[0] !== "coredns") {
+			return await super.exec(ctx, argv);
+		}
+		await this.startInformer(ctx);
+		ctx.listenDns(53, async (request) => this.resolve(request));
 		try {
-			return await context.waitUntilKilled();
+			return await ctx.waitUntilKilled();
 		} finally {
 			await this.close();
 		}
@@ -33,11 +30,11 @@ export class CoreDNS extends BaseImage {
 		await this.serviceInformer?.stop();
 	}
 
-	private async startInformer(): Promise<void> {
+	private async startInformer(ctx: ProcessContext): Promise<void> {
 		this.serviceInformer = k8s.makeInformer(
-			this.options.kubeConfig,
+			ctx.kubeConfig,
 			"/api/v1/services",
-			async () => await this.api.listServiceForAllNamespaces(),
+			async () => await ctx.api.corev1.listServiceForAllNamespaces(),
 		);
 		this.serviceInformer.on("add", (service) => this.upsertService(service));
 		this.serviceInformer.on("update", (service) => this.upsertService(service));

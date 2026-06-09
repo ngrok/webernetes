@@ -1,46 +1,35 @@
 import type { ImageDefinition, ProcessContext } from "../cri";
 
-export class BaseImage implements ImageDefinition {
-	async start(context: ProcessContext, _argv: readonly string[]): Promise<number> {
-		return await context.waitUntilKilled();
-	}
-
-	async exec(context: ProcessContext, argv: readonly string[]): Promise<number> {
-		return await this.execCommand(context, argv, {
-			stdout: (chunk) => context.writeStdout(chunk),
-			stderr: (chunk) => context.writeStderr(chunk),
-		});
-	}
-
-	protected async execCommand(
-		context: ProcessContext,
-		argv: readonly string[],
-		output: CommandOutput,
-	): Promise<number> {
+export abstract class BaseImage implements ImageDefinition {
+	async exec(ctx: ProcessContext, argv: readonly string[]): Promise<number> {
 		const command = argv[0];
 		switch (command) {
+			case undefined:
+				return 0;
 			case "cat":
-				return this.cat(context, argv.slice(1), output);
+				return this.cat(ctx, argv.slice(1));
 			case "false":
 				return 1;
 			case "env":
-				return this.env(context, argv.slice(1), output);
+				return this.env(ctx, argv.slice(1));
 			case "printenv":
-				return this.printenv(context, argv.slice(1), output);
+				return this.printenv(ctx, argv.slice(1));
+			case "pause":
+				return await ctx.waitUntilKilled();
 			case "rm":
-				return this.rm(context, argv.slice(1));
+				return this.rm(ctx, argv.slice(1));
 			case "sh":
-				return await this.shell(context, argv.slice(1), output);
+				return await this.shell(ctx, argv.slice(1));
 			case "sleep":
-				return await this.sleep(context, argv.slice(1));
+				return await this.sleep(ctx, argv.slice(1));
 			case "test":
-				return this.test(context, argv.slice(1));
+				return this.test(ctx, argv.slice(1));
 			case "touch":
-				return this.touch(context, argv.slice(1));
+				return this.touch(ctx, argv.slice(1));
 			case "true":
 				return 0;
 			default:
-				output.stderr(`${command ?? ""}: not found\n`);
+				ctx.writeStderr(`${command ?? ""}: not found\n`);
 				return 127;
 		}
 	}
@@ -77,106 +66,93 @@ export class BaseImage implements ImageDefinition {
 		return words;
 	}
 
-	private cat(context: ProcessContext, argv: readonly string[], output: CommandOutput): number {
+	private cat(ctx: ProcessContext, argv: readonly string[]): number {
 		const path = argv[0];
 		if (!path) {
-			output.stderr("cat: missing operand\n");
+			ctx.writeStderr("cat: missing operand\n");
 			return 1;
 		}
-		const contents = context.fs.read(path);
+		const contents = ctx.fs.read(path);
 		if (contents === undefined) {
-			output.stderr(`cat: can't open '${path}': No such file or directory\n`);
+			ctx.writeStderr(`cat: can't open '${path}': No such file or directory\n`);
 			return 1;
 		}
-		output.stdout(contents);
+		ctx.writeStdout(contents);
 		return 0;
 	}
 
-	private rm(context: ProcessContext, argv: readonly string[]): number {
+	private rm(ctx: ProcessContext, argv: readonly string[]): number {
 		for (const path of argv.filter((arg) => arg !== "-f")) {
-			context.fs.delete(path);
+			ctx.fs.delete(path);
 		}
 		return 0;
 	}
 
-	private env(context: ProcessContext, argv: readonly string[], output: CommandOutput): number {
+	private env(ctx: ProcessContext, argv: readonly string[]): number {
 		if (argv.length > 0) {
-			output.stderr("env: unsupported arguments\n");
+			ctx.writeStderr("env: unsupported arguments\n");
 			return 125;
 		}
-		this.writeEnvironment(context, output);
+		this.writeEnvironment(ctx);
 		return 0;
 	}
 
-	private printenv(
-		context: ProcessContext,
-		argv: readonly string[],
-		output: CommandOutput,
-	): number {
+	private printenv(ctx: ProcessContext, argv: readonly string[]): number {
 		if (argv.length === 0) {
-			this.writeEnvironment(context, output);
+			this.writeEnvironment(ctx);
 			return 0;
 		}
 
 		let missing = false;
 		for (const name of argv) {
-			const value = context.env.get(name);
+			const value = ctx.env.get(name);
 			if (value === undefined) {
 				missing = true;
 				continue;
 			}
-			output.stdout(`${value}\n`);
+			ctx.writeStdout(`${value}\n`);
 		}
 		return missing ? 1 : 0;
 	}
 
-	private writeEnvironment(context: ProcessContext, output: CommandOutput): void {
-		for (const [name, value] of context.env) {
-			output.stdout(`${name}=${value}\n`);
+	private writeEnvironment(ctx: ProcessContext): void {
+		for (const [name, value] of ctx.env) {
+			ctx.writeStdout(`${name}=${value}\n`);
 		}
 	}
 
-	private async shell(
-		context: ProcessContext,
-		argv: readonly string[],
-		output: CommandOutput,
-	): Promise<number> {
+	private async shell(ctx: ProcessContext, argv: readonly string[]): Promise<number> {
 		if (argv[0] !== "-c" || argv[1] === undefined) {
-			output.stderr("sh: unsupported arguments\n");
+			ctx.writeStderr("sh: unsupported arguments\n");
 			return 2;
 		}
 		const parts = this.splitShellWords(argv[1]);
 		if (parts.length === 0) {
 			return 0;
 		}
-		return await this.execCommand(context, parts, output);
+		return await this.exec(ctx, parts);
 	}
 
-	private async sleep(context: ProcessContext, argv: readonly string[]): Promise<number> {
+	private async sleep(ctx: ProcessContext, argv: readonly string[]): Promise<number> {
 		const seconds = Number(argv[0] ?? "0");
 		if (!Number.isFinite(seconds)) {
 			return 1;
 		}
-		await context.sleep(seconds * 1000);
+		await ctx.sleep(seconds * 1000);
 		return 0;
 	}
 
-	private test(context: ProcessContext, argv: readonly string[]): number {
+	private test(ctx: ProcessContext, argv: readonly string[]): number {
 		if (argv[0] === "-f" && argv[1]) {
-			return context.fs.has(argv[1]) ? 0 : 1;
+			return ctx.fs.has(argv[1]) ? 0 : 1;
 		}
 		return 2;
 	}
 
-	private touch(context: ProcessContext, argv: readonly string[]): number {
+	private touch(ctx: ProcessContext, argv: readonly string[]): number {
 		for (const path of argv) {
-			context.fs.write(path);
+			ctx.fs.write(path);
 		}
 		return 0;
 	}
-}
-
-export interface CommandOutput {
-	stdout(chunk: string): void;
-	stderr(chunk: string): void;
 }

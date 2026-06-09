@@ -4,8 +4,14 @@ import { select } from "../go/channel";
 import { browser } from "../test/describe";
 import { waitFor } from "../test/wait";
 import { Cluster } from "./cluster";
+import { BaseImage } from "./images/base";
 import type { Kubelet } from "./kubelet";
 import { ProbeManagerImpl } from "./kubelet/prober";
+
+class TestImage extends BaseImage {
+	static readonly imageName = "example/test";
+	static readonly imageVersion = "1.0";
+}
 
 async function probeResultChannelsAreOpen(kubelet: Kubelet): Promise<boolean> {
 	const probeManager = kubelet.probeManager;
@@ -44,6 +50,24 @@ browser.describe("Cluster nodes", () => {
 				expect(kubeletNode).toEqual(node);
 				expect(server.kubelet.nodeHasSynced()).toBe(true);
 			}
+		} finally {
+			await cluster.close();
+		}
+	});
+});
+
+browser.describe("Cluster images", () => {
+	it("registers image constructors", async () => {
+		const cluster = new Cluster();
+		try {
+			cluster.registerImage(TestImage);
+
+			const first = cluster.imageRegistry.create("example/test:latest");
+			const second = cluster.imageRegistry.create("example/test:latest");
+
+			expect(first).toBeInstanceOf(TestImage);
+			expect(second).toBeInstanceOf(TestImage);
+			expect(first).not.toBe(second);
 		} finally {
 			await cluster.close();
 		}

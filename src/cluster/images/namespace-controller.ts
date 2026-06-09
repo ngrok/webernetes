@@ -12,10 +12,6 @@ import { BaseImage } from "./base";
 // Models kubernetes/staging/src/k8s.io/api/core/v1/types.go FinalizerKubernetes.
 const finalizerKubernetes = "kubernetes";
 
-export interface NamespaceControllerOptions {
-	kubeConfig: k8s.KubeConfig;
-}
-
 interface NamespacedResourceDeleter<T extends k8s.KubernetesObject> {
 	list(namespace: string): Promise<T[]>;
 	delete(name: string, namespace: string): Promise<unknown>;
@@ -23,62 +19,68 @@ interface NamespacedResourceDeleter<T extends k8s.KubernetesObject> {
 
 // Models kubernetes/pkg/controller/namespace/namespace_controller.go NamespaceController.
 export class NamespaceController extends BaseImage {
-	private readonly core: k8s.CoreV1Api;
-	private readonly discovery: k8s.DiscoveryV1Api;
-	private readonly namespacedResourceDeleters: Array<
-		NamespacedResourceDeleter<k8s.KubernetesObject>
-	>;
+	static readonly imageName = "webernetes/namespace-controller";
+	static readonly imageVersion = "1.0";
+
+	readonly defaultCommand = ["namespace-controller"];
 	private readonly queue = new Channel<string>(100);
 	private readonly queued = new Set<string>();
 
-	constructor(private readonly options: NamespaceControllerOptions) {
-		super();
-		this.core = options.kubeConfig.makeApiClient(k8s.CoreV1Api);
-		this.discovery = options.kubeConfig.makeApiClient(k8s.DiscoveryV1Api);
-		this.namespacedResourceDeleters = [
-			{
-				list: async (namespace) => (await this.core.listNamespacedPod({ namespace })).items,
-				delete: async (name, namespace) =>
-					await this.core.deleteNamespacedPod({ name, namespace, gracePeriodSeconds: 0 }),
-			},
-			{
-				list: async (namespace) => (await this.core.listNamespacedService({ namespace })).items,
-				delete: async (name, namespace) =>
-					await this.core.deleteNamespacedService({ name, namespace }),
-			},
-			{
-				list: async (namespace) =>
-					(await this.discovery.listNamespacedEndpointSlice({ namespace })).items,
-				delete: async (name, namespace) =>
-					await this.discovery.deleteNamespacedEndpointSlice({ name, namespace }),
-			},
-			{
-				list: async (namespace) => (await this.core.listNamespacedEvent({ namespace })).items,
-				delete: async (name, namespace) =>
-					await this.core.deleteNamespacedEvent({ name, namespace }),
-			},
-		];
-	}
-
-	async start(context: ProcessContext, _argv: readonly string[]): Promise<number> {
+	override async exec(ctx: ProcessContext, argv: readonly string[]): Promise<number> {
+		if (argv[0] !== "namespace-controller") {
+			return await super.exec(ctx, argv);
+		}
 		const informer = k8s.makeInformer(
-			this.options.kubeConfig,
+			ctx.kubeConfig,
 			"/api/v1/namespaces",
-			async () => await this.core.listNamespace(),
+			async () => await ctx.api.corev1.listNamespace(),
 		);
 		informer.on("add", (namespace) => this.handleNamespace(namespace));
 		informer.on("update", (namespace) => this.handleNamespace(namespace));
 
 		await informer.start();
 
-		const worker = this.worker(context);
+		const worker = this.worker(ctx);
 		try {
-			const result = await context.waitUntilKilled();
+			const result = await ctx.waitUntilKilled();
 			return result;
 		} finally {
 			await informer.stop();
 			await worker;
 		}
+	}
+
+	private newNamespacedResourceDeleters(
+		ctx: ProcessContext,
+	): Array<NamespacedResourceDeleter<k8s.KubernetesObject>> {
+		return [
+			{
+				list: async (namespace) => (await ctx.api.corev1.listNamespacedPod({ namespace })).items,
+				delete: async (name, namespace) =>
+					await ctx.api.corev1.deleteNamespacedPod({
+						name,
+						namespace,
+						gracePeriodSeconds: 0,
+					}),
+			},
+			{
+				list: async (namespace) =>
+					(await ctx.api.corev1.listNamespacedService({ namespace })).items,
+				delete: async (name, namespace) =>
+					await ctx.api.corev1.deleteNamespacedService({ name, namespace }),
+			},
+			{
+				list: async (namespace) =>
+					(await ctx.api.discoveryv1.listNamespacedEndpointSlice({ namespace })).items,
+				delete: async (name, namespace) =>
+					await ctx.api.discoveryv1.deleteNamespacedEndpointSlice({ name, namespace }),
+			},
+			{
+				list: async (namespace) => (await ctx.api.corev1.listNamespacedEvent({ namespace })).items,
+				delete: async (name, namespace) =>
+					await ctx.api.corev1.deleteNamespacedEvent({ name, namespace }),
+			},
+		];
 	}
 
 	private async handleNamespace(namespace: k8s.V1Namespace): Promise<void> {
@@ -117,19 +119,19 @@ export class NamespaceController extends BaseImage {
 	}
 
 	// Models kubernetes/pkg/controller/namespace/deletion/namespaced_resources_deleter.go Delete.
-	private async syncNamespace(context: ProcessContext, namespaceName: string): Promise<void> {
-		const namespace = await this.readNamespace(namespaceName);
+	private async syncNamespace(ctx: ProcessContext, namespaceName: string): Promise<void> {
+		const namespace = await this.readNamespace(ctx, namespaceName);
 		if (!namespace?.metadata?.deletionTimestamp || namespace.spec?.finalizers?.length === 0) {
 			return;
 		}
 
-		const remaining = await this.deleteAllContent(namespaceName);
+		const remaining = await this.deleteAllContent(ctx, namespaceName);
 		if (remaining) {
 			throw new Error(`namespace ${namespaceName} still has content`);
 		}
 		await retryConflicts(
 			async () => {
-				const latest = await this.readNamespace(namespaceName);
+				const latest = await this.readNamespace(ctx, namespaceName);
 				if (!latest?.metadata?.deletionTimestamp) {
 					return;
 				}
@@ -137,17 +139,17 @@ export class NamespaceController extends BaseImage {
 				latest.spec.finalizers = (latest.spec.finalizers ?? []).filter(
 					(finalizer) => finalizer !== finalizerKubernetes,
 				);
-				await this.core.replaceNamespace({ name: namespaceName, body: latest });
-				await this.core.deleteNamespace({ name: namespaceName });
+				await ctx.api.corev1.replaceNamespace({ name: namespaceName, body: latest });
+				await ctx.api.corev1.deleteNamespace({ name: namespaceName });
 			},
-			{ clock: context.clock },
+			{ clock: ctx.clock },
 		);
 	}
 
 	// Models kubernetes/pkg/controller/namespace/deletion/namespaced_resources_deleter.go deleteAllContent.
-	private async deleteAllContent(namespace: string): Promise<boolean> {
+	private async deleteAllContent(ctx: ProcessContext, namespace: string): Promise<boolean> {
 		let remaining = false;
-		for (const deleter of this.namespacedResourceDeleters) {
+		for (const deleter of this.newNamespacedResourceDeleters(ctx)) {
 			remaining = (await this.deleteAllContentForResource(deleter, namespace)) || remaining;
 		}
 		return remaining;
@@ -171,8 +173,11 @@ export class NamespaceController extends BaseImage {
 		return (await deleter.list(namespace)).length > 0;
 	}
 
-	private async readNamespace(name: string): Promise<k8s.V1Namespace | undefined> {
-		return await this.ignoreNotFound(() => this.core.readNamespace({ name }));
+	private async readNamespace(
+		ctx: ProcessContext,
+		name: string,
+	): Promise<k8s.V1Namespace | undefined> {
+		return await this.ignoreNotFound(() => ctx.api.corev1.readNamespace({ name }));
 	}
 
 	private async ignoreNotFound<T>(operation: () => Promise<T>): Promise<T | undefined> {

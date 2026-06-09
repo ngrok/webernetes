@@ -1,32 +1,26 @@
 import * as k8s from "../../client";
-import type { ClusterNetwork, ServiceInstance } from "../cni";
+import type { ServiceInstance } from "../cni";
 import type { ProcessContext } from "../cri";
 import { BaseImage } from "./base";
 
-export interface KubeProxyOptions {
-	kubeConfig: k8s.KubeConfig;
-	network: ClusterNetwork;
-}
-
 export class KubeProxy extends BaseImage {
-	private readonly coreApi: k8s.CoreV1Api;
-	private readonly discoveryApi: k8s.DiscoveryV1Api;
+	static readonly imageName = "webernetes/kube-proxy";
+	static readonly imageVersion = "1.0";
+
+	readonly defaultCommand = ["kube-proxy"];
 	private serviceInformer: k8s.Informer<k8s.V1Service> | undefined;
 	private endpointSliceInformer: k8s.Informer<k8s.V1EndpointSlice> | undefined;
 	private readonly services = new Map<string, k8s.V1Service>();
 	private readonly endpointSlices = new Map<string, k8s.V1EndpointSlice>();
 	private readonly endpointSliceKeysByService = new Map<string, Set<string>>();
 
-	constructor(private readonly options: KubeProxyOptions) {
-		super();
-		this.coreApi = options.kubeConfig.makeApiClient(k8s.CoreV1Api);
-		this.discoveryApi = options.kubeConfig.makeApiClient(k8s.DiscoveryV1Api);
-	}
-
-	async start(context: ProcessContext, _argv: readonly string[]): Promise<number> {
-		await this.startServiceRouting();
+	override async exec(ctx: ProcessContext, argv: readonly string[]): Promise<number> {
+		if (argv[0] !== "kube-proxy") {
+			return await super.exec(ctx, argv);
+		}
+		await this.startServiceRouting(ctx);
 		try {
-			return await context.waitUntilKilled();
+			return await ctx.waitUntilKilled();
 		} finally {
 			await this.close();
 		}
@@ -37,45 +31,45 @@ export class KubeProxy extends BaseImage {
 		await this.endpointSliceInformer?.stop();
 	}
 
-	private async startServiceRouting(): Promise<void> {
+	private async startServiceRouting(ctx: ProcessContext): Promise<void> {
 		this.serviceInformer = k8s.makeInformer(
-			this.options.kubeConfig,
+			ctx.kubeConfig,
 			"/api/v1/services",
-			async () => await this.coreApi.listServiceForAllNamespaces(),
+			async () => await ctx.api.corev1.listServiceForAllNamespaces(),
 		);
 		this.endpointSliceInformer = k8s.makeInformer(
-			this.options.kubeConfig,
+			ctx.kubeConfig,
 			"/apis/discovery.k8s.io/v1/endpointslices",
-			async () => await this.discoveryApi.listEndpointSliceForAllNamespaces(),
+			async () => await ctx.api.discoveryv1.listEndpointSliceForAllNamespaces(),
 		);
-		this.serviceInformer.on("add", (service) => this.upsertService(service));
-		this.serviceInformer.on("update", (service) => this.upsertService(service));
-		this.serviceInformer.on("delete", (service) => this.deleteService(service));
-		this.endpointSliceInformer.on("add", (slice) => this.upsertEndpointSlice(slice));
-		this.endpointSliceInformer.on("update", (slice) => this.upsertEndpointSlice(slice));
-		this.endpointSliceInformer.on("delete", (slice) => this.deleteEndpointSlice(slice));
+		this.serviceInformer.on("add", (service) => this.upsertService(ctx, service));
+		this.serviceInformer.on("update", (service) => this.upsertService(ctx, service));
+		this.serviceInformer.on("delete", (service) => this.deleteService(ctx, service));
+		this.endpointSliceInformer.on("add", (slice) => this.upsertEndpointSlice(ctx, slice));
+		this.endpointSliceInformer.on("update", (slice) => this.upsertEndpointSlice(ctx, slice));
+		this.endpointSliceInformer.on("delete", (slice) => this.deleteEndpointSlice(ctx, slice));
 
 		await this.serviceInformer.start();
 		await this.endpointSliceInformer.start();
-		this.reconcileAllServices();
+		this.reconcileAllServices(ctx);
 	}
 
-	private upsertService(service: k8s.V1Service): void {
+	private upsertService(ctx: ProcessContext, service: k8s.V1Service): void {
 		this.services.set(serviceKey(service), service);
-		this.reconcileService(service);
+		this.reconcileService(ctx, service);
 	}
 
-	private deleteService(service: k8s.V1Service): void {
+	private deleteService(ctx: ProcessContext, service: k8s.V1Service): void {
 		const namespace = service.metadata?.namespace ?? "default";
 		const name = service.metadata?.name;
 		if (!name) {
 			return;
 		}
 		this.services.delete(serviceKey(service));
-		this.options.network.unregisterService(namespace, name);
+		ctx.network.unregisterService(namespace, name);
 	}
 
-	private upsertEndpointSlice(slice: k8s.V1EndpointSlice): void {
+	private upsertEndpointSlice(ctx: ProcessContext, slice: k8s.V1EndpointSlice): void {
 		const key = endpointSliceKey(slice);
 		const previous = this.endpointSlices.get(key);
 		if (previous) {
@@ -83,24 +77,24 @@ export class KubeProxy extends BaseImage {
 		}
 		this.endpointSlices.set(key, slice);
 		this.indexEndpointSlice(slice);
-		this.reconcileServiceForEndpointSlice(slice);
+		this.reconcileServiceForEndpointSlice(ctx, slice);
 	}
 
-	private deleteEndpointSlice(slice: k8s.V1EndpointSlice): void {
+	private deleteEndpointSlice(ctx: ProcessContext, slice: k8s.V1EndpointSlice): void {
 		const key = endpointSliceKey(slice);
 		const stored = this.endpointSlices.get(key) ?? slice;
 		this.unindexEndpointSlice(stored);
 		this.endpointSlices.delete(key);
-		this.reconcileServiceForEndpointSlice(stored);
+		this.reconcileServiceForEndpointSlice(ctx, stored);
 	}
 
-	private reconcileAllServices(): void {
+	private reconcileAllServices(ctx: ProcessContext): void {
 		for (const service of this.services.values()) {
-			this.reconcileService(service);
+			this.reconcileService(ctx, service);
 		}
 	}
 
-	private reconcileServiceForEndpointSlice(slice: k8s.V1EndpointSlice): void {
+	private reconcileServiceForEndpointSlice(ctx: ProcessContext, slice: k8s.V1EndpointSlice): void {
 		const serviceName = endpointSliceServiceName(slice);
 		if (!serviceName) {
 			return;
@@ -109,23 +103,23 @@ export class KubeProxy extends BaseImage {
 			namespacedNameKey(slice.metadata?.namespace ?? "default", serviceName),
 		);
 		if (service) {
-			this.reconcileService(service);
+			this.reconcileService(ctx, service);
 		}
 	}
 
-	private reconcileService(service: k8s.V1Service): void {
+	private reconcileService(ctx: ProcessContext, service: k8s.V1Service): void {
 		const instance = this.serviceInstance(service);
 		if (!instance) {
 			const namespace = service.metadata?.namespace ?? "default";
 			const name = service.metadata?.name;
 			if (name) {
-				this.options.network.unregisterService(namespace, name);
+				ctx.network.unregisterService(namespace, name);
 			}
 			return;
 		}
-		this.options.network.registerService(instance);
+		ctx.network.registerService(instance);
 		for (const port of instance.ports) {
-			this.options.network.setServiceTargets(
+			ctx.network.setServiceTargets(
 				instance.namespace,
 				instance.name,
 				port.port,

@@ -6,6 +6,38 @@ import { Cluster } from "../cluster";
 import { errCommandTimedOut } from "../cri-client/pkg";
 import { ImageRegistry } from "./image";
 import { BaseImage } from "../images/base";
+import type { ProcessContext } from "./runtime";
+
+class TestImage extends BaseImage {
+	static readonly imageName = "example/test";
+	static readonly imageVersion = "1.0";
+}
+
+class StatefulImage extends BaseImage {
+	static readonly imageName = "example/stateful";
+	static readonly imageVersion = "1.0";
+
+	override async exec(context: ProcessContext, argv: readonly string[]): Promise<number> {
+		if (argv[0] !== "count") {
+			return await super.exec(context, argv);
+		}
+		this.count++;
+		context.writeStdout(`${this.count}\n`);
+		return 0;
+	}
+
+	private count = 0;
+}
+
+class ExampleImageV1 extends BaseImage {
+	static readonly imageName = "example/image";
+	static readonly imageVersion = "1.0";
+}
+
+class ExampleImageV2 extends BaseImage {
+	static readonly imageName = "example/image";
+	static readonly imageVersion = "2.0";
+}
 
 browser.describe("InProcessRuntimeService images", () => {
 	it("lists and removes images through the image registry", async () => {
@@ -40,14 +72,65 @@ browser.describe("InProcessRuntimeService images", () => {
 
 	it("creates a new image instance for each resolved container image", () => {
 		const registry = new ImageRegistry();
-		registry.register("example/image:latest", () => new BaseImage());
+		registry.register(TestImage);
 
-		const first = registry.create("example/image:latest");
-		const second = registry.create("example/image:latest");
+		const first = registry.create("example/test:latest");
+		const second = registry.create("example/test:latest");
 
-		expect(first).toBeInstanceOf(BaseImage);
-		expect(second).toBeInstanceOf(BaseImage);
+		expect(first).toBeInstanceOf(TestImage);
+		expect(second).toBeInstanceOf(TestImage);
 		expect(first).not.toBe(second);
+	});
+
+	it("resolves latest to the newest registered image version", () => {
+		const registry = new ImageRegistry();
+		registry.register(ExampleImageV1);
+		registry.register(ExampleImageV2);
+
+		expect(registry.create("example/image:1.0")).toBeInstanceOf(ExampleImageV1);
+		expect(registry.create("example/image:latest")).toBeInstanceOf(ExampleImageV2);
+		expect(registry.create("example/image")).toBeInstanceOf(ExampleImageV2);
+	});
+
+	it("reuses the container image instance for exec processes", async () => {
+		const cluster = new Cluster();
+		try {
+			cluster.registerImage(StatefulImage);
+			const runtime = cluster.servers[0].runtime;
+			const ctx = context.background();
+			const sandboxConfig = {
+				metadata: {
+					name: "stateful-pod",
+					namespace: "default",
+					uid: "stateful-pod",
+					attempt: 0,
+				},
+			};
+			const [sandboxId, sandboxErr] = await runtime.runPodSandbox(ctx, sandboxConfig);
+			expect(sandboxErr).toBeUndefined();
+			const [containerId, containerErr] = await runtime.createContainer(
+				ctx,
+				sandboxId,
+				{
+					metadata: { name: "main", attempt: 0 },
+					image: { image: "example/stateful:latest" },
+					command: ["pause"],
+				},
+				sandboxConfig,
+			);
+			expect(containerErr).toBeUndefined();
+			expect(await runtime.startContainer(ctx, containerId)).toBeUndefined();
+
+			const [first, firstErr] = await runtime.execSync(ctx, containerId, ["count"]);
+			const [second, secondErr] = await runtime.execSync(ctx, containerId, ["count"]);
+
+			expect(firstErr).toBeUndefined();
+			expect(secondErr).toBeUndefined();
+			expect(first?.stdout).toBe("1\n");
+			expect(second?.stdout).toBe("2\n");
+		} finally {
+			await cluster.close();
+		}
 	});
 
 	it("returns ErrCommandTimedOut when execSync times out", async () => {

@@ -1,38 +1,37 @@
 import type { ProcessContext } from "../cri";
-import { BaseImage, type CommandOutput } from "./base";
+import { BaseImage } from "./base";
 
 export class BusyBoxImage extends BaseImage {
-	protected override async execCommand(
-		context: ProcessContext,
-		argv: readonly string[],
-		output: CommandOutput,
-	): Promise<number> {
+	static readonly imageName = "busybox";
+	static readonly imageVersion = "1.36";
+
+	override async exec(ctx: ProcessContext, argv: readonly string[]): Promise<number> {
 		const command = argv[0];
 		switch (command) {
 			case "wget":
-				return await wget(context, argv.slice(1));
+				return await wget(ctx, argv.slice(1));
 			default:
-				return await super.execCommand(context, argv, output);
+				return await super.exec(ctx, argv);
 		}
 	}
 }
 
-async function wget(context: ProcessContext, argv: readonly string[]): Promise<number> {
+async function wget(ctx: ProcessContext, argv: readonly string[]): Promise<number> {
 	const target = argv.find((arg) => !arg.startsWith("-"));
 	if (!target) {
-		context.writeStderr("wget: missing URL\n");
+		ctx.writeStderr("wget: missing URL\n");
 		return 1;
 	}
 	try {
-		const response = await context.fetch(target);
+		const response = await ctx.fetch(target);
 		if (response.statusCode < 200 || response.statusCode >= 300) {
-			context.writeStderr(`wget: server returned status ${response.statusCode}\n`);
+			ctx.writeStderr(`wget: server returned status ${response.statusCode}\n`);
 			return 1;
 		}
-		context.writeStdout(response.body ?? "");
+		ctx.writeStdout(response.body ?? "");
 		return 0;
 	} catch (error) {
-		context.writeStderr(error instanceof Error ? `${error.message}\n` : "wget failed\n");
+		ctx.writeStderr(error instanceof Error ? `${error.message}\n` : "wget failed\n");
 		return 1;
 	}
 }

@@ -2,7 +2,8 @@ import type { Clock } from "../../clock";
 import { Channel, ReadOnlyChannel, select } from "../../go/channel";
 import * as context from "../../go/context";
 import * as time from "../../go/time";
-import type { KubeConfig } from "../../client/types";
+import type { KubeConfig } from "../../client/config";
+import { CoreV1Api, DiscoveryV1Api, type KubeClient } from "../../client";
 import { ipToNumber } from "../../net";
 import { newCommandTimedOutError } from "../cri-client/pkg";
 import type { DnsHandler, DnsListener, DnsRecordType, DnsResponse } from "../cni/dns";
@@ -813,6 +814,7 @@ export class ContainerInstance {
 	readonly restartCount: number;
 	readonly createdAt: number;
 	readonly fs = new ContainerFileSystem();
+	private readonly image: ImageDefinition;
 	private state: ContainerStatus["state"] = "Created";
 	private mainProcess: ProcessInstance | undefined;
 	private startedAtMs: number | undefined;
@@ -834,6 +836,7 @@ export class ContainerInstance {
 		this.env = new Map(Object.entries(config.env ?? {}));
 		this.ports = config.ports ?? [];
 		this.createdAt = runtime.clock.nowMs();
+		this.image = this.createImage();
 	}
 
 	readonly name: string;
@@ -843,9 +846,8 @@ export class ContainerInstance {
 		if (this.state === "Running") {
 			throw new Error(`container ${this.id} is already running`);
 		}
-		const image = this.createImage();
-		const argv = this.startArgv(image);
-		const process = this.runtime.createProcess(this, argv, image.start.bind(image));
+		const argv = this.startArgv();
+		const process = this.runtime.createProcess(this, argv, this.image.exec.bind(this.image));
 		this.state = "Running";
 		this.startedAtMs = this.runtime.clock.nowMs();
 		this.finishedAtMs = undefined;
@@ -865,8 +867,7 @@ export class ContainerInstance {
 	}
 
 	exec(argv: string[], _options: ExecOptions = {}): ProcessInstance {
-		const image = this.createImage();
-		const process = this.runtime.createProcess(this, argv, image.exec.bind(image));
+		const process = this.runtime.createProcess(this, argv, this.image.exec.bind(this.image));
 		process.start();
 		return process;
 	}
@@ -910,8 +911,8 @@ export class ContainerInstance {
 		return image;
 	}
 
-	private startArgv(image: ImageDefinition): readonly string[] {
-		const command = this.command.length > 0 ? this.command : (image.defaultCommand ?? []);
+	private startArgv(): readonly string[] {
+		const command = this.command.length > 0 ? this.command : (this.image.defaultCommand ?? []);
 		return [...command, ...this.args];
 	}
 }
@@ -1050,7 +1051,13 @@ export class ProcessContext implements context.Context {
 	readonly pod: PodSandboxInstance;
 	readonly fs: ContainerFileSystem;
 	readonly kubeConfig: KubeConfig;
+	readonly api: KubeClient;
 	readonly clock: Clock;
+	/**
+	 * Internal simulator network access for cluster components such as kube-proxy.
+	 * User images generally should not mutate this directly.
+	 */
+	readonly network: ClusterNetwork;
 
 	constructor(
 		private readonly process: ProcessInstance,
@@ -1063,7 +1070,12 @@ export class ProcessContext implements context.Context {
 		this.pod = process.container.sandbox;
 		this.fs = process.container.fs;
 		this.kubeConfig = runtime.kubeConfig;
+		this.api = {
+			corev1: runtime.kubeConfig.makeApiClient(CoreV1Api),
+			discoveryv1: runtime.kubeConfig.makeApiClient(DiscoveryV1Api),
+		};
 		this.clock = runtime.clock;
+		this.network = runtime.network;
 	}
 
 	done(): ReadOnlyChannel<void> {

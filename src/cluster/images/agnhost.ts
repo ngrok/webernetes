@@ -2,21 +2,29 @@ import type { ProcessContext } from "../cri";
 import { BaseImage } from "./base";
 
 export class AgnhostImage extends BaseImage {
-	async start(context: ProcessContext, argv: readonly string[]): Promise<number> {
+	static readonly imageName = "registry.k8s.io/e2e-test-images/agnhost";
+	static readonly imageVersion = "2.40";
+
+	readonly defaultCommand = ["agnhost"];
+
+	override async exec(ctx: ProcessContext, argv: readonly string[]): Promise<number> {
 		const netexecIndex = argv.findIndex((arg) => arg.endsWith("agnhost") || arg === "netexec");
 		const commandIndex = argv[netexecIndex] === "netexec" ? netexecIndex : netexecIndex + 1;
 		if (argv[commandIndex] !== "netexec") {
-			return await context.waitUntilKilled();
+			if (argv[0] === "agnhost") {
+				return await ctx.waitUntilKilled();
+			}
+			return await super.exec(ctx, argv);
 		}
 		const port = parsePort(argv.slice(commandIndex + 1)) ?? 8080;
-		context.listenHttp(port, async (_ctx, request) => {
+		ctx.listenHttp(port, async (_ctx, request) => {
 			const url = request.url;
 			switch (url.pathname) {
 				case "/healthz":
 				case "/readyz":
 					return { statusCode: 200, body: "ok\n" };
 				case "/exit":
-					return this.exitResponse(context, url);
+					return this.exitResponse(ctx, url);
 				case "/echo":
 					return {
 						statusCode: Number(url.searchParams.get("code") ?? "200"),
@@ -25,43 +33,35 @@ export class AgnhostImage extends BaseImage {
 				case "/redirect":
 					return { statusCode: 302, header: { Location: ["/echo"] }, body: "" };
 				case "/shell":
-					return await this.shellResponse(context, url.searchParams.get("cmd") ?? "");
+					return await this.shellResponse(ctx, url.searchParams.get("cmd") ?? "");
 				default:
 					return { statusCode: 404, body: "not found\n" };
 			}
 		});
-		return await context.waitUntilKilled();
+		return await ctx.waitUntilKilled();
 	}
 
-	private exitResponse(context: ProcessContext, url: URL): { statusCode: number; body: string } {
+	private exitResponse(ctx: ProcessContext, url: URL): { statusCode: number; body: string } {
 		const code = parseExitCode(url.searchParams.get("code"));
 		const waitMs = parseDurationMs(url.searchParams.get("wait"));
 		void (async () => {
-			await context.sleep(waitMs);
-			context.exit(code);
+			await ctx.sleep(waitMs);
+			ctx.exit(code);
 		})().catch(() => {});
 		return { statusCode: 200, body: "" };
 	}
 
 	private async shellResponse(
-		context: ProcessContext,
+		ctx: ProcessContext,
 		command: string,
 	): Promise<{ statusCode: number; body: string }> {
-		let output = "";
-		let error = "";
-		const code = await this.execCommand(context, this.splitShellWords(command), {
-			stdout: (chunk) => {
-				output += chunk;
-			},
-			stderr: (chunk) => {
-				error += chunk;
-			},
-		});
+		const process = ctx.exec(this.splitShellWords(command));
+		const code = await process.wait();
 		return {
 			statusCode: 200,
 			body: JSON.stringify({
-				output,
-				error,
+				output: process.stdout,
+				error: process.stderr,
 				code,
 			}),
 		};

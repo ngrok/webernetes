@@ -5,7 +5,7 @@ import * as k8s from "../client";
 import { Server } from "./server";
 import * as http from "./cni/http";
 import { ClusterNetwork } from "./cni";
-import { ImageRegistry, type ExecResult } from "./cri";
+import { ImageRegistry, type ExecResult, type ImageConstructor } from "./cri";
 import { CoreDNS } from "./images/coredns";
 import { BusyBoxImage } from "./images/busybox";
 import { HelloWorldImage } from "./images/hello-world";
@@ -73,14 +73,11 @@ export class Cluster {
 		this.network = new ClusterNetwork();
 
 		this.imageRegistry = new ImageRegistry();
-		this.imageRegistry.register("registry.k8s.io/pause:3.10", () => new PauseImage());
-		this.imageRegistry.register("busybox:1.36", () => new BusyBoxImage());
-		this.imageRegistry.register("crccheck/hello-world:latest", () => new HelloWorldImage());
-		this.imageRegistry.register("hashicorp/http-echo:1.0", () => new HttpEchoImage());
-		this.imageRegistry.register(
-			"registry.k8s.io/e2e-test-images/agnhost:2.40",
-			() => new AgnhostImage(),
-		);
+		this.imageRegistry.register(PauseImage);
+		this.imageRegistry.register(BusyBoxImage);
+		this.imageRegistry.register(HelloWorldImage);
+		this.imageRegistry.register(HttpEchoImage);
+		this.imageRegistry.register(AgnhostImage);
 
 		const kubeletConfiguration: KubeletConfiguration = {
 			syncFrequencyMs: 60 * 1000,
@@ -117,43 +114,11 @@ export class Cluster {
 			}),
 		];
 
-		this.imageRegistry.register(
-			"webernetes/kube-scheduler:latest",
-			() =>
-				new Scheduler(
-					this.kubeConfig,
-					this.servers.map((server) => server.name),
-				),
-		);
-		this.imageRegistry.register(
-			"webernetes/kube-proxy:latest",
-			() =>
-				new KubeProxy({
-					kubeConfig: this.kubeConfig,
-					network: this.network,
-				}),
-		);
-		this.imageRegistry.register(
-			"webernetes/endpointslice-controller:latest",
-			() =>
-				new EndpointSliceController({
-					kubeConfig: this.kubeConfig,
-				}),
-		);
-		this.imageRegistry.register(
-			"webernetes/namespace-controller:latest",
-			() =>
-				new NamespaceController({
-					kubeConfig: this.kubeConfig,
-				}),
-		);
-		this.imageRegistry.register(
-			"webernetes/coredns:latest",
-			() =>
-				new CoreDNS({
-					kubeConfig: this.kubeConfig,
-				}),
-		);
+		this.imageRegistry.register(Scheduler);
+		this.imageRegistry.register(KubeProxy);
+		this.imageRegistry.register(EndpointSliceController);
+		this.imageRegistry.register(NamespaceController);
+		this.imageRegistry.register(CoreDNS);
 	}
 
 	public async init() {
@@ -226,11 +191,17 @@ export class Cluster {
 		);
 	}
 
+	// TODO(samwho): fold this functionality into `fetch()` such that if you
+	// fetch with a node IP, it automatically resolves to a NodePort service.
 	public async fetchNodePort(
 		nodePort: number,
 		request: Partial<http.Request> = {},
 	): Promise<http.Response> {
 		return await this.network.fetchNodePort(this.ctx, nodePort, request);
+	}
+
+	public registerImage(image: ImageConstructor): void {
+		this.imageRegistry.register(image);
 	}
 
 	public async exec(

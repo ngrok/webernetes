@@ -1,14 +1,9 @@
 import * as k8s from "../../client";
 import { isNotFoundError } from "../../client/errors";
-import type { Clock } from "../../clock";
 import { retryConflicts } from "../../retry";
 import { isPodReadyConditionTrue } from "../api/v1/pod/util";
 import type { ProcessContext } from "../cri";
 import { BaseImage } from "./base";
-
-export interface EndpointSliceControllerOptions {
-	kubeConfig: k8s.KubeConfig;
-}
 
 const controllerName = "endpointslice-controller.k8s.io";
 const labelServiceName = "kubernetes.io/service-name";
@@ -16,8 +11,10 @@ const labelManagedBy = "endpointslice.kubernetes.io/managed-by";
 const labelHeadlessService = "service.kubernetes.io/headless";
 
 export class EndpointSliceController extends BaseImage {
-	private readonly coreApi: k8s.CoreV1Api;
-	private readonly discoveryApi: k8s.DiscoveryV1Api;
+	static readonly imageName = "webernetes/endpointslice-controller";
+	static readonly imageVersion = "1.0";
+
+	readonly defaultCommand = ["endpointslice-controller"];
 	private serviceInformer: k8s.Informer<k8s.V1Service> | undefined;
 	private podInformer: k8s.Informer<k8s.V1Pod> | undefined;
 	private readonly services = new Map<string, k8s.V1Service>();
@@ -26,19 +23,14 @@ export class EndpointSliceController extends BaseImage {
 	private readonly podsByNamespace = new Map<string, Set<string>>();
 	private readonly pending = new Set<string>();
 	private readonly requeued = new Set<string>();
-	private clock: Clock | undefined;
 
-	constructor(private readonly options: EndpointSliceControllerOptions) {
-		super();
-		this.coreApi = options.kubeConfig.makeApiClient(k8s.CoreV1Api);
-		this.discoveryApi = options.kubeConfig.makeApiClient(k8s.DiscoveryV1Api);
-	}
-
-	async start(context: ProcessContext, _argv: readonly string[]): Promise<number> {
-		this.clock = context.clock;
-		await this.startInformers();
+	override async exec(ctx: ProcessContext, argv: readonly string[]): Promise<number> {
+		if (argv[0] !== "endpointslice-controller") {
+			return await super.exec(ctx, argv);
+		}
+		await this.startInformers(ctx);
 		try {
-			return await context.waitUntilKilled();
+			return await ctx.waitUntilKilled();
 		} finally {
 			await this.close();
 		}
@@ -49,32 +41,32 @@ export class EndpointSliceController extends BaseImage {
 		await this.podInformer?.stop();
 	}
 
-	private async startInformers(): Promise<void> {
+	private async startInformers(ctx: ProcessContext): Promise<void> {
 		this.serviceInformer = k8s.makeInformer(
-			this.options.kubeConfig,
+			ctx.kubeConfig,
 			"/api/v1/services",
-			async () => await this.coreApi.listServiceForAllNamespaces(),
+			async () => await ctx.api.corev1.listServiceForAllNamespaces(),
 		);
 		this.podInformer = k8s.makeInformer(
-			this.options.kubeConfig,
+			ctx.kubeConfig,
 			"/api/v1/pods",
-			async () => await this.coreApi.listPodForAllNamespaces(),
+			async () => await ctx.api.corev1.listPodForAllNamespaces(),
 		);
-		this.serviceInformer.on("add", (service) => this.upsertService(service));
-		this.serviceInformer.on("update", (service) => this.upsertService(service));
-		this.serviceInformer.on("delete", (service) => this.deleteService(service));
-		this.podInformer.on("add", (pod) => this.upsertPod(pod));
-		this.podInformer.on("update", (pod) => this.upsertPod(pod));
-		this.podInformer.on("delete", (pod) => this.deletePod(pod));
+		this.serviceInformer.on("add", (service) => this.upsertService(ctx, service));
+		this.serviceInformer.on("update", (service) => this.upsertService(ctx, service));
+		this.serviceInformer.on("delete", (service) => this.deleteService(ctx, service));
+		this.podInformer.on("add", (pod) => this.upsertPod(ctx, pod));
+		this.podInformer.on("update", (pod) => this.upsertPod(ctx, pod));
+		this.podInformer.on("delete", (pod) => this.deletePod(ctx, pod));
 
 		await this.serviceInformer.start();
 		await this.podInformer.start();
 		for (const service of this.services.values()) {
-			this.queueServiceReconcile(service);
+			this.queueServiceReconcile(ctx, service);
 		}
 	}
 
-	private upsertService(service: k8s.V1Service): void {
+	private upsertService(ctx: ProcessContext, service: k8s.V1Service): void {
 		const key = serviceKey(service);
 		const previous = this.services.get(key);
 		if (previous) {
@@ -82,18 +74,18 @@ export class EndpointSliceController extends BaseImage {
 		}
 		this.services.set(key, service);
 		this.indexService(service);
-		this.queueServiceReconcile(service);
+		this.queueServiceReconcile(ctx, service);
 	}
 
-	private deleteService(service: k8s.V1Service): void {
+	private deleteService(ctx: ProcessContext, service: k8s.V1Service): void {
 		const key = serviceKey(service);
 		const stored = this.services.get(key) ?? service;
 		this.unindexService(stored);
 		this.services.delete(key);
-		void this.deleteGeneratedSlice(stored).catch(() => undefined);
+		void this.deleteGeneratedSlice(ctx, stored).catch(() => undefined);
 	}
 
-	private upsertPod(pod: k8s.V1Pod): void {
+	private upsertPod(ctx: ProcessContext, pod: k8s.V1Pod): void {
 		const key = podKey(pod);
 		const previous = this.pods.get(key);
 		if (previous) {
@@ -101,52 +93,52 @@ export class EndpointSliceController extends BaseImage {
 		}
 		this.pods.set(key, pod);
 		this.indexPod(pod);
-		this.queueServicesInNamespace(pod.metadata?.namespace ?? "default");
+		this.queueServicesInNamespace(ctx, pod.metadata?.namespace ?? "default");
 	}
 
-	private deletePod(pod: k8s.V1Pod): void {
+	private deletePod(ctx: ProcessContext, pod: k8s.V1Pod): void {
 		const key = podKey(pod);
 		const stored = this.pods.get(key) ?? pod;
 		this.unindexPod(stored);
 		this.pods.delete(key);
-		this.queueServicesInNamespace(pod.metadata?.namespace ?? "default");
+		this.queueServicesInNamespace(ctx, pod.metadata?.namespace ?? "default");
 	}
 
-	private queueServicesInNamespace(namespace: string): void {
+	private queueServicesInNamespace(ctx: ProcessContext, namespace: string): void {
 		for (const key of this.servicesByNamespace.get(namespace) ?? []) {
 			const service = this.services.get(key);
 			if (service) {
-				this.queueServiceReconcile(service);
+				this.queueServiceReconcile(ctx, service);
 			}
 		}
 	}
 
-	private queueServiceReconcile(service: k8s.V1Service): void {
+	private queueServiceReconcile(ctx: ProcessContext, service: k8s.V1Service): void {
 		const key = serviceKey(service);
 		if (this.pending.has(key)) {
 			this.requeued.add(key);
 			return;
 		}
 		this.pending.add(key);
-		void this.reconcileService(service)
+		void this.reconcileService(ctx, service)
 			.catch(() => undefined)
 			.finally(() => {
 				this.pending.delete(key);
 				if (this.requeued.delete(key)) {
 					const latest = this.services.get(key);
 					if (latest) {
-						this.queueServiceReconcile(latest);
+						this.queueServiceReconcile(ctx, latest);
 					}
 				}
 			});
 	}
 
-	private async reconcileService(service: k8s.V1Service): Promise<void> {
+	private async reconcileService(ctx: ProcessContext, service: k8s.V1Service): Promise<void> {
 		const name = service.metadata?.name;
 		const namespace = service.metadata?.namespace ?? "default";
 		const selector = new Map(Object.entries(service.spec?.selector ?? {}));
 		if (!name || selector.size === 0 || service.spec?.type === "ExternalName") {
-			await this.deleteGeneratedSlice(service);
+			await this.deleteGeneratedSlice(ctx, service);
 			return;
 		}
 
@@ -156,7 +148,7 @@ export class EndpointSliceController extends BaseImage {
 			.filter((pod) => labelsMatch(selector, new Map(Object.entries(pod.metadata?.labels ?? {}))))
 			.filter((pod) => shouldPodBeInEndpointSlice(pod));
 		const slice = this.endpointSliceForService(service, matchingPods);
-		await this.applyEndpointSlice(slice);
+		await this.applyEndpointSlice(ctx, slice);
 	}
 
 	private endpointSliceForService(service: k8s.V1Service, pods: k8s.V1Pod[]): k8s.V1EndpointSlice {
@@ -219,22 +211,18 @@ export class EndpointSliceController extends BaseImage {
 		};
 	}
 
-	private async applyEndpointSlice(slice: k8s.V1EndpointSlice): Promise<void> {
-		const clock = this.clock;
-		if (!clock) {
-			throw new Error("EndpointSliceController has not started");
-		}
+	private async applyEndpointSlice(ctx: ProcessContext, slice: k8s.V1EndpointSlice): Promise<void> {
 		const name = slice.metadata?.name ?? "";
 		const namespace = slice.metadata?.namespace ?? "default";
 		try {
 			await retryConflicts(
 				async () => {
 					try {
-						const current = await this.discoveryApi.readNamespacedEndpointSlice({
+						const current = await ctx.api.discoveryv1.readNamespacedEndpointSlice({
 							name,
 							namespace,
 						});
-						await this.discoveryApi.replaceNamespacedEndpointSlice({
+						await ctx.api.discoveryv1.replaceNamespacedEndpointSlice({
 							name,
 							namespace,
 							body: {
@@ -249,10 +237,10 @@ export class EndpointSliceController extends BaseImage {
 						if (!isNotFoundError(error)) {
 							throw error;
 						}
-						await this.discoveryApi.createNamespacedEndpointSlice({ namespace, body: slice });
+						await ctx.api.discoveryv1.createNamespacedEndpointSlice({ namespace, body: slice });
 					}
 				},
-				{ clock },
+				{ clock: ctx.clock },
 			);
 		} catch (error) {
 			if (!isNotFoundError(error)) {
@@ -261,13 +249,13 @@ export class EndpointSliceController extends BaseImage {
 		}
 	}
 
-	private async deleteGeneratedSlice(service: k8s.V1Service): Promise<void> {
+	private async deleteGeneratedSlice(ctx: ProcessContext, service: k8s.V1Service): Promise<void> {
 		const name = service.metadata?.name;
 		if (!name) {
 			return;
 		}
 		try {
-			await this.discoveryApi.deleteNamespacedEndpointSlice({
+			await ctx.api.discoveryv1.deleteNamespacedEndpointSlice({
 				name: generatedSliceName(name),
 				namespace: service.metadata?.namespace ?? "default",
 			});
