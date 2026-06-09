@@ -89,6 +89,10 @@ function isLocalhost(host: string): boolean {
 	return host === "localhost" || host === "127.0.0.1";
 }
 
+function nodeAliasKey(alias: string): string {
+	return alias.toLowerCase();
+}
+
 function isPodOrigin(origin: FetchOrigin): origin is V1Pod {
 	return origin.kind === "Pod" || (origin.spec !== undefined && "containers" in origin.spec);
 }
@@ -104,6 +108,8 @@ export class ClusterNetwork {
 	private podDnsConfigsByUid = new Map<string, DnsConfig>();
 	private nodeIpsByName = new Map<string, Set<string>>();
 	private nodeNamesByIp = new Map<string, Set<string>>();
+	private nodeAliasesByName = new Map<string, Set<string>>();
+	private nodeIpsByAlias = new Map<string, Set<string>>();
 	private httpListeners = new Map<string, http.Handler>();
 	private dnsListeners = new Map<string, DnsHandler>();
 	private servicesByKey = new Map<string, ServiceInstance>();
@@ -143,7 +149,11 @@ export class ClusterNetwork {
 		throw new NetworkError(`no free pod IPs in ${podCIDR}`);
 	}
 
-	registerNode(name: string, ipAddresses: readonly string[]): void {
+	registerNode(
+		name: string,
+		ipAddresses: readonly string[],
+		aliases: readonly string[] = [],
+	): void {
 		this.unregisterNode(name);
 		const ips = new Set(ipAddresses.filter((address) => isIpLiteral(address)));
 		this.nodeIpsByName.set(name, ips);
@@ -152,11 +162,24 @@ export class ClusterNetwork {
 			nodeNames.add(name);
 			this.nodeNamesByIp.set(ip, nodeNames);
 		}
+		const firstIp = ips.values().next().value;
+		const validAliases = new Set(
+			aliases.filter((alias) => alias.length > 0).map((alias) => nodeAliasKey(alias)),
+		);
+		this.nodeAliasesByName.set(name, validAliases);
+		if (firstIp) {
+			for (const alias of validAliases) {
+				const aliasIps = this.nodeIpsByAlias.get(alias) ?? new Set<string>();
+				aliasIps.add(firstIp);
+				this.nodeIpsByAlias.set(alias, aliasIps);
+			}
+		}
 	}
 
 	unregisterNode(name: string): void {
-		const ips = this.nodeIpsByName.get(name);
-		if (!ips) {
+		const ips = this.nodeIpsByName.get(name) ?? new Set<string>();
+		const aliases = this.nodeAliasesByName.get(name) ?? new Set<string>();
+		if (ips.size === 0 && aliases.size === 0) {
 			return;
 		}
 		this.nodeIpsByName.delete(name);
@@ -168,6 +191,19 @@ export class ClusterNetwork {
 			nodeNames.delete(name);
 			if (nodeNames.size === 0) {
 				this.nodeNamesByIp.delete(ip);
+			}
+		}
+		this.nodeAliasesByName.delete(name);
+		for (const alias of aliases) {
+			const aliasIps = this.nodeIpsByAlias.get(alias);
+			if (!aliasIps) {
+				continue;
+			}
+			for (const ip of ips) {
+				aliasIps.delete(ip);
+			}
+			if (aliasIps.size === 0) {
+				this.nodeIpsByAlias.delete(alias);
 			}
 		}
 	}
@@ -262,6 +298,14 @@ export class ClusterNetwork {
 		if (isLocalhost(url.hostname)) {
 			const originalHost = url.host;
 			const resolved = this.originIP(origin);
+			if (!resolved) {
+				throw new NetworkError(`could not resolve ${url.hostname}`);
+			}
+			url.hostname = resolved;
+			init = withHostHeader(init, originalHost);
+		} else if (this.nodeIpsByAlias.has(url.hostname)) {
+			const originalHost = url.host;
+			const resolved = this.nodeIPForAlias(url.hostname);
 			if (!resolved) {
 				throw new NetworkError(`could not resolve ${url.hostname}`);
 			}
@@ -415,6 +459,10 @@ export class ClusterNetwork {
 		return this.podOriginIP(origin) ?? this.nodeOriginIP(origin);
 	}
 
+	private nodeIPForAlias(alias: string): string | undefined {
+		return this.nodeIpsByAlias.get(alias)?.values().next().value;
+	}
+
 	private podOriginIP(origin: FetchOrigin): string | undefined {
 		if (!isPodOrigin(origin)) {
 			return undefined;
@@ -525,18 +573,18 @@ function normalizeHeaders(headers: http.HeadersInit | undefined): http.Header {
 	const append = (name: string, value: string) => {
 		(normalized[name] ??= []).push(value);
 	};
+	if (Symbol.iterator in Object(headers)) {
+		for (const [name, value] of headers as Iterable<readonly [string, string]>) {
+			append(name, value);
+		}
+		return normalized;
+	}
 	if (
 		typeof headers === "object" &&
 		"forEach" in headers &&
 		typeof headers.forEach === "function"
 	) {
 		headers.forEach((value, name) => append(name, value));
-		return normalized;
-	}
-	if (Symbol.iterator in Object(headers)) {
-		for (const [name, value] of headers as Iterable<readonly [string, string]>) {
-			append(name, value);
-		}
 		return normalized;
 	}
 	for (const [name, value] of Object.entries(headers)) {
@@ -558,18 +606,18 @@ function headerEntries(headers: http.HeadersInit | undefined): Array<[string, st
 	if (!headers) {
 		return entries;
 	}
+	if (Symbol.iterator in Object(headers)) {
+		for (const [name, value] of headers as Iterable<readonly [string, string]>) {
+			entries.push([name, value]);
+		}
+		return entries;
+	}
 	if (
 		typeof headers === "object" &&
 		"forEach" in headers &&
 		typeof headers.forEach === "function"
 	) {
 		headers.forEach((value, name) => entries.push([name, value]));
-		return entries;
-	}
-	if (Symbol.iterator in Object(headers)) {
-		for (const [name, value] of headers as Iterable<readonly [string, string]>) {
-			entries.push([name, value]);
-		}
 		return entries;
 	}
 	for (const [name, value] of Object.entries(headers)) {

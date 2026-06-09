@@ -74,13 +74,9 @@ async function fetchNodePort(
 	nodePort: number,
 	request?: NodePortRequest,
 ): Promise<NodePortResponse> {
-	const nodeIP = cluster.servers[0]?.ipAddresses[0];
-	if (!nodeIP) {
-		throw new Error("Simulator has no node IPs");
-	}
 	const path = request?.path ?? "/";
 	const pathname = path.startsWith("/") ? path : `/${path}`;
-	const url = new URL(`http://${nodeIP}:${nodePort}${pathname}`);
+	const url = new URL(`http://node-1:${nodePort}${pathname}`);
 	const response = await cluster.fetch(url.toString(), toHTTPRequest(request));
 	return {
 		status: response.status,

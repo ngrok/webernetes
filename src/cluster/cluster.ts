@@ -195,16 +195,6 @@ export class Cluster {
 		return await this.network.fetch(this.ctx, this.servers[0].node, target, init);
 	}
 
-	public async fetchNodePort(nodePort: number, init: http.FetchInit = {}): Promise<http.Response> {
-		const nodeIP = this.servers[0].ipAddresses[0];
-		return await this.network.fetch(
-			this.ctx,
-			this.servers[0].node,
-			`http://${nodeIP}:${nodePort}`,
-			init,
-		);
-	}
-
 	public registerImage(image: ImageConstructor): void {
 		this.imageRegistry.register(image);
 	}

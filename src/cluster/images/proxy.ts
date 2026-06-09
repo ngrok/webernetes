@@ -71,8 +71,8 @@ export class KubeProxy extends BaseImage {
 			return;
 		}
 		// This is to make it possible to route to NodePort Services via the node's
-		// IP address.
-		ctx.network.registerNode(name, nodeIPAddresses(node));
+		// IP address and node address names.
+		ctx.network.registerNode(name, nodeIPAddresses(node), nodeAddressNames(node));
 	}
 
 	private deleteNode(ctx: ProcessContext, node: k8s.V1Node): void {
@@ -254,6 +254,20 @@ function nodeIPAddresses(node: k8s.V1Node): string[] {
 	const addresses: string[] = [];
 	for (const address of node.status?.addresses ?? []) {
 		if (address.type === "InternalIP" || address.type === "ExternalIP") {
+			addresses.push(address.address);
+		}
+	}
+	return addresses;
+}
+
+function nodeAddressNames(node: k8s.V1Node): string[] {
+	const addresses: string[] = [];
+	for (const address of node.status?.addresses ?? []) {
+		if (
+			address.type === "Hostname" ||
+			address.type === "InternalDNS" ||
+			address.type === "ExternalDNS"
+		) {
 			addresses.push(address.address);
 		}
 	}

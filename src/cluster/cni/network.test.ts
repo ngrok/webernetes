@@ -174,6 +174,68 @@ browser.describe("ClusterNetwork", () => {
 		});
 	});
 
+	it("routes requests to registered node names through NodePort services", async () => {
+		const network = new ClusterNetwork();
+		const pod = new PodSandboxInstance(
+			"sandbox-1",
+			{
+				metadata: {
+					name: "web",
+					uid: "pod-uid",
+					namespace: "default",
+					attempt: 0,
+				},
+			},
+			0,
+		);
+		const registration = network.setupPodSandbox(pod, "10.244.0.0/24");
+		pod.setNetworkRegistration(registration);
+
+		network.registerNode("node-1", ["192.168.1.1"], ["node-1", "node-1.internal.test"]);
+		network.registerService({
+			uid: "service-uid",
+			name: "web",
+			namespace: "default",
+			clusterIp: "10.96.0.10",
+			type: "NodePort",
+			ports: [{ port: 80, targetPort: 8080, nodePort: 30080 }],
+		});
+		network.setServiceTargets("default", "web", 80, [`${registration.ip}:8080`]);
+		registration.bindHttp(8080, async (_ctx, request) => {
+			return {
+				status: 200,
+				body: JSON.stringify({
+					url: request.url.toString(),
+					host: request.host,
+				}),
+			};
+		});
+
+		await expect(
+			network.fetch(context.background(), nodeOrigin("node-1"), "http://node-1:30080/path"),
+		).resolves.toEqual({
+			status: 200,
+			body: JSON.stringify({
+				url: "http://192.168.1.1:30080/path",
+				host: "node-1:30080",
+			}),
+		});
+
+		await expect(
+			network.fetch(
+				context.background(),
+				nodeOrigin("node-1"),
+				"http://node-1.internal.test:30080/path",
+			),
+		).resolves.toEqual({
+			status: 200,
+			body: JSON.stringify({
+				url: "http://192.168.1.1:30080/path",
+				host: "node-1.internal.test:30080",
+			}),
+		});
+	});
+
 	it("stops routing node IP requests after the node is unregistered", async () => {
 		const network = new ClusterNetwork();
 		const pod = new PodSandboxInstance(
