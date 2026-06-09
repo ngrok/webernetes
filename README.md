@@ -1,27 +1,84 @@
 # Webernetes
 
-Webernetes is a browser-friendly simulation of selected Kubernetes components.
-This map focuses on the current simulator implementation: substantial components
-owned by the kubelet, then the central subsystems those components own or create.
+> Kubernetes that runs in your browser.
 
-Webernetes is not affiliated with, endorsed by, or sponsored by the Kubernetes
-project, the Cloud Native Computing Foundation, or The Linux Foundation.
-Kubernetes is a trademark of The Linux Foundation.
+_Wait, what?_
 
-## Kubelet Component Map
+This project is a port of a subset of the Kubernetes project to make it such
+that clusters can be booted up in the browser, without any backend server
+components.
 
-Nodes link to the local TypeScript implementation and, where the implementation
-mirrors Kubernetes, the upstream Go file at the Kubernetes 1.36 commit this
-repository targets. Dashed orange nodes are simulator-only pieces or simulator
-adapters around a Kubernetes-shaped boundary.
+_But why?_
 
-Render and watch this file locally with:
+At [ngrok](https://ngrok.com/), we wanted to make visual and interactive content
+about Kubernetes. We didn't want to create infrastructure for spinning up real
+clusters in some sort of backend and maintain that, so we decided to create a
+browser-based simulator instead. This is an experiment, we will be building a
+variety of content on top of this library in 2026. It may not work, but we're
+going to give it a good ol' try.
 
-```sh
-pnpm readme:preview
+## How does it work?
+
+First, install webernetes as a dependency:
+
+```bash
+npm install webernetes
 ```
 
-Then open `dist/readme-preview.html` and refresh the browser after changes.
+Then define an image to run in your cluster. **Webernetes does not run real
+images from Docker Hub or anything like that, nor is it a goal to do so.**
+
+```typescript
+import { BaseImage, type ProcessContext } from "webernetes";
+
+class MyImage extends BaseImage {
+	static readonly imageName = "my-image";
+	static readonly imageVersion = "1.0";
+
+	readonly defaultCommand = ["server"];
+
+	override async exec(ctx: ProcessContext, argv: readonly string[]): Promise<number> {
+		if (argv[0] !== "server") {
+			// The base image defines a bunch of core utils (cat, false, printenv,
+			// etc.) so if we don't recognize the command, fall back to the base
+			// image.
+			return await super.exec(ctx, argv);
+		}
+
+		// Binds to port 8080 on this container.
+		ctx.listenHttp(8080, async () => {
+			return {
+				statusCode: 200,
+				body: "hello, world\n",
+			};
+		});
+
+		// Required for long-running processes to be cancellable when clusters shut
+		// down. If we returned an exit code of 0 here, the listener above would be
+		// unregistered because this container will have exited.
+		return await ctx.waitUntilKilled();
+	}
+}
+```
+
+Then we create a cluster and register our image with it.
+
+```typescript
+import { Cluster } from "webernetes";
+
+const cluster = new Cluster();
+cluster.registerImage(MyImage);
+```
+
+## What's implemented and what isn't
+
+- [x]
+
+## Map of the code
+
+Below is a map of most of the major components involved in this project, how
+they talk to each other, and links to both the Webertnetes (TS) implementation
+and the upstream Kubernetes (Go) implementation.
 
 ```mermaid
 flowchart LR
