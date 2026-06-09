@@ -326,7 +326,9 @@ export class ClusterNetwork {
 	): Promise<http.Response> {
 		const handler = this.httpListeners.get(listenerKey(endpoint.ip, endpoint.port));
 		if (!handler) {
-			throw new NetworkError(`no HTTP listener on ${endpoint.ip}:${endpoint.port}`);
+			throw new NetworkError(
+				`dial tcp ${endpoint.ip}:${endpoint.port}: connect: connection refused`,
+			);
 		}
 		try {
 			const responseCh = new Channel<http.Response>(1);
