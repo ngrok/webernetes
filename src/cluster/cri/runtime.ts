@@ -124,6 +124,17 @@ function uniqueStrings(values: readonly string[]): string[] {
 	});
 }
 
+function isMissingExecutable(cmd: readonly string[], exitCode: number, stderr: string): boolean {
+	const command = cmd[0];
+	return command !== undefined && exitCode === 127 && stderr === `${command}: not found\n`;
+}
+
+function missingExecutableError(containerId: string, command: string): Error {
+	return new Error(
+		`rpc error: code = Unknown desc = failed to exec in container: failed to start exec in container ${containerId}: OCI runtime exec failed: exec failed: unable to start container process: exec: "${command}": executable file not found in $PATH`,
+	);
+}
+
 function containerHash(config: ContainerConfig): number {
 	const value = config.annotations?.["io.kubernetes.container.hash"];
 	if (value === undefined) {
@@ -447,6 +458,9 @@ export class InProcessRuntimeService
 		try {
 			const process = container.exec(cmd, { timeoutMs });
 			const exitCode = await this.waitForProcess(ctx, process, timeoutMs, cmd);
+			if (isMissingExecutable(cmd, exitCode, process.stderr)) {
+				return [undefined, missingExecutableError(containerId, cmd[0] ?? "")];
+			}
 			return [{ exitCode, stdout: process.stdout, stderr: process.stderr }, undefined];
 		} catch (error) {
 			return [undefined, errorFromUnknown(error)];

@@ -159,6 +159,70 @@ kubernetes.describe("Probes", ({ helpers }) => {
 		});
 	});
 
+	it("TCP readiness probe records connection refused events when no process listens on the port", async () => {
+		const pod = await createPod(
+			"tcp-readiness-connection-refused",
+			{
+				name: "pause",
+				image: pauseImage,
+				ports: [{ name: "tcp", containerPort: 8081 }],
+				readinessProbe: {
+					tcpSocket: { port: "tcp" },
+					periodSeconds: 1,
+					failureThreshold: 1,
+				},
+			},
+			{ app: "tcp-readiness-connection-refused" },
+		);
+		await createService({
+			metadata: { name: "tcp-readiness-connection-refused" },
+			spec: {
+				selector: { app: "tcp-readiness-connection-refused" },
+				ports: [{ name: "tcp", port: 80, targetPort: "tcp" }],
+			},
+		});
+
+		await waitFor(async () => {
+			const current = await readPod(pod);
+			expect(current.status?.phase).toBe("Running");
+			expect(containerStatus(current, "pause").ready).toBe(false);
+			expect(conditionStatus(current, "Ready")).toBe("False");
+		});
+
+		await waitFor(async () => {
+			const event = newestEventWithReason(await eventsFor(pod), "Unhealthy");
+			expect(event?.message).toContain("Readiness probe failed:");
+			expect(event?.message).toContain("connection refused");
+		});
+	});
+
+	it("exec readiness probe records errored events when the command is missing", async () => {
+		const pod = await createPod(
+			"exec-readiness-missing-command",
+			busyboxContainer({
+				readinessProbe: {
+					exec: { command: ["definitely-not-a-real-command"] },
+					periodSeconds: 1,
+					failureThreshold: 1,
+				},
+			}),
+		);
+
+		await waitFor(async () => {
+			const current = await readPod(pod);
+			expect(current.status?.phase).toBe("Running");
+			expect(containerStatus(current, "test").ready).toBe(false);
+			expect(conditionStatus(current, "Ready")).toBe("False");
+		});
+
+		await waitFor(async () => {
+			const event = newestEventWithReason(await eventsFor(pod), "Unhealthy");
+			expect(event?.message).toContain("Readiness probe errored and resulted in unknown state:");
+			expect(event?.message).toContain("definitely-not-a-real-command");
+			expect(event?.message).toContain("executable file not found");
+		});
+	});
+
 	it("exec readiness probe succeeds based on command exit code", async () => {
 		await createPod(
 			"exec-readiness-success",
@@ -177,7 +241,7 @@ kubernetes.describe("Probes", ({ helpers }) => {
 	});
 
 	it("exec readiness probe fails based on command exit code", async () => {
-		await createPod(
+		const pod = await createPod(
 			"exec-readiness-failure",
 			busyboxContainer({
 				readinessProbe: {
@@ -190,6 +254,13 @@ kubernetes.describe("Probes", ({ helpers }) => {
 
 		await waitFor(async () => {
 			expect(containerStatus(await readPod("exec-readiness-failure")).ready).toBe(false);
+		});
+
+		await waitFor(async () => {
+			const event = newestEventWithReason(await eventsFor(pod), "Unhealthy");
+			expect(event?.message).toContain("Readiness probe failed:");
+			expect(event?.message).not.toContain("probe errored");
+			expect(event?.message).not.toContain("unknown state");
 		});
 	});
 
