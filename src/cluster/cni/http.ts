@@ -3,7 +3,7 @@ import type * as context from "../../go/context";
 export type Header = Record<string, string[]>;
 export type FetchInput = string | globalThis.URL;
 export type HeadersInit =
-	| Record<string, string>
+	| Record<string, string | readonly string[]>
 	| Iterable<readonly [string, string]>
 	| { forEach(callback: (value: string, name: string) => void): void };
 
@@ -45,6 +45,61 @@ export interface Response {
 }
 
 export type Handler = (ctx: context.Context, request: Request) => Promise<Response>;
+
+export function headerFromInit(headers: HeadersInit | undefined): Header {
+	const normalized: Header = {};
+	if (!headers) {
+		return normalized;
+	}
+	if (Symbol.iterator in Object(headers)) {
+		for (const [name, value] of headers as Iterable<readonly [string, string]>) {
+			headerAppend(normalized, name, value);
+		}
+		return normalized;
+	}
+	if (
+		typeof headers === "object" &&
+		"forEach" in headers &&
+		typeof headers.forEach === "function"
+	) {
+		headers.forEach((value, name) => headerAppend(normalized, name, value));
+		return normalized;
+	}
+	for (const [name, value] of Object.entries(headers)) {
+		for (const headerValue of Array.isArray(value) ? value : [value]) {
+			headerAppend(normalized, name, headerValue);
+		}
+	}
+	return normalized;
+}
+
+export function headerClone(headers: Header): Header {
+	const cloned: Header = {};
+	for (const [name, values] of Object.entries(headers)) {
+		cloned[name] = [...values];
+	}
+	return cloned;
+}
+
+export function headerEntries(headers: Header): Array<[string, string]> {
+	const entries: Array<[string, string]> = [];
+	for (const [name, values] of Object.entries(headers)) {
+		for (const value of values) {
+			entries.push([name, value]);
+		}
+	}
+	return entries;
+}
+
+export function headerAppend(headers: Header, name: string, value: string): void {
+	const key = headerKey(headers, name) ?? name;
+	(headers[key] ??= []).push(value);
+}
+
+export function headerSet(headers: Header, name: string, value: string): void {
+	const key = headerKey(headers, name) ?? name;
+	headers[key] = [value];
+}
 
 export function headerGet(headers: Header, name: string): string {
 	const key = headerKey(headers, name);

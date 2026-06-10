@@ -16,6 +16,7 @@ function bindTestHTTP(network: ClusterNetwork, port: number): string {
 		{
 			metadata: { uid: "pod-uid", name: "pod", namespace: "default", attempt: 0 },
 			dnsConfig: { servers: [], searches: [], options: [] },
+			pod: { metadata: { uid: "pod-uid", name: "pod", namespace: "default" } },
 		},
 		0,
 	);

@@ -105,6 +105,13 @@ browser.describe("InProcessRuntimeService images", () => {
 					uid: "stateful-pod",
 					attempt: 0,
 				},
+				pod: {
+					metadata: {
+						name: "stateful-pod",
+						namespace: "default",
+						uid: "stateful-pod",
+					},
+				},
 			};
 			const [sandboxId, sandboxErr] = await runtime.runPodSandbox(ctx, sandboxConfig);
 			expect(sandboxErr).toBeUndefined();
@@ -145,6 +152,13 @@ browser.describe("InProcessRuntimeService images", () => {
 					namespace: "default",
 					uid: "timeout-pod",
 					attempt: 0,
+				},
+				pod: {
+					metadata: {
+						name: "timeout-pod",
+						namespace: "default",
+						uid: "timeout-pod",
+					},
 				},
 			};
 			const [sandboxId, sandboxErr] = await runtime.runPodSandbox(ctx, sandboxConfig);

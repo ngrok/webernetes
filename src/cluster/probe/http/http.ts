@@ -105,18 +105,8 @@ class ClusterNetworkHTTPClient implements GetHTTPInterface {
 	async do(ctx: context.Context, origin: FetchOrigin, req: http.Request): Promise<http.Response> {
 		return await this.network.fetch(ctx, origin, req.url.toString(), {
 			method: req.method,
-			headers: headerEntries(req.header),
+			headers: req.header,
 			body: req.body,
 		});
 	}
-}
-
-function headerEntries(headers: http.Header): Array<[string, string]> {
-	const entries: Array<[string, string]> = [];
-	for (const [name, values] of Object.entries(headers)) {
-		for (const value of values) {
-			entries.push([name, value]);
-		}
-	}
-	return entries;
 }

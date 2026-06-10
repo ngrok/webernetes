@@ -632,6 +632,7 @@ browser.describe("TestParallelPuller", () => {
 					uid: pod.metadata.uid,
 					attempt: 0,
 				},
+				pod,
 			};
 
 			for (const expected of c.expected) {
@@ -712,6 +713,7 @@ browser.describe("TestPullAndListImageWithPodAnnotations", () => {
 				uid: pod.metadata.uid,
 				attempt: 0,
 			},
+			pod,
 		};
 
 		const c: PullerTestCase = {
@@ -796,6 +798,7 @@ browser.describe("TestMaxParallelImagePullsLimit", () => {
 				uid: pod.metadata.uid,
 				attempt: 0,
 			},
+			pod,
 		};
 
 		const c: PullerTestCase = {
@@ -890,6 +893,7 @@ browser.describe("TestParallelPodPullingTimeRecorderWithErr", () => {
 				uid: pod1.metadata.uid,
 				attempt: 0,
 			},
+			pod: pod1,
 		};
 
 		const pod2 = {
@@ -907,6 +911,7 @@ browser.describe("TestParallelPodPullingTimeRecorderWithErr", () => {
 				uid: pod2.metadata.uid,
 				attempt: 0,
 			},
+			pod: pod2,
 		};
 
 		const pods = [pod1, pod2];
@@ -1068,6 +1073,7 @@ browser.describe("TestImagePullPrecheck", () => {
 			uid: pod.metadata.uid,
 			attempt: 0,
 		},
+		pod,
 	};
 
 	const cases = pullerTestCases();

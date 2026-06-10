@@ -1,3 +1,5 @@
+import { EventEmitter } from "events";
+
 import { CIDR, isIPLiteral } from "../../net";
 import {
 	type DnsHandler,
@@ -10,9 +12,8 @@ import { NetworkError } from "./error";
 import * as http from "./http";
 import { Channel, select } from "../../go/channel";
 import * as context from "../../go/context";
-import type { V1Node, V1Pod } from "../../client";
+import type { V1Node, V1Pod, V1Service, V1ServicePort } from "../../client";
 import type { DnsConfig } from "../cri/runtime/v1/api";
-import type { ServiceInstance, ServicePort } from "./service";
 import type { PodSandboxInstance } from "../cri/runtime";
 
 interface NetworkEndpoint {
@@ -20,15 +21,14 @@ interface NetworkEndpoint {
 	port: number;
 }
 
-interface NodePortRoute {
-	service: ServiceInstance;
-	port: ServicePort;
+interface NetworkRoute {
+	endpoint: NetworkEndpoint;
+	chain: NetworkHop[];
 }
 
-interface ServiceEndpointRoute {
-	service: ServiceInstance;
-	port: ServicePort;
-	key: string;
+interface NodePortRoute {
+	service: V1Service;
+	port: V1ServicePort;
 }
 
 interface PodCIDRAllocator {
@@ -41,6 +41,27 @@ type FetchDefaultResult =
 	| { type: "error"; error: NetworkError };
 
 export type FetchOrigin = V1Pod | V1Node;
+
+export const networkRequestIDHeader = "X-Webernetes-Request-Id";
+
+export type NetworkHop =
+	| { type: "pod"; pod: V1Pod }
+	| { type: "node"; node: V1Node }
+	| { type: "service"; service: V1Service }
+	| { type: "external"; host: string };
+
+export interface NetworkRequestEvent {
+	request: http.Request;
+	chain: NetworkHop[];
+	error?: Error;
+}
+
+export interface NetworkResponseEvent {
+	request: http.Request;
+	response?: http.Response;
+	error?: Error;
+	chain: NetworkHop[];
+}
 
 export interface ClusterNetworkOptions {
 	clusterDNS?: readonly string[];
@@ -85,12 +106,30 @@ function namespacedNameKey(namespace: string, name: string): string {
 	return `${namespace}/${name}`;
 }
 
-function servicePortKey(service: ServiceInstance, port: ServicePort): string {
-	return `${namespacedNameKey(service.namespace, service.name)}:${port.port}`;
+function servicePortKey(service: V1Service, port: V1ServicePort): string {
+	return `${namespacedNameKey(serviceNamespace(service), serviceName(service))}:${port.port}`;
 }
 
 function serviceRouteKey(namespace: string, name: string, port: number): string {
 	return `${namespacedNameKey(namespace, name)}:${port}`;
+}
+
+function serviceNamespace(service: V1Service): string {
+	return service.metadata?.namespace ?? "default";
+}
+
+function serviceName(service: V1Service): string {
+	return service.metadata?.name ?? "";
+}
+
+function serviceClusterIP(service: V1Service): string | undefined {
+	const clusterIP = service.spec?.clusterIP;
+	return clusterIP && clusterIP !== "None" ? clusterIP : undefined;
+}
+
+function serviceType(service: V1Service): "ClusterIP" | "NodePort" | undefined {
+	const type = service.spec?.type ?? "ClusterIP";
+	return type === "ClusterIP" || type === "NodePort" ? type : undefined;
 }
 
 function isInternalIPLiteral(host: string): boolean {
@@ -101,10 +140,6 @@ function isLocalhost(host: string): boolean {
 	return host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
 }
 
-function nodeAliasKey(alias: string): string {
-	return alias.toLowerCase();
-}
-
 function isPodOrigin(origin: FetchOrigin): origin is V1Pod {
 	return origin.kind === "Pod" || (origin.spec !== undefined && "containers" in origin.spec);
 }
@@ -113,24 +148,46 @@ function isNodeOrigin(origin: FetchOrigin): origin is V1Node {
 	return origin.kind === "Node" || (origin.status !== undefined && "addresses" in origin.status);
 }
 
-export class ClusterNetwork {
+export class ClusterNetwork extends EventEmitter {
 	private podIpAllocators = new Map<string, PodCIDRAllocator>();
 	private podsBySandboxId = new Map<string, PodSandboxInstance>();
 	private podsByIp = new Map<string, PodSandboxInstance>();
 	private podDnsConfigsByUid = new Map<string, DnsConfig>();
+	private nodesByName = new Map<string, V1Node>();
 	private nodeIpsByName = new Map<string, Set<string>>();
 	private nodeNamesByIp = new Map<string, Set<string>>();
 	private nodeAliasesByName = new Map<string, Set<string>>();
 	private nodeIpsByAlias = new Map<string, Set<string>>();
 	private httpListeners = new Map<string, http.Handler>();
 	private dnsListeners = new Map<string, DnsHandler>();
-	private servicesByKey = new Map<string, ServiceInstance>();
-	private servicesByClusterIp = new Map<string, ServiceInstance>();
+	private servicesByKey = new Map<string, V1Service>();
+	private servicesByClusterIp = new Map<string, V1Service>();
 	private servicesByNodePort = new Map<number, NodePortRoute>();
-	private serviceEndpointRoutes = new Map<string, ServiceEndpointRoute>();
 	private targetListsByServicePort = new Map<string, TargetList>();
+	private nextRequestID = 1;
 
-	constructor(private readonly options: ClusterNetworkOptions = {}) {}
+	constructor(private readonly options: ClusterNetworkOptions = {}) {
+		super();
+	}
+
+	public override on(event: "request", handler: (event: NetworkRequestEvent) => void): this;
+	public override on(event: "response", handler: (event: NetworkResponseEvent) => void): this;
+	public override on(
+		event: string,
+		handler: ((event: NetworkRequestEvent) => void) | ((event: NetworkResponseEvent) => void),
+	): this {
+		return super.on(event, handler);
+	}
+
+	private allocateRequestID(): string {
+		return String(this.nextRequestID++);
+	}
+
+	private rejectUserRequestIDHeader(headers: http.Header): void {
+		if (http.hasHeader(headers, networkRequestIDHeader)) {
+			throw new NetworkError(`${networkRequestIDHeader} is managed by ClusterNetwork`);
+		}
+	}
 
 	setupPodSandbox(pod: PodSandboxInstance, podCIDR: string): NetworkRegistration {
 		if (this.podsBySandboxId.has(pod.id)) {
@@ -161,13 +218,20 @@ export class ClusterNetwork {
 		throw new NetworkError(`no free pod IPs in ${podCIDR}`);
 	}
 
-	registerNode(
-		name: string,
-		ipAddresses: readonly string[],
-		aliases: readonly string[] = [],
-	): void {
+	registerNode(node: V1Node): void {
+		const name = node.metadata?.name;
+		if (!name) {
+			throw new NetworkError("node must have metadata.name");
+		}
 		this.unregisterNode(name);
-		const ips = new Set(ipAddresses.filter((address) => isIPLiteral(address)));
+		const addresses = node.status?.addresses ?? [];
+		const ips = new Set(
+			addresses
+				.filter((address) => address.type === "InternalIP" || address.type === "ExternalIP")
+				.map((address) => address.address)
+				.filter((address) => isIPLiteral(address)),
+		);
+		this.nodesByName.set(name, node);
 		this.nodeIpsByName.set(name, ips);
 		for (const ip of ips) {
 			const nodeNames = this.nodeNamesByIp.get(ip) ?? new Set<string>();
@@ -176,7 +240,16 @@ export class ClusterNetwork {
 		}
 		const firstIp = ips.values().next().value;
 		const validAliases = new Set(
-			aliases.filter((alias) => alias.length > 0).map((alias) => nodeAliasKey(alias)),
+			addresses
+				.filter(
+					(address) =>
+						address.type === "Hostname" ||
+						address.type === "InternalDNS" ||
+						address.type === "ExternalDNS",
+				)
+				.map((address) => address.address)
+				.filter((alias) => alias.length > 0)
+				.map((alias) => alias.toLowerCase()),
 		);
 		this.nodeAliasesByName.set(name, validAliases);
 		if (firstIp) {
@@ -206,6 +279,7 @@ export class ClusterNetwork {
 			}
 		}
 		this.nodeAliasesByName.delete(name);
+		this.nodesByName.delete(name);
 		for (const alias of aliases) {
 			const aliasIps = this.nodeIpsByAlias.get(alias);
 			if (!aliasIps) {
@@ -252,16 +326,28 @@ export class ClusterNetwork {
 		}
 	}
 
-	registerService(service: ServiceInstance): void {
-		const key = namespacedNameKey(service.namespace, service.name);
-		this.unregisterService(service.namespace, service.name);
+	registerService(service: V1Service): void {
+		const name = serviceName(service);
+		if (!name) {
+			throw new NetworkError("service must have metadata.name");
+		}
+		const namespace = serviceNamespace(service);
+		const clusterIP = serviceClusterIP(service);
+		if (!clusterIP) {
+			throw new NetworkError(`Service ${namespace}/${name} must have a ClusterIP`);
+		}
+		const type = serviceType(service);
+		if (!type) {
+			throw new NetworkError(`unsupported Service type ${service.spec?.type}`);
+		}
+		const key = namespacedNameKey(namespace, name);
+		this.unregisterService(namespace, name);
 		this.servicesByKey.set(key, service);
-		this.servicesByClusterIp.set(service.clusterIp, service);
-		for (const port of service.ports) {
+		this.servicesByClusterIp.set(clusterIP, service);
+		for (const port of service.spec?.ports ?? []) {
 			const routeKey = servicePortKey(service, port);
-			this.serviceEndpointRoutes.set(routeKey, { service, port, key: routeKey });
 			this.targetListsByServicePort.set(routeKey, new TargetList());
-			if (port.nodePort !== undefined) {
+			if (type === "NodePort" && port.nodePort !== undefined) {
 				if (this.servicesByNodePort.has(port.nodePort)) {
 					throw new NetworkError(`NodePort ${port.nodePort} is already registered`);
 				}
@@ -277,10 +363,12 @@ export class ClusterNetwork {
 			return;
 		}
 		this.servicesByKey.delete(key);
-		this.servicesByClusterIp.delete(service.clusterIp);
-		for (const port of service.ports) {
+		const clusterIP = serviceClusterIP(service);
+		if (clusterIP) {
+			this.servicesByClusterIp.delete(clusterIP);
+		}
+		for (const port of service.spec?.ports ?? []) {
 			const routeKey = servicePortKey(service, port);
-			this.serviceEndpointRoutes.delete(routeKey);
 			this.targetListsByServicePort.delete(routeKey);
 			if (port.nodePort !== undefined) {
 				this.servicesByNodePort.delete(port.nodePort);
@@ -306,7 +394,14 @@ export class ClusterNetwork {
 		target: http.FetchInput,
 		init: http.FetchInit = {},
 	): Promise<http.Response> {
+		const method = init.method;
+		const headers = http.headerFromInit(init.headers);
+		const body = init.body;
+		this.rejectUserRequestIDHeader(headers);
+		const requestID = this.allocateRequestID();
 		const url = this.parseHttpTarget(target);
+		const chain: NetworkHop[] = [this.originHop(origin)];
+		withRequestIDHeader(headers, requestID);
 		let matchedClusterTarget = false;
 		if (isLocalhost(url.hostname)) {
 			const originalHost = url.host;
@@ -315,7 +410,7 @@ export class ClusterNetwork {
 				throw new NetworkError(`could not resolve ${url.hostname}`);
 			}
 			url.hostname = resolved;
-			init = withHostHeader(init, originalHost);
+			withHostHeader(headers, originalHost);
 			matchedClusterTarget = true;
 		} else if (this.nodeIpsByAlias.has(url.hostname)) {
 			const originalHost = url.host;
@@ -324,16 +419,40 @@ export class ClusterNetwork {
 				throw new NetworkError(`could not resolve ${url.hostname}`);
 			}
 			url.hostname = resolved;
-			init = withHostHeader(init, originalHost);
+			withHostHeader(headers, originalHost);
 			matchedClusterTarget = true;
 		} else if (!isIPLiteral(url.hostname)) {
 			const originalHost = url.host;
 			const resolved = await this.resolveHostname(origin, url.hostname);
 			if (!resolved) {
-				return await this.fetchDefault(ctx, target, init);
+				chain.push({ type: "external", host: url.hostname });
+				const request = this.httpRequest(url, method, headers, body);
+				this.emit("request", { request, chain });
+				try {
+					const response = await this.fetchDefault(
+						ctx,
+						target,
+						method,
+						withoutRequestIDHeader(headers),
+						body,
+					);
+					this.emit("response", {
+						request,
+						response: withResponseIDHeader(response, requestID),
+						chain: chain.toReversed(),
+					});
+					return response;
+				} catch (error) {
+					this.emit("response", {
+						request,
+						error: errorFromUnknown(error),
+						chain: chain.toReversed(),
+					});
+					throw error;
+				}
 			}
 			url.hostname = resolved;
-			init = withHostHeader(init, originalHost);
+			withHostHeader(headers, originalHost);
 			matchedClusterTarget = true;
 		}
 
@@ -345,26 +464,68 @@ export class ClusterNetwork {
 					throw new NetworkError(`requests to internal addresses must be http:// for now`);
 				}
 				const port = this.parseTargetPort(url, service);
-				const endpoint = this.routeFetchEndpoint({ ip: url.hostname, port });
-				return await this.dispatchHttp(ctx, endpoint, url, init);
+				return await this.dispatchResolvedHttp(
+					ctx,
+					{ endpoint: { ip: url.hostname, port }, chain },
+					url,
+					method,
+					headers,
+					body,
+					requestID,
+				);
 			}
-			return await this.fetchDefault(ctx, target, init);
+			chain.push({ type: "external", host: url.hostname });
+			const request = this.httpRequest(url, method, headers, body);
+			this.emit("request", { request, chain });
+			try {
+				const response = await this.fetchDefault(
+					ctx,
+					target,
+					method,
+					withoutRequestIDHeader(headers),
+					body,
+				);
+				this.emit("response", {
+					request,
+					response: withResponseIDHeader(response, requestID),
+					chain: chain.toReversed(),
+				});
+				return response;
+			} catch (error) {
+				this.emit("response", {
+					request,
+					error: errorFromUnknown(error),
+					chain: chain.toReversed(),
+				});
+				throw error;
+			}
 		}
 		if (url.protocol !== "http:") {
 			throw new NetworkError(`unsupported protocol ${url.protocol}`);
 		}
 		const port = this.parseTargetPort(url, service);
-		const endpoint = this.routeFetchEndpoint({ ip: url.hostname, port });
-		return await this.dispatchHttp(ctx, endpoint, url, init);
+		let route: NetworkRoute;
+		try {
+			route = this.routeFetchEndpoint({ ip: url.hostname, port }, chain);
+		} catch (error) {
+			const networkError = errorFromUnknown(error);
+			this.emit("request", {
+				request: this.httpRequest(url, method, headers, body),
+				chain,
+				error: networkError,
+			});
+			throw error;
+		}
+		return await this.dispatchResolvedHttp(ctx, route, url, method, headers, body, requestID);
 	}
 
 	canConnect(host: string, port: number): boolean {
-		const endpoint = this.routeFetchEndpoint({ ip: host, port });
-		return this.httpListeners.has(listenerKey(endpoint.ip, endpoint.port));
+		const route = this.routeFetchEndpoint({ ip: host, port }, []);
+		return this.httpListeners.has(listenerKey(route.endpoint.ip, route.endpoint.port));
 	}
 
 	async sendDns(target: string, request: DnsRequest): Promise<DnsResponse> {
-		const endpoint = this.routeEndpoint(parseEndpointTarget(target));
+		const { endpoint } = this.routeEndpoint(parseEndpointTarget(target), []);
 		const listener = this.dnsListeners.get(listenerKey(endpoint.ip, endpoint.port));
 		if (!listener) {
 			throw new NetworkError(`no DNS listener on ${endpoint.ip}:${endpoint.port}`);
@@ -440,10 +601,11 @@ export class ClusterNetwork {
 		return url;
 	}
 
-	private parseTargetPort(url: URL, service?: ServiceInstance): number {
+	private parseTargetPort(url: URL, service?: V1Service): number {
 		if (!url.port) {
-			if (service?.ports.length === 1) {
-				return service.ports[0].port;
+			const ports = service?.spec?.ports ?? [];
+			if (ports.length === 1) {
+				return ports[0].port;
 			}
 			throw new NetworkError(`target ${url.hostname} must include a port`);
 		}
@@ -454,13 +616,43 @@ export class ClusterNetwork {
 		return port;
 	}
 
-	private selectEndpoint(service: ServiceInstance, port: ServicePort): NetworkEndpoint {
+	private selectEndpoint(service: V1Service, port: V1ServicePort): NetworkEndpoint {
 		const key = servicePortKey(service, port);
 		const target = this.targetListsByServicePort.get(key)?.next();
 		if (!target) {
-			throw new NetworkError(`Service ${service.namespace}/${service.name} has no ready endpoints`);
+			throw new NetworkError(
+				`Service ${serviceNamespace(service)}/${serviceName(service)} has no ready endpoints`,
+			);
 		}
 		return parseEndpointTarget(target);
+	}
+
+	private serviceHop(service: V1Service): NetworkHop {
+		return { type: "service", service };
+	}
+
+	private podHopForIP(ip: string): NetworkHop | undefined {
+		const pod = this.podsByIp.get(ip);
+		if (!pod) {
+			return undefined;
+		}
+		return { type: "pod", pod: pod.config.pod };
+	}
+
+	private nodeHopForIP(ip: string): NetworkHop | undefined {
+		const nodeName = this.nodeNamesByIp.get(ip)?.values().next().value;
+		const node = nodeName ? this.nodesByName.get(nodeName) : undefined;
+		if (!node) {
+			return undefined;
+		}
+		return { type: "node", node };
+	}
+
+	private originHop(origin: FetchOrigin): NetworkHop {
+		if (isPodOrigin(origin)) {
+			return { type: "pod", pod: origin };
+		}
+		return { type: "node", node: origin };
 	}
 
 	private async resolveHostname(origin: FetchOrigin, name: string): Promise<string | undefined> {
@@ -522,36 +714,91 @@ export class ClusterNetwork {
 		);
 	}
 
-	private routeFetchEndpoint(endpoint: NetworkEndpoint): NetworkEndpoint {
+	private routeFetchEndpoint(endpoint: NetworkEndpoint, chain: NetworkHop[]): NetworkRoute {
 		if (this.nodeNamesByIp.has(endpoint.ip)) {
+			const nodeHop = this.nodeHopForIP(endpoint.ip);
+			if (nodeHop) {
+				chain.push(nodeHop);
+			}
 			const route = this.servicesByNodePort.get(endpoint.port);
 			if (!route) {
 				throw new NetworkError(`no Service for NodePort ${endpoint.port}`);
 			}
-			return this.selectEndpoint(route.service, route.port);
+			chain.push(this.serviceHop(route.service));
+			const selected = this.selectEndpoint(route.service, route.port);
+			const podHop = this.podHopForIP(selected.ip);
+			if (podHop) {
+				chain.push(podHop);
+			}
+			return { endpoint: selected, chain };
 		}
-		return this.routeEndpoint(endpoint);
+		return this.routeEndpoint(endpoint, chain);
 	}
 
-	private routeEndpoint(endpoint: NetworkEndpoint): NetworkEndpoint {
+	private routeEndpoint(endpoint: NetworkEndpoint, chain: NetworkHop[]): NetworkRoute {
 		const service = this.servicesByClusterIp.get(endpoint.ip);
 		if (!service) {
-			return endpoint;
+			const podHop = this.podHopForIP(endpoint.ip);
+			if (podHop) {
+				chain.push(podHop);
+			}
+			return { endpoint, chain };
 		}
-		const port = service.ports.find((candidate) => candidate.port === endpoint.port);
+		chain.push(this.serviceHop(service));
+		const port = service.spec?.ports?.find((candidate) => candidate.port === endpoint.port);
 		if (!port) {
 			throw new NetworkError(
-				`Service ${service.namespace}/${service.name} has no port ${endpoint.port}`,
+				`Service ${serviceNamespace(service)}/${serviceName(service)} has no port ${endpoint.port}`,
 			);
 		}
-		return this.selectEndpoint(service, port);
+		const selected = this.selectEndpoint(service, port);
+		const podHop = this.podHopForIP(selected.ip);
+		if (podHop) {
+			chain.push(podHop);
+		}
+		return { endpoint: selected, chain };
+	}
+
+	private async dispatchResolvedHttp(
+		ctx: context.Context,
+		route: NetworkRoute,
+		requestURL: URL,
+		method: string | undefined,
+		headers: http.Header,
+		body: string | undefined,
+		requestID: string,
+	): Promise<http.Response> {
+		const request = this.httpRequest(requestURL, method, headers, body);
+		if (!this.httpListeners.has(listenerKey(route.endpoint.ip, route.endpoint.port))) {
+			const error = new NetworkError(
+				`dial tcp ${route.endpoint.ip}:${route.endpoint.port}: connect: connection refused`,
+			);
+			this.emit("request", { request, chain: route.chain, error });
+			throw error;
+		}
+		this.emit("request", { request, chain: route.chain });
+		try {
+			const response = await this.dispatchHttp(ctx, route.endpoint, request);
+			this.emit("response", {
+				request,
+				response: withResponseIDHeader(response, requestID),
+				chain: route.chain.toReversed(),
+			});
+			return response;
+		} catch (error) {
+			this.emit("response", {
+				request,
+				error: errorFromUnknown(error),
+				chain: route.chain.toReversed(),
+			});
+			throw error;
+		}
 	}
 
 	private async dispatchHttp(
 		ctx: context.Context,
 		endpoint: NetworkEndpoint,
-		requestURL: URL,
-		init: http.FetchInit,
+		request: http.Request,
 	): Promise<http.Response> {
 		const handler = this.httpListeners.get(listenerKey(endpoint.ip, endpoint.port));
 		if (!handler) {
@@ -561,7 +808,7 @@ export class ClusterNetwork {
 		}
 		try {
 			const responseCh = new Channel<http.Response>(1);
-			void handler(ctx, this.httpRequest(requestURL, init)).then(
+			void handler(ctx, request).then(
 				(response) => responseCh.trySend(response),
 				(error) => {
 					responseCh.trySend({
@@ -591,15 +838,17 @@ export class ClusterNetwork {
 	private async fetchDefault(
 		ctx: context.Context,
 		target: http.FetchInput,
-		init: http.FetchInit,
+		method: string | undefined,
+		headers: http.Header,
+		body: string | undefined,
 	): Promise<http.Response> {
 		const abort = new AbortController();
 		const responseCh = new Channel<FetchDefaultResult>(1);
 		void globalThis
 			.fetch(target.toString(), {
-				method: init.method,
-				headers: headerEntries(init.headers),
-				body: init.body,
+				method,
+				headers: http.headerEntries(headers),
+				body,
 				signal: abort.signal,
 			})
 			.then(async (response) => {
@@ -642,14 +891,19 @@ export class ClusterNetwork {
 		return selected.response;
 	}
 
-	private httpRequest(url: URL, init: http.FetchInit): http.Request {
-		const header = normalizeHeaders(init.headers);
+	private httpRequest(
+		url: URL,
+		method: string | undefined,
+		headers: http.Header,
+		body: string | undefined,
+	): http.Request {
+		const header = http.headerClone(headers);
 		return {
-			method: init.method ?? "GET",
+			method: method ?? "GET",
 			url,
 			header,
 			host: http.headerGet(header, "Host"),
-			body: init.body,
+			body,
 		};
 	}
 }
@@ -662,65 +916,30 @@ function responseHeaders(headers: Headers): http.Header {
 	return normalized;
 }
 
-function normalizeHeaders(headers: http.HeadersInit | undefined): http.Header {
-	const normalized: http.Header = {};
-	if (!headers) {
-		return normalized;
-	}
-	const append = (name: string, value: string) => {
-		(normalized[name] ??= []).push(value);
-	};
-	if (Symbol.iterator in Object(headers)) {
-		for (const [name, value] of headers as Iterable<readonly [string, string]>) {
-			append(name, value);
-		}
-		return normalized;
-	}
-	if (
-		typeof headers === "object" &&
-		"forEach" in headers &&
-		typeof headers.forEach === "function"
-	) {
-		headers.forEach((value, name) => append(name, value));
-		return normalized;
-	}
-	for (const [name, value] of Object.entries(headers)) {
-		append(name, value);
-	}
-	return normalized;
+function errorFromUnknown(error: unknown): Error {
+	return error instanceof Error ? error : new Error(String(error));
 }
 
-function withHostHeader(init: http.FetchInit, host: string): http.FetchInit {
-	const headers = headerEntries(init.headers);
-	if (!headers.some(([key]) => key.toLowerCase() === "host")) {
-		headers.push(["Host", host]);
+function withHostHeader(headers: http.Header, host: string): void {
+	if (!http.hasHeader(headers, "Host")) {
+		http.headerSet(headers, "Host", host);
 	}
-	return { ...init, headers };
 }
 
-function headerEntries(headers: http.HeadersInit | undefined): Array<[string, string]> {
-	const entries: Array<[string, string]> = [];
-	if (!headers) {
-		return entries;
-	}
-	if (Symbol.iterator in Object(headers)) {
-		for (const [name, value] of headers as Iterable<readonly [string, string]>) {
-			entries.push([name, value]);
-		}
-		return entries;
-	}
-	if (
-		typeof headers === "object" &&
-		"forEach" in headers &&
-		typeof headers.forEach === "function"
-	) {
-		headers.forEach((value, name) => entries.push([name, value]));
-		return entries;
-	}
-	for (const [name, value] of Object.entries(headers)) {
-		entries.push([name, value]);
-	}
-	return entries;
+function withRequestIDHeader(headers: http.Header, requestID: string): void {
+	http.headerSet(headers, networkRequestIDHeader, requestID);
+}
+
+function withoutRequestIDHeader(headers: http.Header): http.Header {
+	const cloned = http.headerClone(headers);
+	http.headerDel(cloned, networkRequestIDHeader);
+	return cloned;
+}
+
+function withResponseIDHeader(response: http.Response, requestID: string): http.Response {
+	const header = http.headerClone(response.header ?? {});
+	http.headerSet(header, networkRequestIDHeader, requestID);
+	return { ...response, header };
 }
 
 function dnsLookupCandidates(

@@ -138,6 +138,7 @@ function bindTestHTTP(network: ClusterNetwork, port: number, handler: http.Handl
 		{
 			metadata: { uid: "pod-uid", name: "pod", namespace: "default", attempt: 0 },
 			dnsConfig: { servers: [], searches: [], options: [] },
+			pod: { metadata: { uid: "pod-uid", name: "pod", namespace: "default" } },
 		},
 		0,
 	);

@@ -1,10 +1,15 @@
 import { expect, it, vi } from "vitest";
 
-import type { V1Node, V1Pod } from "../../client";
+import type { V1Node, V1Pod, V1Service } from "../../client";
 import * as context from "../../go/context";
 import { browser } from "../../test/describe";
 import { PodSandboxInstance } from "../cri/runtime";
-import { ClusterNetwork } from "./network";
+import {
+	ClusterNetwork,
+	networkRequestIDHeader,
+	type NetworkRequestEvent,
+	type NetworkResponseEvent,
+} from "./network";
 
 browser.describe("ClusterNetwork", () => {
 	it("normalizes fetch init into HTTP requests", async () => {
@@ -18,6 +23,7 @@ browser.describe("ClusterNetwork", () => {
 					namespace: "default",
 					attempt: 0,
 				},
+				pod: podOrigin("pod-uid"),
 			},
 			0,
 		);
@@ -34,32 +40,30 @@ browser.describe("ClusterNetwork", () => {
 			}),
 		}));
 
-		await expect(
-			network.fetch(
-				context.background(),
-				podOrigin("pod-uid"),
-				`http://${registration.ip}:8080/echo`,
-				{
-					method: "POST",
-					headers: {
-						Host: "example.test",
-						"X-Test": "yes",
-					},
-					body: "hello",
-				},
-			),
-		).resolves.toEqual({
-			status: 200,
-			body: JSON.stringify({
+		const response = await network.fetch(
+			context.background(),
+			podOrigin("pod-uid"),
+			`http://${registration.ip}:8080/echo`,
+			{
 				method: "POST",
-				url: `http://${registration.ip}:8080/echo`,
-				header: {
-					Host: ["example.test"],
-					"X-Test": ["yes"],
+				headers: {
+					Host: "example.test",
+					"X-Test": "yes",
 				},
-				host: "example.test",
 				body: "hello",
-			}),
+			},
+		);
+		expect(response.status).toBe(200);
+		expect(JSON.parse(response.body)).toEqual({
+			method: "POST",
+			url: `http://${registration.ip}:8080/echo`,
+			header: {
+				Host: ["example.test"],
+				"X-Test": ["yes"],
+				"X-Webernetes-Request-Id": [expect.any(String)],
+			},
+			host: "example.test",
+			body: "hello",
 		});
 	});
 
@@ -74,6 +78,7 @@ browser.describe("ClusterNetwork", () => {
 					namespace: "default",
 					attempt: 0,
 				},
+				pod: podOrigin("pod-uid"),
 			},
 			0,
 		);
@@ -103,21 +108,15 @@ browser.describe("ClusterNetwork", () => {
 					namespace: "default",
 					attempt: 0,
 				},
+				pod: podOrigin("pod-uid"),
 			},
 			0,
 		);
 		const registration = network.setupPodSandbox(pod, "10.244.0.0/24");
 		pod.setNetworkRegistration(registration);
 
-		network.registerNode("node-1", ["192.168.1.1"]);
-		network.registerService({
-			uid: "service-uid",
-			name: "web",
-			namespace: "default",
-			clusterIp: "10.96.0.10",
-			type: "NodePort",
-			ports: [{ port: 80, targetPort: 8080, nodePort: 30080 }],
-		});
+		network.registerNode(nodeOrigin("node-1"));
+		network.registerService(nodePortService());
 		network.setServiceTargets("default", "web", 80, [`${registration.ip}:8080`]);
 		registration.bindHttp(8080, async () => ({
 			status: 200,
@@ -143,21 +142,15 @@ browser.describe("ClusterNetwork", () => {
 					namespace: "default",
 					attempt: 0,
 				},
+				pod: podOrigin("pod-uid"),
 			},
 			0,
 		);
 		const registration = network.setupPodSandbox(pod, "10.244.0.0/24");
 		pod.setNetworkRegistration(registration);
 
-		network.registerNode("node-1", ["192.168.1.1"]);
-		network.registerService({
-			uid: "service-uid",
-			name: "web",
-			namespace: "default",
-			clusterIp: "10.96.0.10",
-			type: "NodePort",
-			ports: [{ port: 80, targetPort: 8080, nodePort: 30080 }],
-		});
+		network.registerNode(nodeOrigin("node-1"));
+		network.registerService(nodePortService());
 		network.setServiceTargets("default", "web", 80, [`${registration.ip}:8080`]);
 		registration.bindHttp(8080, async (_ctx, request) => {
 			return {
@@ -185,21 +178,20 @@ browser.describe("ClusterNetwork", () => {
 					namespace: "default",
 					attempt: 0,
 				},
+				pod: podOrigin("pod-uid"),
 			},
 			0,
 		);
 		const registration = network.setupPodSandbox(pod, "10.244.0.0/24");
 		pod.setNetworkRegistration(registration);
 
-		network.registerNode("node-1", ["192.168.1.1"], ["node-1", "node-1.internal.test"]);
-		network.registerService({
-			uid: "service-uid",
-			name: "web",
-			namespace: "default",
-			clusterIp: "10.96.0.10",
-			type: "NodePort",
-			ports: [{ port: 80, targetPort: 8080, nodePort: 30080 }],
-		});
+		network.registerNode(
+			nodeOrigin("node-1", [
+				{ type: "Hostname", address: "node-1" },
+				{ type: "InternalDNS", address: "node-1.internal.test" },
+			]),
+		);
+		network.registerService(nodePortService());
 		network.setServiceTargets("default", "web", 80, [`${registration.ip}:8080`]);
 		registration.bindHttp(8080, async (_ctx, request) => {
 			return {
@@ -247,21 +239,15 @@ browser.describe("ClusterNetwork", () => {
 					namespace: "default",
 					attempt: 0,
 				},
+				pod: podOrigin("pod-uid"),
 			},
 			0,
 		);
 		const registration = network.setupPodSandbox(pod, "10.244.0.0/24");
 		pod.setNetworkRegistration(registration);
 
-		network.registerNode("node-1", ["192.168.1.1"]);
-		network.registerService({
-			uid: "service-uid",
-			name: "web",
-			namespace: "default",
-			clusterIp: "10.96.0.10",
-			type: "NodePort",
-			ports: [{ port: 80, targetPort: 8080, nodePort: 30080 }],
-		});
+		network.registerNode(nodeOrigin("node-1"));
+		network.registerService(nodePortService());
 		network.setServiceTargets("default", "web", 80, [`${registration.ip}:8080`]);
 		registration.bindHttp(8080, async () => ({
 			status: 200,
@@ -351,20 +337,14 @@ browser.describe("ClusterNetwork", () => {
 					namespace: "default",
 					attempt: 0,
 				},
+				pod: podOrigin("pod-uid"),
 			},
 			0,
 		);
 		const registration = network.setupPodSandbox(pod, "10.244.0.0/24");
 		pod.setNetworkRegistration(registration);
 
-		network.registerService({
-			uid: "service-uid",
-			name: "web",
-			namespace: "default",
-			clusterIp: "10.96.0.10",
-			type: "ClusterIP",
-			ports: [{ port: 80, targetPort: 8080 }],
-		});
+		network.registerService(clusterIPService());
 		network.setServiceTargets("default", "web", 80, [`${registration.ip}:8080`]);
 
 		const listener = registration.bindHttp(8080, async () => ({
@@ -384,6 +364,104 @@ browser.describe("ClusterNetwork", () => {
 			network.fetch(context.background(), podOrigin("pod-uid"), "http://10.96.0.10:80/"),
 		).rejects.toThrow(`dial tcp ${registration.ip}:8080: connect: connection refused`);
 	});
+
+	it("emits request and response events with service endpoint chains", async () => {
+		const network = new ClusterNetwork();
+		const pod = new PodSandboxInstance(
+			"sandbox-1",
+			{
+				metadata: {
+					name: "web",
+					uid: "pod-uid",
+					namespace: "default",
+					attempt: 0,
+				},
+				pod: podOrigin("pod-uid"),
+			},
+			0,
+		);
+		const registration = network.setupPodSandbox(pod, "10.244.0.0/24");
+		pod.setNetworkRegistration(registration);
+		network.registerService(clusterIPService());
+		network.setServiceTargets("default", "web", 80, [`${registration.ip}:8080`]);
+		let handlerRequestID = "";
+		registration.bindHttp(8080, async (_ctx, request) => {
+			handlerRequestID = request.header[networkRequestIDHeader]?.[0] ?? "";
+			return {
+				status: 201,
+				header: { "X-App": ["ok"] },
+				body: "created",
+			};
+		});
+
+		const requests: NetworkRequestEvent[] = [];
+		const responses: NetworkResponseEvent[] = [];
+		network.on("request", (event) => requests.push(event));
+		network.on("response", (event) => responses.push(event));
+
+		await expect(
+			network.fetch(context.background(), podOrigin("client-uid"), "http://10.96.0.10:80/"),
+		).resolves.toMatchObject({
+			status: 201,
+			body: "created",
+		});
+
+		expect(requests).toHaveLength(1);
+		expect(responses).toHaveLength(1);
+		const request = requests[0] as NetworkRequestEvent;
+		const response = responses[0] as NetworkResponseEvent;
+		expect(request.error).toBeUndefined();
+		expect(request.chain.map((hop) => hop.type)).toEqual(["pod", "service", "pod"]);
+		expect(response.chain.map((hop) => hop.type)).toEqual(["pod", "service", "pod"]);
+		expect(request.chain[0]).toMatchObject({
+			type: "pod",
+			pod: { metadata: { uid: "client-uid" } },
+		});
+		expect(request.chain[1]).toMatchObject({
+			type: "service",
+			service: { metadata: { name: "web", namespace: "default", uid: "service-uid" } },
+		});
+		expect(request.chain[2]).toMatchObject({
+			type: "pod",
+			pod: { metadata: { uid: "pod-uid" } },
+		});
+		expect(response.chain[0]).toEqual(request.chain[2]);
+		expect(response.chain[1]).toEqual(request.chain[1]);
+		expect(response.chain[2]).toEqual(request.chain[0]);
+		const requestID = request.request.header[networkRequestIDHeader]?.[0];
+		expect(requestID).toEqual(expect.any(String));
+		expect(handlerRequestID).toBe(requestID);
+		expect(response.request).toBe(request.request);
+		expect(response.response?.header?.[networkRequestIDHeader]).toEqual([requestID]);
+		expect(response.response?.header?.["X-App"]).toEqual(["ok"]);
+	});
+
+	it("emits request errors without response events when no endpoint is reached", async () => {
+		const network = new ClusterNetwork();
+		const requests: NetworkRequestEvent[] = [];
+		const responses: NetworkResponseEvent[] = [];
+		network.on("request", (event) => requests.push(event));
+		network.on("response", (event) => responses.push(event));
+
+		await expect(
+			network.fetch(context.background(), nodeOrigin("node-1"), "http://10.1.2.3:8080/"),
+		).rejects.toThrow("dial tcp 10.1.2.3:8080: connect: connection refused");
+
+		expect(requests).toHaveLength(1);
+		expect(responses).toHaveLength(0);
+		expect(requests[0]?.error?.message).toBe("dial tcp 10.1.2.3:8080: connect: connection refused");
+		expect(requests[0]?.chain.map((hop) => hop.type)).toEqual(["node"]);
+	});
+
+	it("rejects caller-provided network request IDs", async () => {
+		const network = new ClusterNetwork();
+
+		await expect(
+			network.fetch(context.background(), nodeOrigin("node-1"), "https://93.184.216.34/", {
+				headers: { [networkRequestIDHeader]: "mine" },
+			}),
+		).rejects.toThrow(`${networkRequestIDHeader} is managed by ClusterNetwork`);
+	});
 });
 
 function podOrigin(uid: string): V1Pod {
@@ -398,13 +476,41 @@ function podOrigin(uid: string): V1Pod {
 	};
 }
 
-function nodeOrigin(name: string): V1Node {
+function nodeOrigin(
+	name: string,
+	addresses: NonNullable<V1Node["status"]>["addresses"] = [],
+): V1Node {
 	return {
 		apiVersion: "v1",
 		kind: "Node",
 		metadata: { name },
 		status: {
-			addresses: [{ type: "InternalIP", address: "192.168.1.1" }],
+			addresses: [{ type: "InternalIP", address: "192.168.1.1" }, ...addresses],
+		},
+	};
+}
+
+function nodePortService(): V1Service {
+	return serviceResource("NodePort");
+}
+
+function clusterIPService(): V1Service {
+	return serviceResource("ClusterIP");
+}
+
+function serviceResource(type: "ClusterIP" | "NodePort"): V1Service {
+	return {
+		apiVersion: "v1",
+		kind: "Service",
+		metadata: {
+			name: "web",
+			namespace: "default",
+			uid: "service-uid",
+		},
+		spec: {
+			type,
+			clusterIP: "10.96.0.10",
+			ports: [{ port: 80, targetPort: 8080, nodePort: type === "NodePort" ? 30080 : undefined }],
 		},
 	};
 }

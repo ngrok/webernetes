@@ -1,5 +1,4 @@
 import * as k8s from "../../client";
-import type { ServiceInstance } from "../cni";
 import type { ProcessContext } from "../cri";
 import { BaseImage } from "./base";
 
@@ -72,7 +71,7 @@ export class KubeProxy extends BaseImage {
 		}
 		// This is to make it possible to route to NodePort Services via the node's
 		// IP address and node address names.
-		ctx.network.registerNode(name, nodeIPAddresses(node), nodeAddressNames(node));
+		ctx.network.registerNode(node);
 	}
 
 	private deleteNode(ctx: ProcessContext, node: k8s.V1Node): void {
@@ -137,60 +136,26 @@ export class KubeProxy extends BaseImage {
 	}
 
 	private reconcileService(ctx: ProcessContext, service: k8s.V1Service): void {
-		const instance = this.serviceInstance(service);
-		if (!instance) {
-			const namespace = service.metadata?.namespace ?? "default";
-			const name = service.metadata?.name;
+		const namespace = service.metadata?.namespace ?? "default";
+		const name = service.metadata?.name;
+		if (!name || !isRoutableService(service)) {
 			if (name) {
 				ctx.network.unregisterService(namespace, name);
 			}
 			return;
 		}
-		ctx.network.registerService(instance);
-		for (const port of instance.ports) {
+		ctx.network.registerService(service);
+		for (const port of service.spec?.ports ?? []) {
 			ctx.network.setServiceTargets(
-				instance.namespace,
-				instance.name,
+				namespace,
+				name,
 				port.port,
-				this.targetsForServicePort(instance, port),
+				this.targetsForServicePort(service, port),
 			);
 		}
 	}
 
-	private serviceInstance(service: k8s.V1Service): ServiceInstance | undefined {
-		const type = service.spec?.type ?? "ClusterIP";
-		if (type !== "ClusterIP" && type !== "NodePort") {
-			return undefined;
-		}
-		const name = service.metadata?.name;
-		const namespace = service.metadata?.namespace ?? "default";
-		const clusterIp = service.spec?.clusterIP;
-		if (!name || !clusterIp || clusterIp === "None") {
-			return undefined;
-		}
-		return {
-			uid: service.metadata?.uid ?? `${namespace}/${name}`,
-			name,
-			namespace,
-			clusterIp,
-			type,
-			ports: (service.spec?.ports ?? []).map((port) => ({
-				name: port.name,
-				port: port.port,
-				targetPort: port.targetPort ?? port.port,
-				nodePort: port.nodePort,
-				protocol:
-					port.protocol === "TCP" || port.protocol === "UDP" || port.protocol === "SCTP"
-						? port.protocol
-						: undefined,
-			})),
-		};
-	}
-
-	private targetsForServicePort(
-		service: ServiceInstance,
-		port: ServiceInstance["ports"][number],
-	): string[] {
+	private targetsForServicePort(service: k8s.V1Service, port: k8s.V1ServicePort): string[] {
 		const slices = this.endpointSlicesForService(service);
 		const targets: string[] = [];
 		for (const slice of slices) {
@@ -212,11 +177,10 @@ export class KubeProxy extends BaseImage {
 		return targets;
 	}
 
-	private endpointSlicesForService(service: ServiceInstance): k8s.V1EndpointSlice[] {
-		return [
-			...(this.endpointSliceKeysByService.get(namespacedNameKey(service.namespace, service.name)) ??
-				[]),
-		]
+	private endpointSlicesForService(service: k8s.V1Service): k8s.V1EndpointSlice[] {
+		const namespace = service.metadata?.namespace ?? "default";
+		const name = service.metadata?.name ?? "";
+		return [...(this.endpointSliceKeysByService.get(namespacedNameKey(namespace, name)) ?? [])]
 			.map((key) => this.endpointSlices.get(key))
 			.filter((slice) => slice !== undefined);
 	}
@@ -250,28 +214,12 @@ function serviceKey(service: k8s.V1Service): string {
 	return namespacedNameKey(service.metadata?.namespace ?? "default", service.metadata?.name ?? "");
 }
 
-function nodeIPAddresses(node: k8s.V1Node): string[] {
-	const addresses: string[] = [];
-	for (const address of node.status?.addresses ?? []) {
-		if (address.type === "InternalIP" || address.type === "ExternalIP") {
-			addresses.push(address.address);
-		}
-	}
-	return addresses;
-}
-
-function nodeAddressNames(node: k8s.V1Node): string[] {
-	const addresses: string[] = [];
-	for (const address of node.status?.addresses ?? []) {
-		if (
-			address.type === "Hostname" ||
-			address.type === "InternalDNS" ||
-			address.type === "ExternalDNS"
-		) {
-			addresses.push(address.address);
-		}
-	}
-	return addresses;
+function isRoutableService(service: k8s.V1Service): boolean {
+	const type = service.spec?.type ?? "ClusterIP";
+	const clusterIP = service.spec?.clusterIP;
+	return (
+		(type === "ClusterIP" || type === "NodePort") && clusterIP !== undefined && clusterIP !== "None"
+	);
 }
 
 function endpointSliceKey(slice: k8s.V1EndpointSlice): string {

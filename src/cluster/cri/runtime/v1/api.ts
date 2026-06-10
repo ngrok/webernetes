@@ -39,7 +39,7 @@ export interface PodSandboxConfig {
 
 	// Simulator-only deviation: carry the full pod resource so the in-process
 	// network can attribute requests to their origin.
-	pod?: V1Pod;
+	pod: V1Pod;
 }
 
 // Models staging/src/k8s.io/cri-api/pkg/apis/runtime/v1/api.proto ImageSpec.
