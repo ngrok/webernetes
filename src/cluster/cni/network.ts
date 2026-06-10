@@ -1,4 +1,4 @@
-import { CIDR, ipToNumber } from "../../net";
+import { CIDR, isIPLiteral } from "../../net";
 import {
 	type DnsHandler,
 	DnsListener,
@@ -36,11 +36,23 @@ interface PodCIDRAllocator {
 	cursor?: string;
 }
 
+type FetchDefaultResult =
+	| { type: "response"; response: http.Response }
+	| { type: "error"; error: NetworkError };
+
 export type FetchOrigin = V1Pod | V1Node;
 
 export interface ClusterNetworkOptions {
 	clusterDNS?: readonly string[];
 }
+
+const internalIPCIDRs = [
+	new CIDR("10.0.0.0/8"),
+	new CIDR("172.16.0.0/12"),
+	new CIDR("192.168.0.0/16"),
+	new CIDR("fc00::/7"),
+	new CIDR("fe80::/10"),
+];
 
 class TargetList {
 	targets: string[] = [];
@@ -81,12 +93,12 @@ function serviceRouteKey(namespace: string, name: string, port: number): string 
 	return `${namespacedNameKey(namespace, name)}:${port}`;
 }
 
-function isIpLiteral(host: string): boolean {
-	return ipToNumber(host) !== undefined;
+function isInternalIPLiteral(host: string): boolean {
+	return internalIPCIDRs.some((cidr) => cidr.contains(host));
 }
 
 function isLocalhost(host: string): boolean {
-	return host === "localhost" || host === "127.0.0.1";
+	return host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
 }
 
 function nodeAliasKey(alias: string): string {
@@ -155,7 +167,7 @@ export class ClusterNetwork {
 		aliases: readonly string[] = [],
 	): void {
 		this.unregisterNode(name);
-		const ips = new Set(ipAddresses.filter((address) => isIpLiteral(address)));
+		const ips = new Set(ipAddresses.filter((address) => isIPLiteral(address)));
 		this.nodeIpsByName.set(name, ips);
 		for (const ip of ips) {
 			const nodeNames = this.nodeNamesByIp.get(ip) ?? new Set<string>();
@@ -295,6 +307,7 @@ export class ClusterNetwork {
 		init: http.FetchInit = {},
 	): Promise<http.Response> {
 		const url = this.parseHttpTarget(target);
+		let matchedClusterTarget = false;
 		if (isLocalhost(url.hostname)) {
 			const originalHost = url.host;
 			const resolved = this.originIP(origin);
@@ -303,6 +316,7 @@ export class ClusterNetwork {
 			}
 			url.hostname = resolved;
 			init = withHostHeader(init, originalHost);
+			matchedClusterTarget = true;
 		} else if (this.nodeIpsByAlias.has(url.hostname)) {
 			const originalHost = url.host;
 			const resolved = this.nodeIPForAlias(url.hostname);
@@ -311,17 +325,34 @@ export class ClusterNetwork {
 			}
 			url.hostname = resolved;
 			init = withHostHeader(init, originalHost);
-		} else if (!isIpLiteral(url.hostname)) {
+			matchedClusterTarget = true;
+		} else if (!isIPLiteral(url.hostname)) {
 			const originalHost = url.host;
 			const resolved = await this.resolveHostname(origin, url.hostname);
 			if (!resolved) {
-				throw new NetworkError(`could not resolve ${url.hostname}`);
+				return await this.fetchDefault(ctx, target, init);
 			}
 			url.hostname = resolved;
 			init = withHostHeader(init, originalHost);
+			matchedClusterTarget = true;
 		}
 
 		const service = this.servicesByClusterIp.get(url.hostname);
+		matchedClusterTarget ||= service !== undefined || this.isClusterAddress(url.hostname);
+		if (!matchedClusterTarget) {
+			if (isInternalIPLiteral(url.hostname)) {
+				if (url.protocol !== "http:") {
+					throw new NetworkError(`requests to internal addresses must be http:// for now`);
+				}
+				const port = this.parseTargetPort(url, service);
+				const endpoint = this.routeFetchEndpoint({ ip: url.hostname, port });
+				return await this.dispatchHttp(ctx, endpoint, url, init);
+			}
+			return await this.fetchDefault(ctx, target, init);
+		}
+		if (url.protocol !== "http:") {
+			throw new NetworkError(`unsupported protocol ${url.protocol}`);
+		}
 		const port = this.parseTargetPort(url, service);
 		const endpoint = this.routeFetchEndpoint({ ip: url.hostname, port });
 		return await this.dispatchHttp(ctx, endpoint, url, init);
@@ -403,7 +434,7 @@ export class ClusterNetwork {
 		} catch (error) {
 			throw new NetworkError(`invalid HTTP target ${target}`, { cause: error });
 		}
-		if (url.protocol !== "http:") {
+		if (url.protocol !== "http:" && url.protocol !== "https:") {
 			throw new NetworkError(`unsupported protocol ${url.protocol}`);
 		}
 		return url;
@@ -461,6 +492,10 @@ export class ClusterNetwork {
 
 	private nodeIPForAlias(alias: string): string | undefined {
 		return this.nodeIpsByAlias.get(alias)?.values().next().value;
+	}
+
+	private isClusterAddress(ip: string): boolean {
+		return this.podsByIp.has(ip) || this.nodeNamesByIp.has(ip) || this.servicesByClusterIp.has(ip);
 	}
 
 	private podOriginIP(origin: FetchOrigin): string | undefined {
@@ -553,6 +588,60 @@ export class ClusterNetwork {
 		}
 	}
 
+	private async fetchDefault(
+		ctx: context.Context,
+		target: http.FetchInput,
+		init: http.FetchInit,
+	): Promise<http.Response> {
+		const abort = new AbortController();
+		const responseCh = new Channel<FetchDefaultResult>(1);
+		void globalThis
+			.fetch(target.toString(), {
+				method: init.method,
+				headers: headerEntries(init.headers),
+				body: init.body,
+				signal: abort.signal,
+			})
+			.then(async (response) => {
+				responseCh.trySend({
+					type: "response",
+					response: {
+						status: response.status,
+						header: responseHeaders(response.headers),
+						body: await response.text(),
+					},
+				});
+				return undefined;
+			})
+			.catch((error) => {
+				responseCh.trySend({
+					type: "error",
+					error: new NetworkError(error instanceof Error ? error.message : "fetch failed", {
+						cause: error,
+					}),
+				});
+				return undefined;
+			});
+		const selected: FetchDefaultResult | { type: "canceled" } = await select()
+			.case(responseCh, ({ ok, value }) =>
+				ok
+					? value
+					: {
+							type: "error" as const,
+							error: new NetworkError("fetch failed"),
+						},
+			)
+			.case(ctx.done(), () => ({ type: "canceled" as const }));
+		if (selected.type === "canceled") {
+			abort.abort();
+			throw ctx.err() ?? new Error("context canceled");
+		}
+		if (selected.type === "error") {
+			throw selected.error;
+		}
+		return selected.response;
+	}
+
 	private httpRequest(url: URL, init: http.FetchInit): http.Request {
 		const header = normalizeHeaders(init.headers);
 		return {
@@ -563,6 +652,14 @@ export class ClusterNetwork {
 			body: init.body,
 		};
 	}
+}
+
+function responseHeaders(headers: Headers): http.Header {
+	const normalized: http.Header = {};
+	headers.forEach((value, name) => {
+		(normalized[name] ??= []).push(value);
+	});
+	return normalized;
 }
 
 function normalizeHeaders(headers: http.HeadersInit | undefined): http.Header {

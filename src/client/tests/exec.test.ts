@@ -141,6 +141,22 @@ kubernetes.describe("Exec", ({ core, helpers }) => {
 		);
 	});
 
+	it("should fetch external hosts through the pod network", async () => {
+		const namespace = await getTestNamespace();
+		let busybox = await createBusyboxPod(namespace, "external-fetch");
+		busybox = await waitForPodReady(busybox);
+
+		const result = await exec(busybox, "busybox", [
+			"wget",
+			"-qO-",
+			"https://www.cloudflare.com/cdn-cgi/trace",
+		]);
+		if (result.exitCode !== 0) {
+			throw new Error(result.stderr || result.stdout);
+		}
+		expect(result.stdout).toContain("h=www.cloudflare.com");
+	});
+
 	it("should apply pod DNS policies", async () => {
 		const namespace = await getTestNamespace();
 		const serviceName = "dns-policy-target";

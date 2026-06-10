@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 
 import type { V1Node, V1Pod } from "../../client";
 import * as context from "../../go/context";
@@ -280,6 +280,64 @@ browser.describe("ClusterNetwork", () => {
 		await expect(
 			network.fetch(context.background(), nodeOrigin("node-1"), "http://192.168.1.1:30080/"),
 		).rejects.toThrow("dial tcp 192.168.1.1:30080: connect: connection refused");
+	});
+
+	it("falls back to default fetch for public IP literals", async () => {
+		const network = new ClusterNetwork();
+		const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+			new Response("external", {
+				status: 200,
+				headers: { "Content-Type": "text/plain" },
+			}),
+		);
+		try {
+			await expect(
+				network.fetch(context.background(), nodeOrigin("node-1"), "https://93.184.216.34/"),
+			).resolves.toEqual({
+				status: 200,
+				header: { "content-type": ["text/plain"] },
+				body: "external",
+			});
+			expect(fetch).toHaveBeenCalledWith("https://93.184.216.34/", {
+				method: undefined,
+				headers: [],
+				body: undefined,
+				signal: expect.any(AbortSignal),
+			});
+		} finally {
+			fetch.mockRestore();
+		}
+	});
+
+	it("reports default fetch failures as network errors", async () => {
+		const network = new ClusterNetwork();
+		const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new TypeError("Failed to fetch"));
+		try {
+			await expect(
+				network.fetch(context.background(), nodeOrigin("node-1"), "https://93.184.216.34/"),
+			).rejects.toThrow("Failed to fetch");
+		} finally {
+			fetch.mockRestore();
+		}
+	});
+
+	it("keeps private and local IP literals on the simulated network", async () => {
+		const network = new ClusterNetwork();
+		const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("external"));
+		try {
+			await expect(
+				network.fetch(context.background(), nodeOrigin("node-1"), "http://10.1.2.3:8080/"),
+			).rejects.toThrow("dial tcp 10.1.2.3:8080: connect: connection refused");
+			await expect(
+				network.fetch(context.background(), nodeOrigin("node-1"), "http://[fd12:3456::1]:8080/"),
+			).rejects.toThrow("dial tcp [fd12:3456::1]:8080: connect: connection refused");
+			await expect(
+				network.fetch(context.background(), nodeOrigin("node-1"), "http://[fe80::1]:8080/"),
+			).rejects.toThrow("dial tcp [fe80::1]:8080: connect: connection refused");
+			expect(fetch).not.toHaveBeenCalled();
+		} finally {
+			fetch.mockRestore();
+		}
 	});
 
 	it("routes service requests to registered pod endpoints even after the listener exits", async () => {

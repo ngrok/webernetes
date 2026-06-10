@@ -252,13 +252,13 @@ export class IpRange {
 	}
 
 	private validateIp(ip: string) {
-		if (!this.cidr.contains(ip)) {
+		if (!this.cidr.containsUsableAddress(ip)) {
 			throw new Error(`invalid ip ${ip} for range ${this.range.name}`);
 		}
 	}
 
 	public contains(ip: string): boolean {
-		return this.cidr.contains(ip);
+		return this.cidr.containsUsableAddress(ip);
 	}
 
 	private indexForIp(ip: string): number {
