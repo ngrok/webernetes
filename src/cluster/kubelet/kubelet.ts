@@ -172,6 +172,7 @@ export interface KubeletDependencies {
 	clock: Clock;
 	network: ClusterNetwork;
 	node: V1Node;
+	hostDNSConfig?: DnsConfig;
 }
 
 interface KubeletOptions {
@@ -288,6 +289,7 @@ export function newMainKubelet(
 		const ip = parseIPSloppy(ipEntry);
 		return ip ? [formatIP(ip)] : [];
 	});
+	const hostDNSConfig = kubeDeps.hostDNSConfig;
 	const dnsConfigurer = new Configurer({
 		recorder: kubeDeps.recorder,
 		nodeRef: {
@@ -299,7 +301,17 @@ export function newMainKubelet(
 		nodeIPs: normalizedNodeIPs,
 		clusterDNS,
 		clusterDomain: kubeCfg.clusterDomain,
-		resolverConfig: "",
+		resolverConfig: hostDNSConfig ? "simulator" : "",
+		getHostDNSConfig: hostDNSConfig
+			? () => [
+					{
+						servers: [...hostDNSConfig.servers],
+						searches: [...hostDNSConfig.searches],
+						options: [...hostDNSConfig.options],
+					},
+					undefined,
+				]
+			: undefined,
 	});
 	const [kubeletCtx, cancelContext] = context.withCancel(ctx);
 	if (!kubeDeps.remoteRuntimeService || !kubeDeps.remoteImageService) {

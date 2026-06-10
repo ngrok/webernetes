@@ -97,6 +97,61 @@ kubernetes.describe("Pods", (context) => {
 		).rejects.toThrow("spec.containers: Required value");
 	});
 
+	it("should reject pods with dnsPolicy None and no dnsConfig", async () => {
+		const namespace = await getTestNamespace();
+		let createError: unknown;
+
+		try {
+			await core.createNamespacedPod({
+				namespace,
+				body: {
+					metadata: {
+						name: "dns-policy-none-no-config",
+					},
+					spec: {
+						dnsPolicy: "None",
+						containers: [{ name: "test", image: podImage }],
+					},
+				},
+			});
+		} catch (error) {
+			createError = error;
+		}
+
+		expect(apiErrorCode(createError)).toBe(422);
+		expect(apiStatusMessage(createError)).toBe(
+			'Pod "dns-policy-none-no-config" is invalid: spec.dnsConfig: Required value: must provide `dnsConfig` when `dnsPolicy` is None',
+		);
+	});
+
+	it("should reject pods with dnsPolicy None and no nameservers", async () => {
+		const namespace = await getTestNamespace();
+		let createError: unknown;
+
+		try {
+			await core.createNamespacedPod({
+				namespace,
+				body: {
+					metadata: {
+						name: "dns-policy-none-no-nameservers",
+					},
+					spec: {
+						dnsPolicy: "None",
+						dnsConfig: {},
+						containers: [{ name: "test", image: podImage }],
+					},
+				},
+			});
+		} catch (error) {
+			createError = error;
+		}
+
+		expect(apiErrorCode(createError)).toBe(422);
+		expect(apiStatusMessage(createError)).toBe(
+			'Pod "dns-policy-none-no-nameservers" is invalid: spec.dnsConfig.nameservers: Required value: must provide at least one DNS nameserver when `dnsPolicy` is None',
+		);
+	});
+
 	it("should be able to delete a pod", async () => {
 		await createPod({ metadata: { name: "delete-test" } });
 		const namespace = await getTestNamespace();

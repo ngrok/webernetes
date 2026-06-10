@@ -92,6 +92,11 @@ export class Cluster {
 			nodeStatusMaxImages: 50,
 			clusterDomain: "cluster.local",
 		};
+		const serverDNSConfig = {
+			servers: [this.dnsServiceIp],
+			searches: [],
+			options: [],
+		};
 
 		this.servers = [
 			new Server(this, {
@@ -99,18 +104,21 @@ export class Cluster {
 				podCIDR: "10.0.0.0/24",
 				ipAddresses: ["192.168.1.1"],
 				kubeletConfiguration,
+				dnsConfig: serverDNSConfig,
 			}),
 			new Server(this, {
 				name: "node-2",
 				podCIDR: "10.0.1.0/24",
 				ipAddresses: ["192.168.1.2"],
 				kubeletConfiguration,
+				dnsConfig: serverDNSConfig,
 			}),
 			new Server(this, {
 				name: "node-3",
 				podCIDR: "10.0.2.0/24",
 				ipAddresses: ["192.168.1.3"],
 				kubeletConfiguration,
+				dnsConfig: serverDNSConfig,
 			}),
 		];
 

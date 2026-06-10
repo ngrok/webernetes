@@ -27,6 +27,20 @@ export class PodStore extends Store<V1Pod> {
 		if (!pod.spec.containers || pod.spec.containers.length === 0) {
 			throw new Invalid(`Pod "${pod.metadata.name}" is invalid: spec.containers: Required value`);
 		}
+		if (pod.spec.dnsPolicy === "None" && !pod.spec.dnsConfig) {
+			throw new Invalid(
+				`Pod "${pod.metadata.name}" is invalid: spec.dnsConfig: Required value: must provide \`dnsConfig\` when \`dnsPolicy\` is None`,
+			);
+		}
+		if (
+			pod.spec.dnsPolicy === "None" &&
+			pod.spec.dnsConfig &&
+			(!pod.spec.dnsConfig.nameservers || pod.spec.dnsConfig.nameservers.length === 0)
+		) {
+			throw new Invalid(
+				`Pod "${pod.metadata.name}" is invalid: spec.dnsConfig.nameservers: Required value: must provide at least one DNS nameserver when \`dnsPolicy\` is None`,
+			);
+		}
 	}
 
 	protected async validateUpdate(pod: V1Pod, existing: V1Pod): Promise<void> {

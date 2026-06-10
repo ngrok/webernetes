@@ -1,4 +1,5 @@
 import { expect, it, vi } from "vitest";
+import type { V1Pod, V1PodSpec } from "../gen/models";
 import { kubernetes } from "../../test/harnesses/kubernetes";
 
 kubernetes.describe("Exec", ({ core, helpers }) => {
@@ -140,13 +141,72 @@ kubernetes.describe("Exec", ({ core, helpers }) => {
 		);
 	});
 
-	async function createBusyboxPod(namespace: string, name: string) {
+	it("should apply pod DNS policies", async () => {
+		const namespace = await getTestNamespace();
+		const serviceName = "dns-policy-target";
+		await createEchoPod(namespace, serviceName, "dns-policy");
+		await waitForPodReady({ metadata: { name: serviceName, namespace } });
+
+		let clusterFirstWithHostNet = await createBusyboxPod(namespace, "cluster-first-with-host-net", {
+			dnsPolicy: "ClusterFirstWithHostNet",
+			hostNetwork: true,
+		});
+		clusterFirstWithHostNet = await waitForPodReady(clusterFirstWithHostNet);
+		await expectWget(clusterFirstWithHostNet, `http://${serviceName}`, "dns-policy");
+
+		const kubeDNS = await core.readNamespacedService({
+			name: "kube-dns",
+			namespace: "kube-system",
+		});
+		const clusterDNS = kubeDNS.spec?.clusterIP;
+		if (!clusterDNS || clusterDNS === "None") {
+			throw new Error("Expected kube-dns to have a ClusterIP");
+		}
+
+		let defaultPolicy = await createBusyboxPod(namespace, "default-dns-policy", {
+			dnsPolicy: "Default",
+		});
+		defaultPolicy = await waitForPodReady(defaultPolicy);
+		await expectWgetFailure(defaultPolicy, `http://${serviceName}`);
+
+		let noneWithoutSearch = await createBusyboxPod(namespace, "none-without-search", {
+			dnsPolicy: "None",
+			dnsConfig: {
+				nameservers: [clusterDNS],
+			},
+		});
+		noneWithoutSearch = await waitForPodReady(noneWithoutSearch);
+		await expectWget(
+			noneWithoutSearch,
+			`http://${serviceName}.${namespace}.svc.cluster.local`,
+			"dns-policy",
+		);
+		await expectWgetFailure(noneWithoutSearch, `http://${serviceName}`);
+
+		let noneWithConfig = await createBusyboxPod(namespace, "none-with-config", {
+			dnsPolicy: "None",
+			dnsConfig: {
+				nameservers: [clusterDNS],
+				searches: [`${namespace}.svc.cluster.local`, "svc.cluster.local", "cluster.local"],
+				options: [{ name: "ndots", value: "5" }],
+			},
+		});
+		noneWithConfig = await waitForPodReady(noneWithConfig);
+		await expectWget(noneWithConfig, `http://${serviceName}`, "dns-policy");
+	});
+
+	async function createBusyboxPod(
+		namespace: string,
+		name: string,
+		spec: Partial<V1PodSpec> = {},
+	): Promise<V1Pod> {
 		return await createPod({
 			metadata: {
 				name,
 				namespace,
 			},
 			spec: {
+				...spec,
 				containers: [
 					{
 						name: "busybox",
@@ -163,13 +223,27 @@ kubernetes.describe("Exec", ({ core, helpers }) => {
 		serviceName: string,
 		expectedBody: string,
 	): Promise<void> {
+		await expectWget(pod, `http://${serviceName}`, expectedBody);
+	}
+
+	async function expectWget(pod: V1Pod, target: string, expectedBody: string): Promise<void> {
 		await vi.waitFor(
 			async () => {
-				const result = await exec(pod, "busybox", ["wget", "-qO-", `http://${serviceName}`]);
+				const result = await exec(pod, "busybox", ["wget", "-qO-", target]);
 				if (result.exitCode !== 0) {
 					throw new Error(result.stderr || result.stdout);
 				}
 				expect(result.stdout.trim()).toBe(expectedBody);
+			},
+			{ timeout: 30_000, interval: 500 },
+		);
+	}
+
+	async function expectWgetFailure(pod: V1Pod, target: string): Promise<void> {
+		await vi.waitFor(
+			async () => {
+				const result = await exec(pod, "busybox", ["wget", "-qO-", target]);
+				expect(result.exitCode).not.toBe(0);
 			},
 			{ timeout: 30_000, interval: 500 },
 		);

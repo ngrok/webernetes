@@ -2,6 +2,7 @@ import { Cluster } from "./cluster";
 import type { ClusterNetwork } from "./cni";
 import {
 	InProcessRuntimeService,
+	type DnsConfig,
 	type ImageManagerService,
 	type RuntimeDiagnostics,
 	type RuntimeService,
@@ -18,12 +19,14 @@ export interface ServerOptions {
 	podCIDR: string;
 	ipAddresses: string[];
 	kubeletConfiguration: KubeletConfiguration;
+	dnsConfig: DnsConfig;
 }
 
 export class Server {
 	name: string;
 	podCIDR: string;
 	ipAddresses: string[];
+	dnsConfig: DnsConfig;
 	cluster: Cluster;
 	node: V1Node;
 	kubelet: Kubelet;
@@ -41,6 +44,11 @@ export class Server {
 		this.name = options.name;
 		this.podCIDR = options.podCIDR;
 		this.ipAddresses = [...options.ipAddresses];
+		this.dnsConfig = {
+			servers: [...options.dnsConfig.servers],
+			searches: [...options.dnsConfig.searches],
+			options: [...options.dnsConfig.options],
+		};
 		this.cluster = cluster;
 		this.node = {
 			metadata: { name: this.name },
@@ -84,6 +92,7 @@ export class Server {
 				network: this.network,
 				clock: cluster.clock,
 				node: this.node,
+				hostDNSConfig: this.dnsConfig,
 			},
 			this.name,
 			this.name,
