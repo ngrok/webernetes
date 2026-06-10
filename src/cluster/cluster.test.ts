@@ -7,6 +7,7 @@ import { Cluster } from "./cluster";
 import { BaseImage } from "./images/base";
 import type { Kubelet } from "./kubelet";
 import { ProbeManagerImpl } from "./kubelet/prober";
+import { getLatencyProvider, newLatencyProvider } from "../latency";
 
 class TestImage extends BaseImage {
 	static readonly imageName = "example/test";
@@ -34,6 +35,30 @@ async function probeResultChannelsAreOpen(kubelet: Kubelet): Promise<boolean> {
 }
 
 browser.describe("Cluster nodes", () => {
+	it("defaults to a no-op latency provider on the cluster context", async () => {
+		const cluster = new Cluster();
+		try {
+			const l = getLatencyProvider(cluster.ctx);
+			expect(l.clusterNetworkRequestLatency([])).toBe(0);
+			expect(l.clusterNetworkResponseLatency([])).toBe(0);
+		} finally {
+			await cluster.close();
+		}
+	});
+
+	it("stores the configured latency provider on the cluster context", async () => {
+		const latencyProvider = newLatencyProvider({
+			clusterNetworkRequestLatency: () => 12,
+			clusterNetworkResponseLatency: () => 34,
+		});
+		const cluster = new Cluster({ latencyProvider });
+		try {
+			expect(getLatencyProvider(cluster.ctx)).toBe(latencyProvider);
+		} finally {
+			await cluster.close();
+		}
+	});
+
 	it("publishes server IP addresses on node status", async () => {
 		const cluster = new Cluster();
 		await cluster.init();

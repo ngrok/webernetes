@@ -4,11 +4,17 @@ export { BaseImage } from "./cluster/images/base";
 export { ImageRegistry } from "./cluster/cri";
 export { Listener as HttpListener } from "./cluster/cni/http";
 export { DnsListener } from "./cluster/cni/dns";
+export {
+	getLatencyProvider as latencyProviderFromContext,
+	newLatencyProvider,
+	withLatencyProvider,
+} from "./latency";
 export * from "./client";
 export type { ClusterOptions } from "./cluster/cluster";
 export type { NodePortRange } from "./cluster/storage";
 export type { ImageConstructor, ImageDefinition } from "./cluster/cri";
 export type { ProcessContext } from "./cluster/cri";
+export type { LatencyProvider } from "./latency";
 export type {
 	ContainerFileSystem,
 	ContainerInstance,

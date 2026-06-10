@@ -20,6 +20,7 @@ import { type NodePortRange, ServiceStore } from "./storage";
 import { applyResources } from "./apply";
 import type { KubeletConfiguration } from "./kubelet/apis/config";
 import { buildPodFullName } from "./kubelet/container";
+import { type LatencyProvider, withLatencyProvider } from "../latency";
 
 const DEFAULT_NODE_PORT_RANGE: NodePortRange = {
 	from: 30000,
@@ -29,6 +30,7 @@ const DEFAULT_NODE_PORT_RANGE: NodePortRange = {
 export interface ClusterOptions {
 	serviceCIDR?: string;
 	nodePortRange?: NodePortRange;
+	latencyProvider?: LatencyProvider;
 }
 
 export class KubeClient implements k8s.KubeClient {
@@ -57,7 +59,9 @@ export class Cluster {
 
 	public constructor(options: ClusterOptions = {}) {
 		this.clock = new Clock();
-		[this.ctx, this.cancelContext] = context.withCancel(context.background());
+		const [ctx, cancelContext] = context.withCancel(context.background());
+		this.ctx = withLatencyProvider(ctx, options.latencyProvider);
+		this.cancelContext = cancelContext;
 		this.etcd = new Etcd(this.clock);
 		this.serviceCIDR = options.serviceCIDR;
 		this.nodePortRange = options.nodePortRange ?? DEFAULT_NODE_PORT_RANGE;
