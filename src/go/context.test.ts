@@ -21,7 +21,52 @@ browser.describe("Context", () => {
 		const ctx = context.background();
 		expect(ctx).toBeDefined();
 		expect(ctx.err()).toBeUndefined();
+		expect(ctx.value("missing")).toBeUndefined();
 		await expect(doneIsReady(ctx)).resolves.toBe(false);
+	});
+
+	// Mirrors the observable lookup behavior from Go TestValues, lines 209-267:
+	// https://github.com/golang/go/blob/go1.26.0/src/context/x_test.go#L209-L267
+	it("withValue resolves values from the nearest matching key", () => {
+		const key1 = Symbol("key1");
+		const key2 = Symbol("key2");
+		const key3 = {};
+
+		const c0 = context.background();
+		expect(c0.value(key1)).toBeUndefined();
+
+		const c1 = context.withValue(c0, key1, "c1k1");
+		expect(c1.value(key1)).toBe("c1k1");
+		expect(c1.value(key2)).toBeUndefined();
+
+		const c2 = context.withValue(c1, key2, "c2k2");
+		expect(c2.value(key1)).toBe("c1k1");
+		expect(c2.value(key2)).toBe("c2k2");
+		expect(c2.value(key3)).toBeUndefined();
+
+		const c3 = context.withValue(c2, key3, "c3k3");
+		const c4 = context.withValue(c3, key1, undefined);
+		expect(c4.value(key1)).toBeUndefined();
+		expect(c4.value(key2)).toBe("c2k2");
+		expect(c4.value(key3)).toBe("c3k3");
+	});
+
+	// Mirrors Go TestWithValueChecksKey, lines 538-547:
+	// https://github.com/golang/go/blob/go1.26.0/src/context/x_test.go#L538-L547
+	it("withValue rejects invalid keys", () => {
+		expect(() => context.withValue(context.background(), ["foo"], "bar")).toThrow(
+			"key is not comparable",
+		);
+		expect(() => context.withValue(context.background(), undefined, "bar")).toThrow("nil key");
+		expect(() => context.withValue(context.background(), null, "bar")).toThrow("nil key");
+	});
+
+	// Mirrors Go TestInvalidDerivedFail's WithValue nil-parent case, lines 558-561:
+	// https://github.com/golang/go/blob/go1.26.0/src/context/x_test.go#L558-L561
+	it("withValue rejects a missing parent", () => {
+		expect(() => context.withValue(null as unknown as context.Context, "foo", "bar")).toThrow(
+			"cannot create context from nil parent",
+		);
 	});
 
 	// Mirrors Go TestWithCancel, lines 89-124:
@@ -233,6 +278,35 @@ browser.describe("Context", () => {
 			await expect(doneIsReady(timerChild)).resolves.toBe(true);
 			expect(parent.err()).toBe(context.Canceled);
 			expect(timerChild.err()).toBe(context.Canceled);
+		} finally {
+			stop();
+		}
+	});
+
+	// Mirrors Go XTestParentFinishesChild's parent -> valueChild -> timerChild tree,
+	// lines 45-52 and 94-119:
+	// https://github.com/golang/go/blob/go1.26.0/src/context/context_test.go#L45-L52
+	it("canceling a parent cancels timeout children through value contexts", async () => {
+		const clock = new Clock();
+		clock.pause();
+		const [parent, cancelParent] = context.withCancel(context.background());
+		const valueChild = context.withValue(parent, "key", "value");
+		const [timerChild, stop] = context.withTimeout(valueChild, 60 * 60 * 1000, clock);
+
+		try {
+			await expect(doneIsReady(parent)).resolves.toBe(false);
+			await expect(doneIsReady(valueChild)).resolves.toBe(false);
+			await expect(doneIsReady(timerChild)).resolves.toBe(false);
+
+			cancelParent();
+
+			await expect(doneIsReady(parent)).resolves.toBe(true);
+			await expect(doneIsReady(valueChild)).resolves.toBe(true);
+			await expect(doneIsReady(timerChild)).resolves.toBe(true);
+			expect(parent.err()).toBe(context.Canceled);
+			expect(valueChild.err()).toBe(context.Canceled);
+			expect(timerChild.err()).toBe(context.Canceled);
+			expect(valueChild.value("key")).toBe("value");
 		} finally {
 			stop();
 		}

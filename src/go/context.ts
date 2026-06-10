@@ -16,6 +16,7 @@ export type CancelCauseFunc = (cause?: Error | undefined) => void;
 export interface Context {
 	done(): ReadOnlyChannel<void>;
 	err(): ContextError | undefined;
+	value(key: unknown): unknown;
 }
 
 class BackgroundContext implements Context {
@@ -26,6 +27,10 @@ class BackgroundContext implements Context {
 	}
 
 	err(): ContextError | undefined {
+		return undefined;
+	}
+
+	value(_key: unknown): unknown {
 		return undefined;
 	}
 }
@@ -45,6 +50,13 @@ class CancelContext implements Context {
 
 	err(): ContextError | undefined {
 		return this.error;
+	}
+
+	value(key: unknown): unknown {
+		if (key === cancelContextKey) {
+			return this;
+		}
+		return this.parent.value(key);
 	}
 
 	cause(): Error | undefined {
@@ -88,6 +100,31 @@ class CancelContext implements Context {
 	}
 }
 
+// Models go/src/context/context.go valueCtx.
+class ValueContext implements Context {
+	constructor(
+		private readonly parent: Context,
+		private readonly key: unknown,
+		private readonly val: unknown,
+	) {}
+
+	done(): ReadOnlyChannel<void> {
+		return this.parent.done();
+	}
+
+	err(): ContextError | undefined {
+		return this.parent.err();
+	}
+
+	value(key: unknown): unknown {
+		if (this.key === key) {
+			return this.val;
+		}
+		return this.parent.value(key);
+	}
+}
+
+const cancelContextKey = Symbol("cancelContextKey");
 const backgroundContext = new BackgroundContext();
 
 export function background(): Context {
@@ -123,6 +160,20 @@ export function withCancelCause(parent: Context): [Context, CancelCauseFunc] {
 			context.cancel(true, Canceled, cause);
 		},
 	];
+}
+
+// Models go/src/context/context.go WithValue.
+export function withValue(parent: Context, key: unknown, val: unknown): Context {
+	if (!parent) {
+		throw new Error("cannot create context from nil parent");
+	}
+	if (key === undefined || key === null) {
+		throw new Error("nil key");
+	}
+	if (Array.isArray(key) || ArrayBuffer.isView(key)) {
+		throw new Error("key is not comparable");
+	}
+	return new ValueContext(parent, key, val);
 }
 
 // Models go/src/context/context.go WithTimeout.
@@ -164,5 +215,6 @@ function newCancelContext(parent: Context): CancelContext {
 }
 
 function parentCancelContext(parent: Context): CancelContext | undefined {
-	return parent instanceof CancelContext ? parent : undefined;
+	const cancelContext = parent.value(cancelContextKey);
+	return cancelContext instanceof CancelContext ? cancelContext : undefined;
 }

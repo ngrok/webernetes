@@ -1036,6 +1036,10 @@ export class ProcessContext implements context.Context {
 		return this.process.ctx.err();
 	}
 
+	value(key: unknown): unknown {
+		return this.process.ctx.value(key);
+	}
+
 	exec(argv: string[], options?: ExecOptions): ProcessInstance {
 		return this.process.container.exec(argv, options);
 	}
