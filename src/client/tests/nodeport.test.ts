@@ -1,4 +1,4 @@
-import { expect, it, vi } from "vitest";
+import { expect, it } from "vitest";
 import type { V1Pod } from "../gen/models";
 import { kubernetes } from "../../test/harnesses/kubernetes";
 
@@ -125,18 +125,15 @@ kubernetes.describe("NodePort", ({ core, discovery, helpers }) => {
 			namespace,
 		});
 
-		await vi.waitFor(
-			async () => {
-				let rejected = false;
-				try {
-					await fetchNodePort(nodePort, { path: "/", retries: 0 });
-				} catch {
-					rejected = true;
-				}
-				expect(rejected).toBe(true);
-			},
-			{ timeout: 60_000, interval: 500 },
-		);
+		await waitFor(async () => {
+			let rejected = false;
+			try {
+				await fetchNodePort(nodePort, { path: "/", retries: 0 });
+			} catch {
+				rejected = true;
+			}
+			expect(rejected).toBe(true);
+		});
 	});
 
 	it("should reject creating a NodePort for pods without a shared label", async () => {

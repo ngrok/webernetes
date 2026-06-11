@@ -1,10 +1,17 @@
-import { expect, it, vi } from "vitest";
+import { expect, it } from "vitest";
 import type { V1Pod, V1PodSpec } from "../gen/models";
 import { kubernetes } from "../../test/harnesses/kubernetes";
 
 kubernetes.describe("Exec", ({ core, helpers }) => {
-	const { createNamespace, createPod, createService, exec, getTestNamespace, waitForPodReady } =
-		helpers;
+	const {
+		createNamespace,
+		createPod,
+		createService,
+		exec,
+		getTestNamespace,
+		waitFor,
+		waitForPodReady,
+	} = helpers;
 	it("should execute commands in a pod with service DNS", async () => {
 		const namespace = await getTestNamespace();
 
@@ -67,18 +74,15 @@ kubernetes.describe("Exec", ({ core, helpers }) => {
 			`http://exec-target.${namespace}`,
 			"http://exec-target",
 		]) {
-			await vi.waitFor(
-				async () => {
-					const result = await exec(busybox, "busybox", ["wget", "-qO-", target]);
-					if (result.exitCode !== 0) {
-						throw new Error(`${target}: ${result.stderr || result.stdout}`);
-					}
-					expect(result.exitCode).toBe(0);
-					expect(result.stderr).toBe("");
-					expect(result.stdout).toContain("Hello World");
-				},
-				{ timeout: 30_000, interval: 500 },
-			);
+			await waitFor(async () => {
+				const result = await exec(busybox, "busybox", ["wget", "-qO-", target]);
+				if (result.exitCode !== 0) {
+					throw new Error(`${target}: ${result.stderr || result.stdout}`);
+				}
+				expect(result.exitCode).toBe(0);
+				expect(result.stderr).toBe("");
+				expect(result.stdout).toContain("Hello World");
+			});
 		}
 	});
 
@@ -129,16 +133,13 @@ kubernetes.describe("Exec", ({ core, helpers }) => {
 		});
 		pod = await waitForPodReady(pod);
 
-		await vi.waitFor(
-			async () => {
-				const result = await exec(pod, "busybox", ["wget", "-qO-", "http://localhost:5678"]);
-				if (result.exitCode !== 0) {
-					throw new Error(result.stderr || result.stdout);
-				}
-				expect(result.stdout.trim()).toBe("localhost-pod");
-			},
-			{ timeout: 30_000, interval: 500 },
-		);
+		await waitFor(async () => {
+			const result = await exec(pod, "busybox", ["wget", "-qO-", "http://localhost:5678"]);
+			if (result.exitCode !== 0) {
+				throw new Error(result.stderr || result.stdout);
+			}
+			expect(result.stdout.trim()).toBe("localhost-pod");
+		});
 	});
 
 	it("should fetch external hosts through the pod network", async () => {
@@ -243,26 +244,20 @@ kubernetes.describe("Exec", ({ core, helpers }) => {
 	}
 
 	async function expectWget(pod: V1Pod, target: string, expectedBody: string): Promise<void> {
-		await vi.waitFor(
-			async () => {
-				const result = await exec(pod, "busybox", ["wget", "-qO-", target]);
-				if (result.exitCode !== 0) {
-					throw new Error(result.stderr || result.stdout);
-				}
-				expect(result.stdout.trim()).toBe(expectedBody);
-			},
-			{ timeout: 30_000, interval: 500 },
-		);
+		await waitFor(async () => {
+			const result = await exec(pod, "busybox", ["wget", "-qO-", target]);
+			if (result.exitCode !== 0) {
+				throw new Error(result.stderr || result.stdout);
+			}
+			expect(result.stdout.trim()).toBe(expectedBody);
+		});
 	}
 
 	async function expectWgetFailure(pod: V1Pod, target: string): Promise<void> {
-		await vi.waitFor(
-			async () => {
-				const result = await exec(pod, "busybox", ["wget", "-qO-", target]);
-				expect(result.exitCode).not.toBe(0);
-			},
-			{ timeout: 30_000, interval: 500 },
-		);
+		await waitFor(async () => {
+			const result = await exec(pod, "busybox", ["wget", "-qO-", target]);
+			expect(result.exitCode).not.toBe(0);
+		});
 	}
 
 	async function createEchoPod(namespace: string, name: string, text: string): Promise<void> {

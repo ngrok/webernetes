@@ -1,4 +1,4 @@
-import { expect, it, vi } from "vitest";
+import { expect, it } from "vitest";
 import { kubernetes } from "../../test/harnesses/kubernetes";
 import { apiErrorCode, apiStatusMessage } from "../../test/harnesses/helpers";
 
@@ -331,26 +331,23 @@ kubernetes.describe("Namespaces", ({ core, discovery, k8s, helpers }) => {
 
 		await core.deleteNamespace({ name });
 
-		await vi.waitFor(
-			async () => {
-				expect((await core.listNamespacedPod({ namespace: name })).items).toHaveLength(0);
-				expect((await core.listNamespacedService({ namespace: name })).items).toHaveLength(0);
-				expect(
-					(await discovery.listNamespacedEndpointSlice({ namespace: name })).items,
-				).toHaveLength(0);
-				expect((await core.listNamespacedEvent({ namespace: name })).items).toHaveLength(0);
+		await waitFor(async () => {
+			expect((await core.listNamespacedPod({ namespace: name })).items).toHaveLength(0);
+			expect((await core.listNamespacedService({ namespace: name })).items).toHaveLength(0);
+			expect((await discovery.listNamespacedEndpointSlice({ namespace: name })).items).toHaveLength(
+				0,
+			);
+			expect((await core.listNamespacedEvent({ namespace: name })).items).toHaveLength(0);
 
-				const namespace = await readNamespaceOrUndefined(name);
-				if (!namespace) {
-					return;
-				}
-				if (!namespace.metadata?.deletionTimestamp || namespace.status?.phase === "Active") {
-					throw new Error(`Expected namespace ${name} to be deleted or terminating`);
-				}
-			},
-			{ timeout: 180_000, interval: 500 },
-		);
-	}, 210_000);
+			const namespace = await readNamespaceOrUndefined(name);
+			if (!namespace) {
+				return;
+			}
+			if (!namespace.metadata?.deletionTimestamp || namespace.status?.phase === "Active") {
+				throw new Error(`Expected namespace ${name} to be deleted or terminating`);
+			}
+		});
+	});
 
 	it("should allow deleting a terminating namespace again", async () => {
 		const namespace = await core.createNamespace({
@@ -406,7 +403,7 @@ kubernetes.describe("Namespaces", ({ core, discovery, k8s, helpers }) => {
 				(afterSecondDelete.metadata?.deletionTimestamp !== undefined &&
 					afterSecondDelete.status?.phase !== "Active"),
 		).toBe(true);
-	}, 60_000);
+	});
 
 	it("should be able to patch a namespace", async () => {
 		const mergePatchOptions = k8s.setHeaderOptions("Content-Type", k8s.PatchStrategy.MergePatch);

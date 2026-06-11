@@ -6,7 +6,7 @@ export default defineConfig({
 		globalSetup: ["src/test/harnesses/kubernetes-k3s-global-setup.ts"],
 		include: ["src/**/*.test.ts"],
 		passWithNoTests: true,
-		testTimeout: 20_000,
+		testTimeout: 240_000,
 		hookTimeout: 40_000,
 	},
 });

@@ -178,24 +178,15 @@ export function createKubernetesHelpers({
 		namespace?: string,
 	): Promise<V1Pod> => {
 		let pod = await readPodResource(core, nameOrResource, getTestNamespace, namespace);
-		await retry(
-			async () => {
-				pod = await readPodResource(core, pod, getTestNamespace);
-				if (pod.status?.phase !== "Running") {
-					throw new Error(`Expected pod ${pod.metadata?.name ?? ""} to be Running`);
-				}
-				if (!containerReady(pod)) {
-					throw new Error(`Expected pod ${pod.metadata?.name ?? ""} to have a ready container`);
-				}
-			},
-			{
-				clock: retryClock,
-				retries: 50,
-				baseDelayMs: 100,
-				maxDelayMs: 100,
-				jitterRatio: 0,
-			},
-		);
+		await waitFor(async () => {
+			pod = await readPodResource(core, pod, getTestNamespace);
+			if (pod.status?.phase !== "Running") {
+				throw new Error(`Expected pod ${pod.metadata?.name ?? ""} to be Running`);
+			}
+			if (!containerReady(pod)) {
+				throw new Error(`Expected pod ${pod.metadata?.name ?? ""} to have a ready container`);
+			}
+		});
 		return pod;
 	};
 
