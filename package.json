@@ -1,20 +1,50 @@
 {
   "name": "webernetes",
   "version": "0.1.0",
+  "description": "Kubernetes that runs in the browser.",
+  "keywords": [
+    "browser",
+    "k8s",
+    "kubernetes",
+    "simulator"
+  ],
+  "homepage": "https://github.com/ngrok/webernetes#readme",
+  "bugs": {
+    "url": "https://github.com/ngrok/webernetes/issues"
+  },
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ngrok/webernetes.git"
+  },
   "files": [
     "dist",
+    "src",
+    "!src/**/AGENTS.md",
+    "!src/**/*.test.ts",
+    "!src/**/*test-helpers.ts",
+    "!src/**/testing/**",
+    "!src/test/**",
+    "!src/client/test/**",
+    "!src/client/tests/**",
     "NOTICE"
   ],
   "type": "module",
+  "sideEffects": false,
+  "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
     }
   },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "clean": "rm -rf dist",
+    "build": "pnpm run clean && tsc -p tsconfig.build.json",
     "fmt:check": "oxfmt --check .",
     "fmt": "oxfmt --write .",
     "k3s:setup": "tsx src/test/harnesses/kubernetes-k3s-setup-cli.ts",
