@@ -1,12 +1,16 @@
 import { expect, it, vi } from "vitest";
 
+import { Clock } from "../../clock";
 import type { V1Node, V1Pod, V1Service } from "../../client";
 import * as context from "../../go/context";
+import { withLatencyProvider, newLatencyProvider } from "../../latency";
 import { browser } from "../../test/describe";
+import { waitFor } from "../../test/wait";
 import { PodSandboxInstance } from "../cri/runtime";
 import {
 	ClusterNetwork,
 	networkRequestIDHeader,
+	type NetworkHop,
 	type NetworkRequestEvent,
 	type NetworkResponseEvent,
 } from "./network";
@@ -411,6 +415,8 @@ browser.describe("ClusterNetwork", () => {
 		const request = requests[0] as NetworkRequestEvent;
 		const response = responses[0] as NetworkResponseEvent;
 		expect(request.error).toBeUndefined();
+		expect(request.latencyMs).toBe(0);
+		expect(response.latencyMs).toBe(0);
 		expect(request.chain.map((hop) => hop.type)).toEqual(["pod", "service", "pod"]);
 		expect(response.chain.map((hop) => hop.type)).toEqual(["pod", "service", "pod"]);
 		expect(request.chain[0]).toMatchObject({
@@ -449,8 +455,96 @@ browser.describe("ClusterNetwork", () => {
 
 		expect(requests).toHaveLength(1);
 		expect(responses).toHaveLength(0);
+		expect(requests[0]?.latencyMs).toBe(0);
 		expect(requests[0]?.error?.message).toBe("dial tcp 10.1.2.3:8080: connect: connection refused");
 		expect(requests[0]?.chain.map((hop) => hop.type)).toEqual(["node"]);
+	});
+
+	it("waits after request and response events using configured latency", async () => {
+		const clock = new Clock();
+		clock.pause();
+		const network = new ClusterNetwork({ clock });
+		const pod = new PodSandboxInstance(
+			"sandbox-1",
+			{
+				metadata: {
+					name: "web",
+					uid: "pod-uid",
+					namespace: "default",
+					attempt: 0,
+				},
+				pod: podOrigin("pod-uid"),
+			},
+			0,
+		);
+		const registration = network.setupPodSandbox(pod, "10.244.0.0/24");
+		pod.setNetworkRegistration(registration);
+		registration.bindHttp(8080, async () => ({ status: 200, body: "ok" }));
+
+		const events: Array<{
+			type: string;
+			latencyMs: number;
+			chain: NetworkHop[];
+		}> = [];
+		network.on("request", (event) => {
+			events.push({
+				type: "request",
+				latencyMs: event.latencyMs,
+				chain: event.chain,
+			});
+		});
+		network.on("response", (event) => {
+			events.push({
+				type: "response",
+				latencyMs: event.latencyMs,
+				chain: event.chain,
+			});
+		});
+		const ctx = withLatencyProvider(
+			context.background(),
+			newLatencyProvider({
+				clusterNetworkRequestLatency: (chain) => chain.length * 10,
+				clusterNetworkResponseLatency: (chain) => chain.length * 20,
+			}),
+		);
+
+		let resolved = false;
+		const responsePromise = network
+			.fetch(ctx, podOrigin("client-uid"), `http://${registration.ip}:8080/`)
+			.then((response) => {
+				resolved = true;
+				return response;
+			});
+
+		await waitFor(() => expect(events).toHaveLength(1));
+		expect(events).toMatchObject([
+			{
+				type: "request",
+				latencyMs: 20,
+				chain: [
+					{ type: "pod", pod: { metadata: { uid: "client-uid" } } },
+					{ type: "pod", pod: { metadata: { uid: "pod-uid" } } },
+				],
+			},
+		]);
+		expect(resolved).toBe(false);
+		await waitFor(() => expect(clock.pendingTaskCount()).toBe(1));
+
+		clock.step(20);
+		await waitFor(() => expect(events).toHaveLength(2));
+		expect(events[1]).toMatchObject({
+			type: "response",
+			latencyMs: 40,
+			chain: [
+				{ type: "pod", pod: { metadata: { uid: "pod-uid" } } },
+				{ type: "pod", pod: { metadata: { uid: "client-uid" } } },
+			],
+		});
+		expect(resolved).toBe(false);
+
+		clock.step(40);
+		await expect(responsePromise).resolves.toMatchObject({ status: 200, body: "ok" });
+		expect(resolved).toBe(true);
 	});
 
 	it("rejects caller-provided network request IDs", async () => {

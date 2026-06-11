@@ -74,7 +74,7 @@ export class Cluster {
 				this.exec(namespace, podName, containerName, argv),
 		});
 		this.api = new KubeClient(this.kubeConfig);
-		this.network = new ClusterNetwork({ clusterDNS: [this.dnsServiceIp] });
+		this.network = new ClusterNetwork({ clusterDNS: [this.dnsServiceIp], clock: this.clock });
 
 		this.imageRegistry = new ImageRegistry();
 		this.imageRegistry.register(PauseImage);

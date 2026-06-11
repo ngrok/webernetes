@@ -1,5 +1,6 @@
 import { EventEmitter } from "events";
 
+import { Clock } from "../../clock";
 import { CIDR, isIPLiteral } from "../../net";
 import {
 	type DnsHandler,
@@ -12,7 +13,9 @@ import { NetworkError } from "./error";
 import * as http from "./http";
 import { Channel, select } from "../../go/channel";
 import * as context from "../../go/context";
+import * as time from "../../go/time";
 import type { V1Node, V1Pod, V1Service, V1ServicePort } from "../../client";
+import { getLatencyProvider } from "../../latency";
 import type { DnsConfig } from "../cri/runtime/v1/api";
 import type { PodSandboxInstance } from "../cri/runtime";
 
@@ -53,6 +56,7 @@ export type NetworkHop =
 export interface NetworkRequestEvent {
 	request: http.Request;
 	chain: NetworkHop[];
+	latencyMs: number;
 	error?: Error;
 }
 
@@ -61,10 +65,12 @@ export interface NetworkResponseEvent {
 	response?: http.Response;
 	error?: Error;
 	chain: NetworkHop[];
+	latencyMs: number;
 }
 
 export interface ClusterNetworkOptions {
 	clusterDNS?: readonly string[];
+	clock?: Clock;
 }
 
 const internalIPCIDRs = [
@@ -165,9 +171,11 @@ export class ClusterNetwork extends EventEmitter {
 	private servicesByNodePort = new Map<number, NodePortRoute>();
 	private targetListsByServicePort = new Map<string, TargetList>();
 	private nextRequestID = 1;
+	private readonly clock: Clock;
 
 	constructor(private readonly options: ClusterNetworkOptions = {}) {
 		super();
+		this.clock = options.clock ?? new Clock();
 	}
 
 	public override on(event: "request", handler: (event: NetworkRequestEvent) => void): this;
@@ -427,29 +435,30 @@ export class ClusterNetwork extends EventEmitter {
 			if (!resolved) {
 				chain.push({ type: "external", host: url.hostname });
 				const request = this.httpRequest(url, method, headers, body);
-				this.emit("request", { request, chain });
+				await this.emitRequestEvent(ctx, { request, chain });
+				let response: http.Response;
 				try {
-					const response = await this.fetchDefault(
+					response = await this.fetchDefault(
 						ctx,
 						target,
 						method,
 						withoutRequestIDHeader(headers),
 						body,
 					);
-					this.emit("response", {
-						request,
-						response: withResponseIDHeader(response, requestID),
-						chain: chain.toReversed(),
-					});
-					return response;
 				} catch (error) {
-					this.emit("response", {
+					await this.emitResponseEvent(ctx, {
 						request,
 						error: errorFromUnknown(error),
 						chain: chain.toReversed(),
 					});
 					throw error;
 				}
+				await this.emitResponseEvent(ctx, {
+					request,
+					response: withResponseIDHeader(response, requestID),
+					chain: chain.toReversed(),
+				});
+				return response;
 			}
 			url.hostname = resolved;
 			withHostHeader(headers, originalHost);
@@ -476,29 +485,30 @@ export class ClusterNetwork extends EventEmitter {
 			}
 			chain.push({ type: "external", host: url.hostname });
 			const request = this.httpRequest(url, method, headers, body);
-			this.emit("request", { request, chain });
+			await this.emitRequestEvent(ctx, { request, chain });
+			let response: http.Response;
 			try {
-				const response = await this.fetchDefault(
+				response = await this.fetchDefault(
 					ctx,
 					target,
 					method,
 					withoutRequestIDHeader(headers),
 					body,
 				);
-				this.emit("response", {
-					request,
-					response: withResponseIDHeader(response, requestID),
-					chain: chain.toReversed(),
-				});
-				return response;
 			} catch (error) {
-				this.emit("response", {
+				await this.emitResponseEvent(ctx, {
 					request,
 					error: errorFromUnknown(error),
 					chain: chain.toReversed(),
 				});
 				throw error;
 			}
+			await this.emitResponseEvent(ctx, {
+				request,
+				response: withResponseIDHeader(response, requestID),
+				chain: chain.toReversed(),
+			});
+			return response;
 		}
 		if (url.protocol !== "http:") {
 			throw new NetworkError(`unsupported protocol ${url.protocol}`);
@@ -509,7 +519,7 @@ export class ClusterNetwork extends EventEmitter {
 			route = this.routeFetchEndpoint({ ip: url.hostname, port }, chain);
 		} catch (error) {
 			const networkError = errorFromUnknown(error);
-			this.emit("request", {
+			await this.emitRequestEvent(ctx, {
 				request: this.httpRequest(url, method, headers, body),
 				chain,
 				error: networkError,
@@ -759,6 +769,36 @@ export class ClusterNetwork extends EventEmitter {
 		return { endpoint: selected, chain };
 	}
 
+	private async emitRequestEvent(
+		ctx: context.Context,
+		event: Omit<NetworkRequestEvent, "latencyMs">,
+	): Promise<void> {
+		const latencyMs = getLatencyProvider(ctx).clusterNetworkRequestLatency(event.chain);
+		this.emit("request", { ...event, latencyMs });
+		await this.waitForLatency(ctx, latencyMs);
+	}
+
+	private async emitResponseEvent(
+		ctx: context.Context,
+		event: Omit<NetworkResponseEvent, "latencyMs">,
+	): Promise<void> {
+		const latencyMs = getLatencyProvider(ctx).clusterNetworkResponseLatency(event.chain);
+		this.emit("response", { ...event, latencyMs });
+		await this.waitForLatency(ctx, latencyMs);
+	}
+
+	private async waitForLatency(ctx: context.Context, latencyMs: number): Promise<void> {
+		if (!(latencyMs > 0)) {
+			return;
+		}
+		const selected = await select()
+			.case(ctx.done(), () => ctx.err() ?? context.Canceled)
+			.case(time.after(this.clock, latencyMs), () => undefined);
+		if (selected) {
+			throw selected;
+		}
+	}
+
 	private async dispatchResolvedHttp(
 		ctx: context.Context,
 		route: NetworkRoute,
@@ -773,26 +813,27 @@ export class ClusterNetwork extends EventEmitter {
 			const error = new NetworkError(
 				`dial tcp ${route.endpoint.ip}:${route.endpoint.port}: connect: connection refused`,
 			);
-			this.emit("request", { request, chain: route.chain, error });
+			await this.emitRequestEvent(ctx, { request, chain: route.chain, error });
 			throw error;
 		}
-		this.emit("request", { request, chain: route.chain });
+		await this.emitRequestEvent(ctx, { request, chain: route.chain });
+		let response: http.Response;
 		try {
-			const response = await this.dispatchHttp(ctx, route.endpoint, request);
-			this.emit("response", {
-				request,
-				response: withResponseIDHeader(response, requestID),
-				chain: route.chain.toReversed(),
-			});
-			return response;
+			response = await this.dispatchHttp(ctx, route.endpoint, request);
 		} catch (error) {
-			this.emit("response", {
+			await this.emitResponseEvent(ctx, {
 				request,
 				error: errorFromUnknown(error),
 				chain: route.chain.toReversed(),
 			});
 			throw error;
 		}
+		await this.emitResponseEvent(ctx, {
+			request,
+			response: withResponseIDHeader(response, requestID),
+			chain: route.chain.toReversed(),
+		});
+		return response;
 	}
 
 	private async dispatchHttp(
