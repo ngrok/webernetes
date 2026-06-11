@@ -7,4 +7,5 @@ export type {
 	ClusterInformerResource,
 	ClusterInformerResources,
 } from "./cluster";
+export type { ClusterApplyResource, ClusterApplyResult } from "./apply";
 export type { WithLockOptions } from "./etcd";

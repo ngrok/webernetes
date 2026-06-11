@@ -10,7 +10,8 @@ import {
 	K3S_SETUP_TIMEOUT_MS,
 	setupK3sInfrastructure,
 } from "./kubernetes-k3s-setup";
-import type { K8s, KubeConfig, KubernetesObject } from "../../client/types";
+import type { K8s, KubeConfig } from "../../client/types";
+import type { ClusterApplyResource, ClusterApplyResult } from "../../cluster/apply";
 
 let setupPromise: Promise<void> | undefined;
 
@@ -155,7 +156,9 @@ function parseNodePortFetchOutput(output: string): NodePortResponse {
 	};
 }
 
-async function apply<T extends KubernetesObject>(resources: T[]): Promise<T[]> {
+async function apply<const T extends readonly ClusterApplyResource[]>(
+	resources: T,
+): Promise<ClusterApplyResult<T>> {
 	const container = await getK3sContainer();
 	const input = Buffer.from(
 		JSON.stringify({
@@ -180,10 +183,13 @@ function shellQuote(value: string): string {
 	return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
-function parseApplyOutput<T extends KubernetesObject>(output: string): T[] {
-	const parsed = JSON.parse(output) as T & { items?: T[] };
+function parseApplyOutput<const T extends readonly ClusterApplyResource[]>(
+	output: string,
+): ClusterApplyResult<T> {
+	type Resource = T[number];
+	const parsed = JSON.parse(output) as Resource & { items?: Resource[] };
 	if (Array.isArray(parsed.items)) {
-		return parsed.items;
+		return parsed.items as ClusterApplyResult<T>;
 	}
-	return [parsed];
+	return [parsed] as ClusterApplyResult<T>;
 }

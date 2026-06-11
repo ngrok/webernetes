@@ -18,7 +18,7 @@ import { PauseImage } from "./images/pause";
 import { KubeProxy } from "./images/proxy";
 import { Scheduler } from "./images/scheduler";
 import { type NodePortRange, ServiceStore } from "./storage";
-import { applyResources } from "./apply";
+import { applyResources, type ClusterApplyResource, type ClusterApplyResult } from "./apply";
 import type { KubeletConfiguration } from "./kubelet/apis/config";
 import { buildPodFullName } from "./kubelet/container";
 import { withClock } from "../clock-context";
@@ -345,7 +345,9 @@ export class Cluster {
 	// Mimics kubectl's client-side apply for object literals. This intentionally
 	// leaves out less common flags such as --overwrite, --field-manager,
 	// --server-side, and alpha --prune support until tests or callers need them.
-	public async apply<T extends k8s.KubernetesObject>(resources: T[]): Promise<T[]> {
+	public async apply<const T extends readonly ClusterApplyResource[]>(
+		resources: T,
+	): Promise<ClusterApplyResult<T>> {
 		return await applyResources(this, resources);
 	}
 

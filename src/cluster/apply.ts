@@ -8,15 +8,29 @@ import type { Cluster } from "./cluster";
 const LAST_APPLIED_ANNOTATION = "kubectl.kubernetes.io/last-applied-configuration";
 const MERGE_PATCH_OPTIONS = k8s.setHeaderOptions("Content-Type", k8s.PatchStrategy.MergePatch);
 
-export async function applyResources<T extends KubernetesObject>(
+type CoreApplyResource<T, TKind extends string> = Omit<T, "apiVersion" | "kind"> & {
+	apiVersion: "v1";
+	kind: TKind;
+};
+
+export type ClusterApplyResource =
+	| CoreApplyResource<k8s.V1Namespace, "Namespace">
+	| CoreApplyResource<k8s.V1Node, "Node">
+	| CoreApplyResource<k8s.V1Pod, "Pod">
+	| CoreApplyResource<k8s.V1Service, "Service">;
+export type ClusterApplyResult<T extends readonly ClusterApplyResource[]> = {
+	-readonly [K in keyof T]: T[K];
+};
+
+export async function applyResources<const T extends readonly ClusterApplyResource[]>(
 	cluster: Cluster,
-	resources: T[],
-): Promise<T[]> {
-	const applied: T[] = [];
+	resources: T,
+): Promise<ClusterApplyResult<T>> {
+	const applied: ClusterApplyResource[] = [];
 	for (const resource of resources) {
-		applied.push((await applyResource(cluster, resource)) as T);
+		applied.push((await applyResource(cluster, resource)) as ClusterApplyResource);
 	}
-	return applied;
+	return applied as ClusterApplyResult<T>;
 }
 
 async function applyResource(

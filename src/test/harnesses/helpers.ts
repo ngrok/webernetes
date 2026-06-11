@@ -10,6 +10,7 @@ import type {
 } from "../../client/gen/models";
 import { isConflictError } from "../../client/errors";
 import type { K8s, KubeConfig, KubernetesObject } from "../../client/types";
+import type { ClusterApplyResource, ClusterApplyResult } from "../../cluster/apply";
 import { deepMerge } from "../../deep-merge";
 import { retry } from "../../retry";
 import type * as context from "../../go/context";
@@ -34,7 +35,9 @@ export interface KubernetesHelpers {
 	fetchNodePort(nodePort: number, request?: NodePortRequest): Promise<NodePortResponse>;
 	exec(pod: V1Pod, containerName: string, command: string[]): Promise<ExecCommandResult>;
 	waitFor(assertion: () => unknown | Promise<unknown>): Promise<void>;
-	apply<T extends KubernetesObject>(resources: T[]): Promise<T[]>;
+	apply<const T extends readonly ClusterApplyResource[]>(
+		resources: T,
+	): Promise<ClusterApplyResult<T>>;
 	getSuiteNamespace(): Promise<string>;
 	getTestNamespace(): Promise<string>;
 	createNamespace(namespace: string | Partial<V1Namespace>): Promise<string>;
@@ -71,7 +74,9 @@ export interface KubernetesHelpersOptions {
 	kubeConfig: KubeConfig;
 	core: CoreV1Api;
 	fetchNodePort: FetchNodePort;
-	apply<T extends KubernetesObject>(resources: T[]): Promise<T[]>;
+	apply<const T extends readonly ClusterApplyResource[]>(
+		resources: T,
+	): Promise<ClusterApplyResult<T>>;
 }
 
 export function createKubernetesHelpers({
