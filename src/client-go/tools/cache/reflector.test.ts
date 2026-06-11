@@ -12,7 +12,7 @@ import {
 	newFakeWithChanSize,
 	type Event,
 } from "../../../apimachinery/pkg/watch/watch";
-import { Clock } from "../../../clock";
+import { getClock } from "../../../clock-context";
 import type { KubernetesObject, KubeList } from "../../../client/types";
 import { Channel, type ReadOnlyChannel } from "../../../go/channel";
 import * as context from "../../../go/context";
@@ -38,11 +38,11 @@ interface TestPod extends KubernetesObject {
 	};
 }
 
-browser.describe("Reflector", () => {
+browser.describe("Reflector", ({ ctx }) => {
 	// Models staging/src/k8s.io/client-go/tools/cache/reflector_test.go TestReflectorWatchStoppedBefore.
 	it("does not start watch when context is canceled before watch", async () => {
 		const store = new TestStore<TestPod>();
-		const [ctx, cancel] = context.withCancelCause(context.background());
+		const [childCtx, cancel] = context.withCancelCause(ctx);
 		cancel(new Error("don't run"));
 		let listCalled = false;
 		let watchCalled = false;
@@ -56,9 +56,9 @@ browser.describe("Reflector", () => {
 				return [new FakeWatcher<TestPod>(), undefined];
 			},
 		});
-		const reflector = newReflector(lw, mkPod("expected", ""), store, 0);
+		const reflector = newReflector(childCtx, lw, mkPod("expected", ""), store, 0);
 
-		const err = await reflector.watch(ctx, undefined, undefined);
+		const err = await reflector.watch(childCtx, undefined, undefined);
 
 		expect(err).toBeUndefined();
 		expect(listCalled).toBe(false);
@@ -68,8 +68,8 @@ browser.describe("Reflector", () => {
 	// Models staging/src/k8s.io/client-go/tools/cache/reflector_test.go TestReflectorWatchStoppedAfter.
 	it("stops watcher when context is canceled after watch starts", async () => {
 		const store = new TestStore<TestPod>();
-		const [ctx, cancel] = context.withCancelCause(context.background());
-		const clock = new Clock();
+		const [childCtx, cancel] = context.withCancelCause(ctx);
+		const clock = getClock(childCtx);
 		const watchers: Array<FakeWatcher<TestPod>> = [];
 		const lw = new ListWatch<TestPod>({
 			listFunc: () => {
@@ -82,9 +82,9 @@ browser.describe("Reflector", () => {
 				return [watcher, undefined];
 			},
 		});
-		const reflector = newReflector(lw, mkPod("expected", ""), store, 0);
+		const reflector = newReflector(childCtx, lw, mkPod("expected", ""), store, 0);
 
-		const watchPromise = reflector.watch(ctx, undefined, undefined);
+		const watchPromise = reflector.watch(childCtx, undefined, undefined);
 		const err = await watchPromise;
 
 		expect(err).toBeUndefined();
@@ -95,15 +95,15 @@ browser.describe("Reflector", () => {
 	// Models staging/src/k8s.io/client-go/tools/cache/reflector_test.go TestReflectorWatchHandler.
 	it("handles watch events by updating the store and resourceVersion", async () => {
 		const store = new TestStore<TestPod>();
-		const reflector = newReflector(new ListWatch<TestPod>(), mkPod("expected", ""), store, 0);
-		const [ctx, cancel] = context.withCancelCause(context.background());
+		const reflector = newReflector(ctx, new ListWatch<TestPod>(), mkPod("expected", ""), store, 0);
+		const [childCtx, cancel] = context.withCancelCause(ctx);
 		const watcher = new FakeWatcher<TestPod>();
 
 		await store.add(mkPod("foo", ""));
 		await store.add(mkPod("bar", ""));
 
 		const watchPromise = handleWatch(
-			ctx,
+			childCtx,
 			new Date(0),
 			watcher,
 			store,
@@ -117,7 +117,6 @@ browser.describe("Reflector", () => {
 					cancel(new Error("LastSyncResourceVersion is 32"));
 				}
 			},
-			new Clock(),
 		);
 		await watcher.add(service("rejected", "") as TestPod);
 		await watcher.delete(mkPod("foo", ""));
@@ -137,7 +136,7 @@ browser.describe("Reflector", () => {
 	// Models staging/src/k8s.io/client-go/tools/cache/reflector_test.go TestReflectorHandleWatchStoppedBefore.
 	it("stops the watcher when context is already canceled before handleWatch", async () => {
 		const store = new TestStore<TestPod>();
-		const [ctx, cancel] = context.withCancelCause(context.background());
+		const [childCtx, cancel] = context.withCancelCause(ctx);
 		cancel(new Error("don't run"));
 		const calls: string[] = [];
 		const resultCh = new Channel<Event<TestPod>>(10);
@@ -152,10 +151,9 @@ browser.describe("Reflector", () => {
 			},
 		);
 
-		const clock = new Clock();
 		const err = await handleWatch(
-			ctx,
-			clock.now(),
+			childCtx,
+			new Date(0),
 			fw,
 			store,
 			undefined,
@@ -163,7 +161,6 @@ browser.describe("Reflector", () => {
 			"test-reflector",
 			"<unspecified>",
 			() => {},
-			clock,
 		);
 
 		expect(err).toBe(errorStopRequested);
@@ -173,8 +170,8 @@ browser.describe("Reflector", () => {
 	// Models staging/src/k8s.io/client-go/tools/cache/reflector_test.go TestReflectorHandleWatchStoppedAfter.
 	it("stops the watcher when context is canceled after handleWatch starts", async () => {
 		const store = new TestStore<TestPod>();
-		const [ctx, cancel] = context.withCancelCause(context.background());
-		const clock = new Clock();
+		const [childCtx, cancel] = context.withCancelCause(ctx);
+		const clock = getClock(childCtx);
 		const calls: string[] = [];
 		let resultCh = new Channel<Event<TestPod>>(10);
 		const fw = new MockWatcher<TestPod>(
@@ -191,7 +188,7 @@ browser.describe("Reflector", () => {
 		);
 
 		const err = await handleWatch(
-			ctx,
+			childCtx,
 			clock.now(),
 			fw,
 			store,
@@ -200,7 +197,6 @@ browser.describe("Reflector", () => {
 			"test-reflector",
 			"<unspecified>",
 			() => {},
-			clock,
 		);
 
 		expect(err).toBe(errorStopRequested);
@@ -222,10 +218,11 @@ browser.describe("Reflector", () => {
 			},
 		);
 		resultCh.close();
+		const clock = getClock(ctx);
 
 		const err = await handleWatch(
-			context.background(),
-			new Date(Date.now()),
+			ctx,
+			clock.now(),
 			fw,
 			store,
 			undefined,
@@ -233,7 +230,6 @@ browser.describe("Reflector", () => {
 			"test-reflector",
 			"<unspecified>",
 			() => {},
-			new Clock(),
 		);
 
 		expect(err).toBeInstanceOf(VeryShortWatchError);
@@ -243,7 +239,7 @@ browser.describe("Reflector", () => {
 	// Models staging/src/k8s.io/client-go/tools/cache/reflector_test.go TestReflectorHandleWatchResultChanClosedAfter.
 	it("returns a very short watch error when the result channel closes after handleWatch starts", async () => {
 		const store = new TestStore<TestPod>();
-		const clock = new Clock();
+		const clock = getClock(ctx);
 		const calls: string[] = [];
 		let resultCh = new Channel<Event<TestPod>>(10);
 		const fw = new MockWatcher<TestPod>(
@@ -259,7 +255,7 @@ browser.describe("Reflector", () => {
 		);
 
 		const err = await handleWatch(
-			context.background(),
+			ctx,
 			clock.now(),
 			fw,
 			store,
@@ -268,7 +264,6 @@ browser.describe("Reflector", () => {
 			"test-reflector",
 			"<unspecified>",
 			() => {},
-			clock,
 		);
 
 		expect(err).toBeInstanceOf(VeryShortWatchError);
@@ -278,12 +273,12 @@ browser.describe("Reflector", () => {
 	// Models staging/src/k8s.io/client-go/tools/cache/reflector_test.go TestReflectorStopWatch.
 	it("stops watch when context is canceled before handleWatch", async () => {
 		const store = new TestStore<TestPod>();
-		const [ctx, cancel] = context.withCancelCause(context.background());
+		const [childCtx, cancel] = context.withCancelCause(ctx);
 		cancel(new Error("don't run"));
 		const watcher = new FakeWatcher<TestPod>();
 
 		const err = await handleWatch(
-			ctx,
+			childCtx,
 			new Date(0),
 			watcher,
 			store,
@@ -292,7 +287,6 @@ browser.describe("Reflector", () => {
 			"test-reflector",
 			"<unspecified>",
 			() => {},
-			new Clock(),
 		);
 
 		expect(err).toBe(errorStopRequested);
@@ -394,12 +388,12 @@ browser.describe("Reflector", () => {
 				return [watcher, undefined];
 			},
 		});
-		const reflector = newReflectorWithOptions(lw, mkPod("expected", ""), store, {
+		const [childCtx, cancel] = context.withCancel(ctx);
+		const reflector = newReflectorWithOptions(childCtx, lw, mkPod("expected", ""), store, {
 			useWatchList: tc.useWatchList,
 		});
-		const [ctx, cancel] = context.withCancel(context.background());
 
-		const errPromise = reflector.listAndWatchWithContext(ctx);
+		const errPromise = reflector.listAndWatchWithContext(childCtx);
 		if (!tc.expectedError) {
 			const watcher = await watcherPromise;
 			for (const event of tc.watchEvents) {
@@ -465,7 +459,7 @@ browser.describe("Reflector", () => {
 		for (const [line, item] of table.entries()) {
 			expectStoreMatchesList(s, item.list, line);
 			let watchErr = item.watchErr;
-			const [ctx, cancel] = context.withCancelCause(context.background());
+			const [childCtx, cancel] = context.withCancelCause(ctx);
 			const lw = new ListWatch<TestPod>({
 				watchFunc: (): WatchResult<TestPod> => {
 					if (watchErr) {
@@ -483,23 +477,23 @@ browser.describe("Reflector", () => {
 				},
 				listFunc: () => [item.list, item.listErr],
 			});
-			const reflector = newReflector(lw, mkPod("expected", ""), s, 0);
+			const reflector = newReflector(childCtx, lw, mkPod("expected", ""), s, 0);
 
-			const err = await reflector.listAndWatchWithContext(ctx);
+			const err = await reflector.listAndWatchWithContext(childCtx);
 
 			expect(err).toBe(item.listErr ?? item.watchErr);
 		}
 	});
 });
 
-browser.describe("Reflector simulator behavior", () => {
+browser.describe("Reflector simulator behavior", ({ ctx }) => {
 	it("skips watch events with an unexpected group version kind", async () => {
 		const store = new TestStore<TestPod>();
-		const [ctx, cancel] = context.withCancel(context.background());
+		const [childCtx, cancel] = context.withCancel(ctx);
 		const watcher = new FakeWatcher<TestPod>();
 
 		const watchPromise = handleWatch(
-			ctx,
+			childCtx,
 			new Date(0),
 			watcher,
 			store,
@@ -512,7 +506,6 @@ browser.describe("Reflector simulator behavior", () => {
 					cancel();
 				}
 			},
-			new Clock(),
 		);
 		await watcher.add({
 			apiVersion: "apps/v1",
@@ -529,7 +522,7 @@ browser.describe("Reflector simulator behavior", () => {
 	});
 
 	it("forwards resync errors into the watch loop", async () => {
-		const clock = new Clock();
+		const clock = getClock(ctx);
 		clock.pause();
 		const store = new TestStore<TestPod>();
 		const expectedError = new Error("resync failed");
@@ -538,12 +531,11 @@ browser.describe("Reflector simulator behavior", () => {
 		const lw = new ListWatch<TestPod>({
 			watchFunc: (): WatchResult<TestPod> => [watcher, undefined],
 		});
-		const reflector = newReflectorWithOptions(lw, mkPod("expected", ""), store, {
-			clock,
+		const reflector = newReflectorWithOptions(ctx, lw, mkPod("expected", ""), store, {
 			resyncPeriodMs: 10,
 		});
 
-		const watchPromise = reflector.watchWithResync(context.background(), watcher);
+		const watchPromise = reflector.watchWithResync(ctx, watcher);
 		await Promise.resolve();
 		clock.step(10);
 		await Promise.resolve();
@@ -558,11 +550,11 @@ browser.describe("Reflector simulator behavior", () => {
 	it("returns an explicit error when watch-list mode is enabled", async () => {
 		const store = new TestStore<TestPod>();
 		const lw = new ListWatch<TestPod>();
-		const reflector = newReflectorWithOptions(lw, mkPod("expected", ""), store, {
+		const reflector = newReflectorWithOptions(ctx, lw, mkPod("expected", ""), store, {
 			useWatchList: true,
 		});
 
-		const err = await reflector.listAndWatchWithContext(context.background());
+		const err = await reflector.listAndWatchWithContext(ctx);
 
 		expect(err?.message).toBe("watch-list reflector mode is not implemented");
 	});

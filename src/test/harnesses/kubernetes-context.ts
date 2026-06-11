@@ -1,4 +1,8 @@
+import { Clock } from "../../clock";
+import { withClock } from "../../clock-context";
 import type { K8s, KubeConfig, KubernetesObject } from "../../client/types";
+import * as context from "../../go/context";
+import { withLatencyProvider } from "../../latency";
 import { createKubernetesHelpers } from "./helpers";
 import type { KubernetesTestContext, KubernetesTestTarget, FetchNodePort } from "./kubernetes";
 
@@ -21,9 +25,11 @@ export function createKubernetesRuntimeContext({
 	fetchNodePort: FetchNodePort;
 	apply<T extends KubernetesObject>(resources: T[]): Promise<T[]>;
 }): KubernetesRuntimeContext {
+	const ctx = withLatencyProvider(withClock(context.background(), new Clock()));
 	const core = lazyApiClient(() => kubeConfig.makeApiClient(k8s.CoreV1Api));
 	const discovery = lazyApiClient(() => kubeConfig.makeApiClient(k8s.DiscoveryV1Api));
 	const helpers = createKubernetesHelpers({
+		ctx,
 		k8s,
 		kubeConfig,
 		core,
@@ -31,7 +37,8 @@ export function createKubernetesRuntimeContext({
 		apply,
 	});
 
-	const context: KubernetesRuntimeContext = {
+	const runtimeContext: KubernetesRuntimeContext = {
+		ctx,
 		k8s,
 		kubeConfig,
 		target,
@@ -47,7 +54,7 @@ export function createKubernetesRuntimeContext({
 		},
 	};
 
-	return context;
+	return runtimeContext;
 }
 
 function lazyApiClient<T extends object>(factory: () => T): T {

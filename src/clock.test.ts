@@ -45,6 +45,18 @@ browser.describe("Clock", () => {
 		expect(fakeNow instanceof MockedDate).toBe(true);
 	});
 
+	it("should reset to the current real time", async () => {
+		clock.pause();
+		clock.setTimeout(() => {}, 10);
+		await vi.advanceTimersByTimeAsync(20);
+
+		clock.reset();
+
+		expect(clock.isPaused()).toBe(false);
+		expect(clock.pendingTaskCount()).toBe(0);
+		expect(diffMs(clock.now(), new Date())).toBe(0);
+	});
+
 	it("should be pausable", async () => {
 		expect(clock.isPaused()).toBe(false);
 

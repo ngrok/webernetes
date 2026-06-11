@@ -9,7 +9,6 @@ import type { Interface } from "../../../apimachinery/pkg/watch/watch";
 import { newFake } from "../../../apimachinery/pkg/watch/watch";
 import type { V1Pod } from "../../../client";
 import type { KubeList } from "../../../client/types";
-import { Clock } from "../../../clock";
 import { Channel } from "../../../go/channel";
 import * as context from "../../../go/context";
 import { deepEqual } from "../../../deep-equal";
@@ -26,14 +25,14 @@ import {
 	waitForAPIServerSyncPeriodMs,
 } from "./apiserver";
 
-browser.describe("apiserver source", () => {
+browser.describe("apiserver source", ({ ctx }) => {
 	// Models kubernetes/pkg/kubelet/config/apiserver_test.go TestNewSourceApiserver_UpdatesAndMultiplePods.
 	it("updates and multiple pods", async () => {
 		const pod1v1 = pod("p", "", "image/one");
 		const pod1v2 = pod("p", "", "image/two");
 		const pod2 = pod("q", "", "image/blah");
 
-		const [ctx, cancel] = context.withCancel(context.background());
+		const [childCtx, cancel] = context.withCancel(ctx);
 		try {
 			const fakeWatch = newFake<V1Pod>();
 			const lw = new FakePodLW({
@@ -43,7 +42,7 @@ browser.describe("apiserver source", () => {
 
 			const ch = new Channel<SourceUpdate>();
 
-			newSourceApiserverFromLW(ctx, lw, ch.writeOnly());
+			newSourceApiserverFromLW(childCtx, lw, ch.writeOnly());
 
 			let update = await receiveSourceUpdate(ch);
 			let expected = createSourceUpdate(pod1v1);
@@ -80,7 +79,7 @@ browser.describe("apiserver source", () => {
 		const pod1 = pod("p", "one", "image/one");
 		const pod2 = pod("p", "two", "image/blah");
 
-		const [ctx, cancel] = context.withCancel(context.background());
+		const [childCtx, cancel] = context.withCancel(ctx);
 		try {
 			const fakeWatch = newFake<V1Pod>();
 			const lw = new FakePodLW({
@@ -90,7 +89,7 @@ browser.describe("apiserver source", () => {
 
 			const ch = new Channel<SourceUpdate>();
 
-			newSourceApiserverFromLW(ctx, lw, ch.writeOnly());
+			newSourceApiserverFromLW(childCtx, lw, ch.writeOnly());
 
 			let update = await receiveSourceUpdate(ch);
 			expect(update.pods).toHaveLength(2);
@@ -105,7 +104,7 @@ browser.describe("apiserver source", () => {
 
 	// Models kubernetes/pkg/kubelet/config/apiserver_test.go TestNewSourceApiserverInitialEmptySendsEmptyPodUpdate.
 	it("sends empty pod update for initial empty list", async () => {
-		const [ctx, cancel] = context.withCancel(context.background());
+		const [childCtx, cancel] = context.withCancel(ctx);
 		try {
 			const fakeWatch = newFake<V1Pod>();
 			const lw = new FakePodLW({
@@ -115,7 +114,7 @@ browser.describe("apiserver source", () => {
 
 			const ch = new Channel<SourceUpdate>();
 
-			newSourceApiserverFromLW(ctx, lw, ch.writeOnly());
+			newSourceApiserverFromLW(childCtx, lw, ch.writeOnly());
 
 			const update = await receiveSourceUpdate(ch);
 			const expected = createSourceUpdate();
@@ -127,8 +126,7 @@ browser.describe("apiserver source", () => {
 
 	it("waits for node sync before watching apiserver pods", async () => {
 		vi.useFakeTimers();
-		const clock = new Clock();
-		const [ctx, cancel] = context.withCancel(context.background());
+		const [childCtx, cancel] = context.withCancel(ctx);
 		try {
 			let synced = false;
 			const fakeWatch = newFake<V1Pod>();
@@ -138,7 +136,7 @@ browser.describe("apiserver source", () => {
 			});
 			const ch = new Channel<SourceUpdate>(10);
 
-			newSourceApiserver(ctx, lw, "node-1", () => synced, ch.writeOnly(), clock);
+			newSourceApiserver(childCtx, lw, "node-1", () => synced, ch.writeOnly());
 
 			await Promise.resolve();
 			expect(lw.listOptions).toEqual([]);
@@ -159,7 +157,7 @@ browser.describe("apiserver source", () => {
 	});
 
 	it("sets a field selector for the node name", async () => {
-		const [ctx, cancel] = context.withCancel(context.background());
+		const [childCtx, cancel] = context.withCancel(ctx);
 		try {
 			const fakeWatch = newFake<V1Pod>();
 			const lw = new FakePodListWatchClient({
@@ -168,7 +166,7 @@ browser.describe("apiserver source", () => {
 			});
 			const ch = new Channel<SourceUpdate>(10);
 
-			newSourceApiserver(ctx, lw, "node-1", () => true, ch.writeOnly());
+			newSourceApiserver(childCtx, lw, "node-1", () => true, ch.writeOnly());
 
 			await receiveSourceUpdate(ch);
 			await Promise.resolve();
@@ -194,8 +192,7 @@ browser.describe("apiserver source", () => {
 
 	it("stops waiting for node sync when the context is canceled", async () => {
 		vi.useFakeTimers();
-		const clock = new Clock();
-		const [ctx, cancel] = context.withCancel(context.background());
+		const [childCtx, cancel] = context.withCancel(ctx);
 		try {
 			const fakeWatch = newFake<V1Pod>();
 			const lw = new FakePodListWatchClient({
@@ -204,7 +201,7 @@ browser.describe("apiserver source", () => {
 			});
 			const ch = new Channel<SourceUpdate>(10);
 
-			newSourceApiserver(ctx, lw, "node-1", () => false, ch.writeOnly(), clock);
+			newSourceApiserver(childCtx, lw, "node-1", () => false, ch.writeOnly());
 			cancel();
 			await vi.advanceTimersByTimeAsync(waitForAPIServerSyncPeriodMs);
 			await Promise.resolve();

@@ -50,7 +50,7 @@ function storeFromKind(kind: string, config: KubeConfig): Store<Storable> {
 		case "pods":
 			return new PodStore(etcd);
 		case "services":
-			return new ServiceStore(etcd, {
+			return new ServiceStore(config.options.ctx, etcd, {
 				serviceCIDR: config.serviceCIDR,
 				nodePortRange: config.nodePortRange,
 			});

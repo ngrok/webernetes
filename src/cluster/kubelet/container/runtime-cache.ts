@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: Apache-2.0
  * Derived from Kubernetes, translated and modified for Webernetes.
  */
-import type { Clock } from "../../../clock";
+import { getClock } from "../../../clock-context";
 import type * as context from "../../../go/context";
 import { Mutex } from "../../../go/sync/mutex";
 import type { Pod } from "./runtime";
@@ -21,7 +21,6 @@ export interface RuntimeCache {
 export interface RuntimeCacheOptions {
 	getter: PodsGetter;
 	cachePeriodMs: number;
-	clock: Clock;
 }
 
 // Models kubernetes/pkg/kubelet/container/runtime_cache.go runtimeCache.
@@ -31,18 +30,16 @@ export class RuntimeCacheImpl implements RuntimeCache {
 	protected pods: Pod[] = [];
 	private readonly getter: PodsGetter;
 	private readonly cachePeriodMs: number;
-	private readonly clock: Clock;
 
 	constructor(options: RuntimeCacheOptions) {
 		this.getter = options.getter;
 		this.cachePeriodMs = options.cachePeriodMs;
-		this.clock = options.clock;
 	}
 
 	// Models kubernetes/pkg/kubelet/container/runtime_cache.go runtimeCache.GetPods.
 	async getPods(ctx: context.Context): Promise<[pods: Pod[], err: Error | undefined]> {
 		return await this.lock.withLock(async () => {
-			if (this.clock.nowMs() - this.cacheTime.getTime() > this.cachePeriodMs) {
+			if (getClock(ctx).nowMs() - this.cacheTime.getTime() > this.cachePeriodMs) {
 				const err = await this.updateCache(ctx);
 				if (err) {
 					return [[], err];
@@ -80,17 +77,13 @@ export class RuntimeCacheImpl implements RuntimeCache {
 	private async getPodsWithTimestamp(
 		ctx: context.Context,
 	): Promise<[pods: Pod[], timestamp: Date, err: Error | undefined]> {
-		const timestamp = this.clock.now();
+		const timestamp = getClock(ctx).now();
 		const [pods, err] = await this.getter.getPods(ctx, false);
 		return [pods, timestamp, err];
 	}
 }
 
 // Models kubernetes/pkg/kubelet/container/runtime_cache.go NewRuntimeCache.
-export function newRuntimeCache(
-	getter: PodsGetter,
-	cachePeriodMs: number,
-	clock: Clock,
-): RuntimeCache {
-	return new RuntimeCacheImpl({ getter, cachePeriodMs, clock });
+export function newRuntimeCache(getter: PodsGetter, cachePeriodMs: number): RuntimeCache {
+	return new RuntimeCacheImpl({ getter, cachePeriodMs });
 }

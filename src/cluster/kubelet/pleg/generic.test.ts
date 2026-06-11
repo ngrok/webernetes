@@ -2,9 +2,10 @@
  * SPDX-License-Identifier: Apache-2.0
  * Derived from Kubernetes, translated and modified for Webernetes.
  */
-// oxlint-disable jest/expect-expect jest/no-conditional-expect
+// oxlint-disable jest/no-conditional-expect
 import { expect, it } from "vitest";
-import { Clock } from "../../../clock";
+import type { Clock } from "../../../clock";
+import { getClock } from "../../../clock-context";
 import { Channel, select, type ReadOnlyChannel } from "../../../go/channel";
 import * as context from "../../../go/context";
 import { Timer } from "../../../go/time";
@@ -50,10 +51,10 @@ import { GenericPLEG } from "./generic";
 const testContainerRuntimeType = "fooRuntime";
 const largeChannelCap = 100;
 
-browser.describe("GenericPLEG", () => {
+browser.describe("GenericPLEG", ({ ctx }) => {
 	// Models kubernetes/pkg/kubelet/pleg/generic_test.go TestRelisting.
 	it("relisting", async () => {
-		const testPleg = newTestGenericPLEG();
+		const testPleg = newTestGenericPLEG(ctx);
 		const { pleg, runtime } = testPleg;
 		const ch = pleg.watch();
 
@@ -101,7 +102,7 @@ browser.describe("GenericPLEG", () => {
 
 	// Models kubernetes/pkg/kubelet/pleg/generic_test.go TestEventChannelFull.
 	it("event channel full", async () => {
-		const testPleg = newTestGenericPLEGWithChannelSize(4);
+		const testPleg = newTestGenericPLEGWithChannelSize(ctx, 4);
 		const { pleg, runtime } = testPleg;
 		const ch = pleg.watch();
 
@@ -147,17 +148,17 @@ browser.describe("GenericPLEG", () => {
 
 	// Models kubernetes/pkg/kubelet/pleg/generic_test.go TestDetectingContainerDeaths.
 	it("detecting container deaths", async () => {
-		await testReportMissingContainers(1);
-		await testReportMissingPods(1);
+		await testReportMissingContainers(ctx, 1);
+		await testReportMissingPods(ctx, 1);
 
-		await testReportMissingContainers(3);
-		await testReportMissingPods(3);
+		await testReportMissingContainers(ctx, 3);
+		await testReportMissingPods(ctx, 3);
 	});
 
 	// Models kubernetes/pkg/kubelet/pleg/generic_test.go TestRelistWithCache.
 	it("relist with cache", async () => {
 		const runtimeMock = new FakeRuntime();
-		const pleg = newTestGenericPLEGWithRuntimeMock(runtimeMock);
+		const pleg = newTestGenericPLEGWithRuntimeMock(ctx, runtimeMock);
 		const ch = pleg.watch();
 
 		const { pods, statuses, events } = createTestPodsStatusesAndEvents(2);
@@ -203,7 +204,7 @@ browser.describe("GenericPLEG", () => {
 	// Models kubernetes/pkg/kubelet/pleg/generic_test.go TestRemoveCacheEntry.
 	it("remove cache entry", async () => {
 		const runtimeMock = new FakeRuntime();
-		const pleg = newTestGenericPLEGWithRuntimeMock(runtimeMock);
+		const pleg = newTestGenericPLEGWithRuntimeMock(ctx, runtimeMock);
 
 		const { pods, statuses } = createTestPodsStatusesAndEvents(1);
 		runtimeMock.allPodList = pods;
@@ -219,7 +220,7 @@ browser.describe("GenericPLEG", () => {
 
 	// Models kubernetes/pkg/kubelet/pleg/generic_test.go TestHealthy.
 	it("healthy", async () => {
-		const testPleg = newTestGenericPLEG();
+		const testPleg = newTestGenericPLEG(ctx);
 		const { clock, pleg } = testPleg;
 		clock.pause();
 
@@ -325,7 +326,7 @@ browser.describe("GenericPLEG", () => {
 		},
 	])("$name", async (tc) => {
 		const runtimeMock = new FakeRuntime();
-		const pleg = newTestGenericPLEGWithRuntimeMock(runtimeMock);
+		const pleg = newTestGenericPLEGWithRuntimeMock(ctx, runtimeMock);
 		const ch = pleg.watch();
 
 		const podID = "test-pod";
@@ -391,7 +392,7 @@ browser.describe("GenericPLEG", () => {
 
 	// Models kubernetes/pkg/kubelet/pleg/generic_test.go TestRelistingWithSandboxes.
 	it("relisting with sandboxes", async () => {
-		const testPleg = newTestGenericPLEG();
+		const testPleg = newTestGenericPLEG(ctx);
 		const { pleg, runtime } = testPleg;
 		const ch = pleg.watch();
 
@@ -452,7 +453,7 @@ browser.describe("GenericPLEG", () => {
 		},
 	])("relist IP change $name", async (tc) => {
 		const runtimeMock = new FakeRuntime();
-		const pleg = newTestGenericPLEGWithRuntimeMock(runtimeMock);
+		const pleg = newTestGenericPLEGWithRuntimeMock(ctx, runtimeMock);
 		const ch = pleg.watch();
 
 		const id = tc.podID;
@@ -492,19 +493,17 @@ browser.describe("GenericPLEG", () => {
 	it("worker loop", async () => {
 		const runtime = new FakeRuntime();
 		const cache = new PodStatusCache();
-		const clock = new Clock();
-		const ctx = context.background();
+		const clock = getClock(ctx);
 		const eventChannel = new Channel<PodLifecycleEvent>(100);
 		const pleg = new GenericPLEG(
+			ctx,
 			runtime,
 			eventChannel,
 			{ relistPeriodMs: 2000, relistThresholdMs: 4000 },
 			cache,
-			clock,
-			ctx,
 		);
 		clock.pause();
-		pleg.globalRelistTimer = new Timer(clock, 2000);
+		pleg.globalRelistTimer = new Timer(ctx, 2000);
 
 		const pod1 = newPod({
 			id: "pod1",
@@ -518,9 +517,9 @@ browser.describe("GenericPLEG", () => {
 		});
 		const startTime = clock.now();
 		try {
-			const p1res = getNewerThanAsync(cache, ctx, pod1.id, startTime);
+			const p1res = getNewerThanAsync(ctx, cache, pod1.id, startTime);
 			await requireBlocked(p1res);
-			const p2res = getNewerThanAsync(cache, ctx, pod2.id, startTime);
+			const p2res = getNewerThanAsync(ctx, cache, pod2.id, startTime);
 			await requireBlocked(p2res);
 
 			pleg.requestRelist(pod1.id);
@@ -540,7 +539,7 @@ browser.describe("GenericPLEG", () => {
 			expect(p1Status.timestamp).toEqual(clock.now());
 			await requireBlocked(p2res);
 
-			const p1NewRes = getNewerThanAsync(cache, ctx, pod1.id, new Date(startTime.getTime() + 2000));
+			const p1NewRes = getNewerThanAsync(ctx, cache, pod1.id, new Date(startTime.getTime() + 2000));
 			await requireBlocked(p1NewRes);
 
 			pleg.requestRelist(pod2.id);
@@ -561,7 +560,7 @@ browser.describe("GenericPLEG", () => {
 
 			await pleg.workerLoopIteration();
 
-			const p1ReinspectRes = getNewerThanAsync(cache, ctx, pod1.id, clock.now());
+			const p1ReinspectRes = getNewerThanAsync(ctx, cache, pod1.id, clock.now());
 			await requireBlocked(p1ReinspectRes);
 
 			pleg.requestReinspect(pod1.id);
@@ -587,7 +586,7 @@ browser.describe("GenericPLEG", () => {
 	// Simulator-only: relist() is async in the browser simulator, so verify
 	// overlapping calls still serialize through the relist lock.
 	it("serializes overlapping relists", async () => {
-		const testPleg = newTestGenericPLEG();
+		const testPleg = newTestGenericPLEG(ctx);
 		const { pleg, runtime } = testPleg;
 		const enteredGetPods = new Channel<void>(2);
 		const releaseGetPods = new Channel<void>(2);
@@ -616,35 +615,40 @@ browser.describe("GenericPLEG", () => {
 	});
 });
 
-function newTestGenericPLEG(): {
+function newTestGenericPLEG(ctx: context.Context): {
 	clock: Clock;
 	pleg: GenericPLEG;
 	runtime: FakeRuntime;
 } {
-	return newTestGenericPLEGWithChannelSize(largeChannelCap);
+	return newTestGenericPLEGWithChannelSize(ctx, largeChannelCap);
 }
 
-function newTestGenericPLEGWithChannelSize(channelSize: number): {
+function newTestGenericPLEGWithChannelSize(
+	ctx: context.Context,
+	channelSize: number,
+): {
 	clock: Clock;
 	pleg: GenericPLEG;
 	runtime: FakeRuntime;
 } {
 	const runtime = new FakeRuntime();
-	const clock = new Clock();
+	const clock = getClock(ctx);
 	const eventChannel = new Channel<PodLifecycleEvent>(channelSize);
 	const pleg = new GenericPLEG(
+		ctx,
 		runtime,
 		eventChannel,
 		{ relistPeriodMs: 3_600_000, relistThresholdMs: 3 * 60 * 1000 },
 		new PodStatusCache(),
-		clock,
-		context.background(),
 	);
 	return { clock, pleg, runtime };
 }
 
-async function testReportMissingContainers(numRelists: number): Promise<void> {
-	const testPleg = newTestGenericPLEG();
+async function testReportMissingContainers(
+	ctx: context.Context,
+	numRelists: number,
+): Promise<void> {
+	const testPleg = newTestGenericPLEG(ctx);
 	const { pleg, runtime } = testPleg;
 	const ch = pleg.watch();
 	runtime.allPodList = [
@@ -674,8 +678,8 @@ async function testReportMissingContainers(numRelists: number): Promise<void> {
 	verifyEvents(expected, actual);
 }
 
-async function testReportMissingPods(numRelists: number): Promise<void> {
-	const testPleg = newTestGenericPLEG();
+async function testReportMissingPods(ctx: context.Context, numRelists: number): Promise<void> {
+	const testPleg = newTestGenericPLEG(ctx);
 	const { pleg, runtime } = testPleg;
 	const ch = pleg.watch();
 	runtime.allPodList = [newPod({ id: "1234", containers: [createTestContainer("c2", "Running")] })];
@@ -695,14 +699,16 @@ async function testReportMissingPods(numRelists: number): Promise<void> {
 	verifyEvents(expected, actual);
 }
 
-function newTestGenericPLEGWithRuntimeMock(runtimeMock: FakeRuntime): GenericPLEG {
+function newTestGenericPLEGWithRuntimeMock(
+	ctx: context.Context,
+	runtimeMock: FakeRuntime,
+): GenericPLEG {
 	return new GenericPLEG(
+		ctx,
 		runtimeMock,
 		new Channel<PodLifecycleEvent>(1000),
 		{ relistPeriodMs: 3_600_000, relistThresholdMs: 7_200_000 },
 		new PodStatusCache(),
-		new Clock(),
-		context.background(),
 	);
 }
 
@@ -989,8 +995,8 @@ function verifyEvents(expected: PodLifecycleEvent[], actual: PodLifecycleEvent[]
 }
 
 async function getNewerThanAsync(
-	cache: PodStatusCache,
 	ctx: context.Context,
+	cache: PodStatusCache,
 	podID: string,
 	minTime: Date,
 ): Promise<PodRuntimeStatus> {

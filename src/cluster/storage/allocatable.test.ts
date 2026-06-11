@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 
-import { Clock } from "../../clock";
+import type * as context from "../../go/context";
 import { browser } from "../../test/describe";
 import { Etcd } from "../etcd";
 import {
@@ -11,9 +11,9 @@ import {
 	PortRange,
 } from "./allocatable";
 
-browser.describe("AllocatableRange", () => {
+browser.describe("AllocatableRange", ({ ctx }) => {
 	it("throws an AlreadyAllocated error with the claimed index", async () => {
-		const range = await AllocatableRange.create(new Etcd(new Clock()), "raw", 2);
+		const range = await AllocatableRange.create(ctx, newTestEtcd(ctx), "raw", 2);
 		await range.claim(1);
 
 		await expect(range.claim(1)).rejects.toMatchObject({
@@ -24,7 +24,7 @@ browser.describe("AllocatableRange", () => {
 	});
 
 	it("throws a NotAllocated error with the released index", async () => {
-		const range = await AllocatableRange.create(new Etcd(new Clock()), "raw", 2);
+		const range = await AllocatableRange.create(ctx, newTestEtcd(ctx), "raw", 2);
 
 		await expect(range.release(1)).rejects.toMatchObject({
 			index: 1,
@@ -34,9 +34,9 @@ browser.describe("AllocatableRange", () => {
 	});
 });
 
-browser.describe("PortRange", () => {
+browser.describe("PortRange", ({ ctx }) => {
 	it("allocates ports in order and throws when exhausted", async () => {
-		const range = await createPortRange(30000, 30002);
+		const range = await createPortRange(ctx, 30000, 30002);
 
 		await expect(range.allocate()).resolves.toBe(30000);
 		await expect(range.allocate()).resolves.toBe(30001);
@@ -45,7 +45,7 @@ browser.describe("PortRange", () => {
 	});
 
 	it("returns released ports to the pool and wraps around from the cursor", async () => {
-		const range = await createPortRange(30000, 30002);
+		const range = await createPortRange(ctx, 30000, 30002);
 
 		expect(await range.allocate()).toBe(30000);
 		expect(await range.allocate()).toBe(30001);
@@ -59,7 +59,7 @@ browser.describe("PortRange", () => {
 	});
 
 	it("rejects invalid and duplicate releases", async () => {
-		const range = await createPortRange(30000, 30001);
+		const range = await createPortRange(ctx, 30000, 30001);
 
 		await expect(range.release(29999)).rejects.toThrow("invalid port 29999 for range ports");
 		await expect(range.release(30000)).rejects.toThrow("invalid port 30000 for range ports");
@@ -70,7 +70,7 @@ browser.describe("PortRange", () => {
 	});
 
 	it("claims explicit ports and skips them during allocation", async () => {
-		const range = await createPortRange(30000, 30002);
+		const range = await createPortRange(ctx, 30000, 30002);
 
 		await range.claim(30001);
 
@@ -82,11 +82,11 @@ browser.describe("PortRange", () => {
 	});
 
 	it("opens an initialized port range without resetting allocations", async () => {
-		const etcd = new Etcd(new Clock());
-		const created = await PortRange.create(etcd, "ports", 30000, 30002);
+		const etcd = newTestEtcd(ctx);
+		const created = await PortRange.create(ctx, etcd, "ports", 30000, 30002);
 		await created.claim(30001);
 
-		const opened = PortRange.open(etcd, "ports", 30000, 30002);
+		const opened = PortRange.open(ctx, etcd, "ports", 30000, 30002);
 
 		expect(await opened.has(30001)).toBe(true);
 		expect(await opened.allocate()).toBe(30000);
@@ -94,7 +94,7 @@ browser.describe("PortRange", () => {
 	});
 
 	it("serializes concurrent port allocations", async () => {
-		const range = await createPortRange(30000, 30019);
+		const range = await createPortRange(ctx, 30000, 30019);
 
 		const ports = await Promise.all(Array.from({ length: 20 }, () => range.allocate()));
 
@@ -105,9 +105,9 @@ browser.describe("PortRange", () => {
 	});
 });
 
-browser.describe("IpRange", () => {
+browser.describe("IpRange", ({ ctx }) => {
 	it("allocates usable addresses from a CIDR range and throws when exhausted", async () => {
-		const range = await createIpRange("10.0.0.0/30");
+		const range = await createIpRange(ctx, "10.0.0.0/30");
 
 		await expect(range.allocate()).resolves.toBe("10.0.0.1");
 		await expect(range.allocate()).resolves.toBe("10.0.0.2");
@@ -115,7 +115,7 @@ browser.describe("IpRange", () => {
 	});
 
 	it("returns released addresses to the pool and wraps around from the cursor", async () => {
-		const range = await createIpRange("10.0.0.0/30");
+		const range = await createIpRange(ctx, "10.0.0.0/30");
 
 		expect(await range.allocate()).toBe("10.0.0.1");
 		expect(await range.allocate()).toBe("10.0.0.2");
@@ -125,7 +125,7 @@ browser.describe("IpRange", () => {
 	});
 
 	it("rejects invalid and duplicate IP releases", async () => {
-		const range = await createIpRange("10.0.0.0/30");
+		const range = await createIpRange(ctx, "10.0.0.0/30");
 
 		await expect(range.release("10.0.0.3")).rejects.toThrow("invalid ip 10.0.0.3 for range ips");
 		await expect(range.release("10.0.0.1")).rejects.toThrow("invalid ip 10.0.0.1 for range ips");
@@ -136,7 +136,7 @@ browser.describe("IpRange", () => {
 	});
 
 	it("claims explicit IPs and skips them during allocation", async () => {
-		const range = await createIpRange("10.0.0.0/30");
+		const range = await createIpRange(ctx, "10.0.0.0/30");
 
 		await range.claim("10.0.0.2");
 
@@ -147,11 +147,11 @@ browser.describe("IpRange", () => {
 	});
 
 	it("opens an initialized IP range without resetting allocations", async () => {
-		const etcd = new Etcd(new Clock());
-		const created = await IpRange.create(etcd, "ips", "10.0.0.0/30");
+		const etcd = newTestEtcd(ctx);
+		const created = await IpRange.create(ctx, etcd, "ips", "10.0.0.0/30");
 		await created.claim("10.0.0.2");
 
-		const opened = IpRange.open(etcd, "ips", "10.0.0.0/30");
+		const opened = IpRange.open(ctx, etcd, "ips", "10.0.0.0/30");
 
 		expect(opened.contains("10.0.0.1")).toBe(true);
 		expect(await opened.has("10.0.0.2")).toBe(true);
@@ -159,7 +159,7 @@ browser.describe("IpRange", () => {
 	});
 
 	it("serializes concurrent IP allocations", async () => {
-		const range = await createIpRange("10.0.0.0/27");
+		const range = await createIpRange(ctx, "10.0.0.0/27");
 
 		const ips = await Promise.all(Array.from({ length: 30 }, () => range.allocate()));
 
@@ -170,12 +170,16 @@ browser.describe("IpRange", () => {
 	});
 });
 
-async function createPortRange(from: number, to: number): Promise<PortRange> {
-	return await PortRange.create(new Etcd(new Clock()), "ports", from, to);
+async function createPortRange(ctx: context.Context, from: number, to: number): Promise<PortRange> {
+	return await PortRange.create(ctx, newTestEtcd(ctx), "ports", from, to);
 }
 
-async function createIpRange(cidr: string): Promise<IpRange> {
-	return await IpRange.create(new Etcd(new Clock()), "ips", cidr);
+async function createIpRange(ctx: context.Context, cidr: string): Promise<IpRange> {
+	return await IpRange.create(ctx, newTestEtcd(ctx), "ips", cidr);
+}
+
+function newTestEtcd(ctx: context.Context): Etcd {
+	return new Etcd(ctx);
 }
 
 function compareIp(left: string, right: string): number {

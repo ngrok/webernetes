@@ -2,7 +2,6 @@
  * SPDX-License-Identifier: Apache-2.0
  * Derived from Kubernetes, translated and modified for Webernetes.
  */
-import type { Clock } from "../../clock";
 import { untilWithContext } from "../../apimachinery/pkg/util/wait/backoff";
 import { Channel, select } from "../../go/channel";
 import * as context from "../../go/context";
@@ -52,7 +51,6 @@ export function newPodContainerDeletor(
 	ctx: context.Context,
 	runtime: Runtime,
 	containersToKeep: number,
-	clock: Clock,
 ): PodContainerDeletor {
 	const buffer = new Channel<ContainerID>(containerDeletorBufferLimit);
 	void untilWithContext(
@@ -71,7 +69,6 @@ export function newPodContainerDeletor(
 			}
 		},
 		0,
-		clock,
 	);
 	return new PodContainerDeletor(buffer, containersToKeep);
 }

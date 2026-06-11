@@ -10,7 +10,7 @@ import {
 import { Backoff } from "../../../apimachinery/pkg/util/wait/backoff";
 import type { DelayFunc } from "../../../apimachinery/pkg/util/wait/delay";
 import type { Interface } from "../../../apimachinery/pkg/watch/watch";
-import { Clock } from "../../../clock";
+import { getClock } from "../../../clock-context";
 import type { KubernetesObject } from "../../../client/types";
 import { Channel, type ReadOnlyChannel, select } from "../../../go/channel";
 import * as context from "../../../go/context";
@@ -54,7 +54,6 @@ export interface ReflectorOptions {
 	typeDescription?: string;
 	resyncPeriodMs?: number;
 	minWatchTimeoutMs?: number;
-	clock?: Clock;
 	backoff?: Backoff;
 	// Models staging/src/k8s.io/client-go/tools/cache/reflector.go Reflector.useWatchList.
 	// This simulator keeps the upstream field shape, but does not implement
@@ -72,34 +71,36 @@ type WatchErrorHandlerWithContext<T extends KubernetesObject> = (
 
 // Models staging/src/k8s.io/client-go/tools/cache/reflector.go NewReflector.
 export function newReflector<T extends KubernetesObject>(
+	ctx: context.Context,
 	lw: ListerWatcher<T>,
 	expectedType: T | undefined,
 	store: ReflectorStore<T>,
 	resyncPeriodMs: number,
 ): Reflector<T> {
-	return newReflectorWithOptions(lw, expectedType, store, { resyncPeriodMs });
+	return newReflectorWithOptions(ctx, lw, expectedType, store, { resyncPeriodMs });
 }
 
 // Models staging/src/k8s.io/client-go/tools/cache/reflector.go NewNamedReflector.
 export function newNamedReflector<T extends KubernetesObject>(
+	ctx: context.Context,
 	name: string,
 	lw: ListerWatcher<T>,
 	expectedType: T | undefined,
 	store: ReflectorStore<T>,
 	resyncPeriodMs: number,
 ): Reflector<T> {
-	return newReflectorWithOptions(lw, expectedType, store, { name, resyncPeriodMs });
+	return newReflectorWithOptions(ctx, lw, expectedType, store, { name, resyncPeriodMs });
 }
 
 // Models staging/src/k8s.io/client-go/tools/cache/reflector.go NewReflectorWithOptions.
 export function newReflectorWithOptions<T extends KubernetesObject>(
+	ctx: context.Context,
 	lw: ListerWatcher<T>,
 	expectedType: T | undefined,
 	store: ReflectorStore<T>,
 	options: ReflectorOptions,
 ): Reflector<T> {
-	const reflectorClock = options.clock ?? new Clock();
-	const backoff = options.backoff ?? defaultBackoff();
+	const backoff = options.backoff ?? defaultBackoff(ctx);
 	return new Reflector({
 		name: options.name ?? "",
 		typeDescription: options.typeDescription ?? getTypeDescriptionFromObject(expectedType),
@@ -109,8 +110,7 @@ export function newReflectorWithOptions<T extends KubernetesObject>(
 		store,
 		resyncPeriodMs: options.resyncPeriodMs ?? 0,
 		minWatchTimeoutMs: options.minWatchTimeoutMs ?? 5 * 60 * 1000,
-		clock: reflectorClock,
-		delayHandler: backoff.delayWithReset(reflectorClock, defaultBackoffResetMs),
+		delayHandler: backoff.delayWithReset(defaultBackoffResetMs),
 		useWatchList: options.useWatchList ?? false,
 	});
 }
@@ -124,7 +124,6 @@ interface ReflectorConstructorOptions<T extends KubernetesObject> {
 	store: ReflectorStore<T>;
 	resyncPeriodMs: number;
 	minWatchTimeoutMs: number;
-	clock: Clock;
 	delayHandler: DelayFunc;
 	useWatchList: boolean;
 }
@@ -140,7 +139,6 @@ export class Reflector<T extends KubernetesObject> {
 	private readonly store: ReflectorStore<T>;
 	private readonly resyncPeriodMs: number;
 	private readonly minWatchTimeoutMs: number;
-	private readonly clock: Clock;
 	private readonly delayHandler: DelayFunc;
 	private readonly watchErrorHandler: WatchErrorHandlerWithContext<T>;
 	// Models staging/src/k8s.io/client-go/tools/cache/reflector.go Reflector.useWatchList.
@@ -160,7 +158,6 @@ export class Reflector<T extends KubernetesObject> {
 		this.store = options.store;
 		this.resyncPeriodMs = options.resyncPeriodMs;
 		this.minWatchTimeoutMs = options.minWatchTimeoutMs;
-		this.clock = options.clock;
 		this.delayHandler = options.delayHandler;
 		this.watchErrorHandler = defaultWatchErrorHandler;
 		this.useWatchList = options.useWatchList;
@@ -218,7 +215,7 @@ export class Reflector<T extends KubernetesObject> {
 					return undefined;
 				}
 
-				const start = this.clock.now();
+				const start = getClock(ctx).now();
 
 				let propagateRVFromStart = true;
 				if (!w) {
@@ -259,7 +256,6 @@ export class Reflector<T extends KubernetesObject> {
 							}
 						}
 					},
-					this.clock,
 					resyncErrCh,
 				);
 				w = undefined;
@@ -355,7 +351,7 @@ export class Reflector<T extends KubernetesObject> {
 
 	// Models staging/src/k8s.io/client-go/tools/cache/reflector.go Reflector.startResync.
 	private async startResync(ctx: context.Context, resyncErrCh: Channel<Error>): Promise<void> {
-		let [resyncCh, cleanup] = this.resyncChan();
+		let [resyncCh, cleanup] = this.resyncChan(ctx);
 		try {
 			for (;;) {
 				const selected = await select()
@@ -372,7 +368,7 @@ export class Reflector<T extends KubernetesObject> {
 					}
 				}
 				cleanup();
-				[resyncCh, cleanup] = this.resyncChan();
+				[resyncCh, cleanup] = this.resyncChan(ctx);
 			}
 		} finally {
 			cleanup();
@@ -380,11 +376,11 @@ export class Reflector<T extends KubernetesObject> {
 	}
 
 	// Models staging/src/k8s.io/client-go/tools/cache/reflector.go Reflector.resyncChan.
-	private resyncChan(): [ReadOnlyChannel<Date> | undefined, () => boolean] {
+	private resyncChan(ctx: context.Context): [ReadOnlyChannel<Date> | undefined, () => boolean] {
 		if (this.resyncPeriodMs === 0) {
 			return [undefined, () => false];
 		}
-		const timer = new time.Timer(this.clock, this.resyncPeriodMs);
+		const timer = new time.Timer(ctx, this.resyncPeriodMs);
 		return [timer.C, () => timer.stop()];
 	}
 
@@ -405,7 +401,6 @@ export async function handleWatch<T extends KubernetesObject>(
 	name: string,
 	expectedTypeName: string,
 	setLastSyncResourceVersion: (resourceVersion: string, eventReceivedBesidesAdded: boolean) => void,
-	clock: Clock,
 	errCh?: ReadOnlyChannel<Error>,
 ): Promise<Error | undefined> {
 	const [, err] = await handleAnyWatch(
@@ -419,7 +414,6 @@ export async function handleWatch<T extends KubernetesObject>(
 		expectedTypeName,
 		setLastSyncResourceVersion,
 		false,
-		clock,
 		errCh,
 	);
 	return err;
@@ -437,9 +431,9 @@ async function handleAnyWatch<T extends KubernetesObject>(
 	_expectedTypeName: string,
 	setLastSyncResourceVersion: (resourceVersion: string, eventReceivedBesidesAdded: boolean) => void,
 	exitOnWatchListBookmarkReceived: boolean,
-	clock: Clock,
 	errCh?: ReadOnlyChannel<Error>,
 ): Promise<[watchListBookmarkReceived: boolean, err: Error | undefined]> {
+	const clock = getClock(ctx);
 	let watchListBookmarkReceived = false;
 	let eventReceivedBesidesAdded = false;
 	let eventCount = 0;
@@ -584,8 +578,8 @@ function getExpectedGVKFromObject(
 	return gvk;
 }
 
-function defaultBackoff(): Backoff {
-	return new Backoff({
+function defaultBackoff(ctx: context.Context): Backoff {
+	return new Backoff(ctx, {
 		durationMs: defaultBackoffInitMs,
 		capMs: defaultBackoffMaxMs,
 		steps: Math.ceil(defaultBackoffMaxMs / defaultBackoffInitMs),

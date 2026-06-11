@@ -14,8 +14,6 @@ import type {
 	V1TCPSocketAction,
 } from "../../../client";
 import { FakeRecorder, newFakeRecorder } from "../../../client-go/tools/record/fake";
-import { Clock } from "../../../clock";
-import * as context from "../../../go/context";
 import { browser } from "../../../test/describe";
 import type { ProbeResult } from "../../probe";
 import { resolveContainerPort } from "../../probe/util";
@@ -142,10 +140,8 @@ browser.describe("TestGetTCPAddrParts", () => {
 });
 
 // Models kubernetes/pkg/kubelet/prober/prober_test.go TestProbe.
-browser.describe("TestProbe", () => {
+browser.describe("TestProbe", ({ ctx }) => {
 	it("handles probe results and exec arguments", async () => {
-		const ctx = context.background();
-		const clock = new Clock();
 		const containerID = buildContainerID("test", "foobar");
 		const execProbe: V1Probe = {
 			exec: {},
@@ -243,7 +239,6 @@ browser.describe("TestProbe", () => {
 				const prober = new Prober(
 					ctx,
 					new FakeContainerCommandRunner(),
-					clock,
 					new ClusterNetwork(),
 					new FakeRecorder(),
 				);
@@ -283,13 +278,7 @@ browser.describe("TestProbe", () => {
 
 				if ((test.expectCommand?.length ?? 0) > 0) {
 					const runner = new FakeContainerCommandRunner();
-					const commandProber = new Prober(
-						ctx,
-						runner,
-						clock,
-						new ClusterNetwork(),
-						new FakeRecorder(),
-					);
+					const commandProber = new Prober(ctx, runner, new ClusterNetwork(), new FakeRecorder());
 					const [, commandErr] = await commandProber.probe(
 						ctx,
 						probeType,
@@ -310,17 +299,11 @@ browser.describe("TestProbe", () => {
 // Intentionally not ported: the simulator routes exec probes through ExecProber and CommandRunner.
 
 // Models kubernetes/pkg/kubelet/prober/prober_test.go TestNewProber.
-browser.describe("TestNewProber", () => {
+browser.describe("TestNewProber", ({ ctx }) => {
 	it("initializes prober dependencies", () => {
 		const runner = new FakeContainerCommandRunner();
 		const recorder = new FakeRecorder();
-		const prober = new Prober(
-			context.background(),
-			runner,
-			new Clock(),
-			new ClusterNetwork(),
-			recorder,
-		);
+		const prober = new Prober(ctx, runner, new ClusterNetwork(), recorder);
 
 		expect(prober).toBeDefined();
 		expect(prober.runner).toBe(runner);
@@ -332,7 +315,7 @@ browser.describe("TestNewProber", () => {
 });
 
 // Models kubernetes/pkg/kubelet/prober/prober_test.go TestRecordContainerEventUnknownStatus.
-browser.describe("TestRecordContainerEventUnknownStatus", () => {
+browser.describe("TestRecordContainerEventUnknownStatus", ({ ctx }) => {
 	it("records warning events for unknown probe statuses", async () => {
 		const pod: V1Pod = {
 			apiVersion: "v1",
@@ -390,9 +373,8 @@ browser.describe("TestRecordContainerEventUnknownStatus", () => {
 			const bufferSize = tc.expected.length + 1;
 			const fakeRecorder = newFakeRecorder(bufferSize);
 			const prober = new Prober(
-				context.background(),
+				ctx,
 				new FakeContainerCommandRunner(),
-				new Clock(),
 				new ClusterNetwork(),
 				fakeRecorder,
 			);

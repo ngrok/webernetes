@@ -3,6 +3,7 @@
  * Derived from Kubernetes, translated and modified for Webernetes.
  */
 import type { Clock } from "../../../clock";
+import { getClock } from "../../../clock-context";
 import { Channel, select, type ReadOnlyChannel } from "../../../go/channel";
 import type * as context from "../../../go/context";
 import * as time from "../../../go/time";
@@ -57,12 +58,12 @@ export class GenericPLEG implements PodLifecycleEventGeneratorHandler {
 	private runPromise: Promise<void> | undefined;
 
 	constructor(
+		private readonly ctx: context.Context,
 		private readonly runtime: Runtime,
 		private readonly eventChannel: Channel<PodLifecycleEvent>,
 		public relistDuration: RelistDuration,
 		readonly cache: Cache,
-		private readonly clock: Clock,
-		private readonly ctx: context.Context,
+		private readonly clock: Clock = getClock(ctx),
 	) {}
 
 	// Models kubernetes/pkg/kubelet/pleg/generic.go Watch.
@@ -78,7 +79,7 @@ export class GenericPLEG implements PodLifecycleEventGeneratorHandler {
 			}
 			this.isRunning = true;
 			this.stopCh = new Channel<void>();
-			this.globalRelistTimer = new time.Timer(this.clock, 0);
+			this.globalRelistTimer = new time.Timer(this.ctx, 0);
 			this.runPromise = (async () => {
 				while (await this.workerLoopIteration()) {
 					// Loop body is in workerLoopIteration, matching upstream.

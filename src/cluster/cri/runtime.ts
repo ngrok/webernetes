@@ -1,4 +1,5 @@
 import type { Clock } from "../../clock";
+import { getClock } from "../../clock-context";
 import { Channel, ReadOnlyChannel, select } from "../../go/channel";
 import * as context from "../../go/context";
 import * as time from "../../go/time";
@@ -60,7 +61,6 @@ export interface ExecResult {
 
 export interface RuntimeOptions {
 	ctx: context.Context;
-	clock: Clock;
 	kubeConfig: KubeConfig;
 	network: ClusterNetwork;
 	podCIDR: string;
@@ -122,7 +122,7 @@ export class InProcessRuntimeService
 	private nextPid = 1;
 
 	constructor(options: RuntimeOptions) {
-		this.clock = options.clock;
+		this.clock = getClock(options.ctx);
 		this.kubeConfig = options.kubeConfig;
 		this.network = options.network;
 		this.imageRegistry = options.imageRegistry;
@@ -531,7 +531,7 @@ export class InProcessRuntimeService
 		}
 		const selected = await select()
 			.case(ctx.done(), () => "done")
-			.case(time.after(this.clock, ms), () => "timeout");
+			.case(time.after(ctx, ms), () => "timeout");
 		if (selected === "done") {
 			throw new ProcessExit(exitCode());
 		}

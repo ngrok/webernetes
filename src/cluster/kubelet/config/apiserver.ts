@@ -9,7 +9,6 @@ import {
 } from "../../../apimachinery/pkg/watch/watch";
 import * as k8s from "../../../client";
 import type { V1Pod } from "../../../client";
-import { Clock } from "../../../clock";
 import { Channel, select, type ReadOnlyChannel, type SendChannel } from "../../../go/channel";
 import * as context from "../../../go/context";
 import { Mutex } from "../../../go/sync/mutex";
@@ -169,7 +168,6 @@ export function newSourceApiserver(
 	nodeName: string,
 	nodeHasSynced: () => boolean,
 	updates: SendChannel<SourceUpdate>,
-	clock = new Clock(),
 ): void {
 	const lw = newListWatchFromClient(
 		client,
@@ -188,12 +186,12 @@ export function newSourceApiserver(
 			}
 			const selected = await select()
 				.case(ctx.done(), () => "done" as const)
-				.case(time.after(clock, waitForAPIServerSyncPeriodMs), () => "timer" as const);
+				.case(time.after(ctx, waitForAPIServerSyncPeriodMs), () => "timer" as const);
 			if (selected === "done") {
 				return;
 			}
 		}
-		newSourceApiserverFromLW(ctx, lw, updates, clock);
+		newSourceApiserverFromLW(ctx, lw, updates);
 	})();
 }
 
@@ -202,7 +200,6 @@ export function newSourceApiserverFromLW(
 	ctx: context.Context,
 	lw: ListerWatcher<V1Pod>,
 	updates: SendChannel<SourceUpdate>,
-	clock = new Clock(),
 ): void {
 	const send = async (objs: V1Pod[]) => {
 		const pods: V1Pod[] = [];
@@ -212,9 +209,8 @@ export function newSourceApiserverFromLW(
 		await updates.send({ pods });
 	};
 	const store = newUndeltaStore(send, metaNamespaceKeyFunc);
-	const r = newReflectorWithOptions(lw, emptyPod(), store, {
+	const r = newReflectorWithOptions(ctx, lw, emptyPod(), store, {
 		resyncPeriodMs: 0,
-		clock,
 	});
 	void r.runWithContext(ctx);
 }

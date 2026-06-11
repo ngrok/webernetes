@@ -2,7 +2,6 @@
  * SPDX-License-Identifier: Apache-2.0
  * Derived from Kubernetes, translated and modified for Webernetes.
  */
-import type { Clock } from "../../../clock";
 import { Channel, select } from "../../../go/channel";
 import * as context from "../../../go/context";
 import * as time from "../../../go/time";
@@ -22,7 +21,6 @@ export class HTTPProber {
 
 	constructor(
 		private readonly ctx: context.Context,
-		private readonly clock: Clock,
 		private readonly network: ClusterNetwork,
 		private readonly followNonLocalRedirects = false,
 	) {
@@ -51,7 +49,7 @@ export class HTTPProber {
 			const selected = await select()
 				.case(resultCh, ({ value }) => ({ type: "result" as const, result: value }))
 				.case(ctx.done(), () => ({ type: "canceled" as const }))
-				.case(time.after(this.clock, timeoutMs), () => ({ type: "timeout" as const }));
+				.case(time.after(ctx, timeoutMs), () => ({ type: "timeout" as const }));
 			if (selected.type === "result") {
 				return selected.result ?? ["failure", "HTTP probe failed", undefined];
 			}

@@ -1,11 +1,20 @@
 // oxlint-disable vitest/no-conditional-tests
 // oxlint-disable vitest/warn-todo
-import { describe as vitestDescribe } from "vitest";
+import { beforeEach as vitestBeforeEach, describe as vitestDescribe } from "vitest";
 import type { TestOptions } from "vitest";
+import { Clock } from "../clock";
+import { getClock, withClock } from "../clock-context";
+import * as context from "../go/context";
+import { withLatencyProvider } from "../latency";
 
 export type TestEnvironment = "browser" | "node";
-export type SuiteFactory = () => void;
 export type SuiteOptions = number | TestOptions;
+
+export interface BrowserTestContext {
+	ctx: context.Context;
+}
+
+export type SuiteFactory = (context: BrowserTestContext) => void;
 
 type DescribeArguments =
 	| [name: string, factory: SuiteFactory]
@@ -67,15 +76,28 @@ function createDescribeFn(
 		}
 
 		const describeFn = mode === "only" ? vitestDescribe.only : vitestDescribe;
+		const wrappedFactory = () => {
+			const testContext = createBrowserTestContext();
+			vitestBeforeEach(() => {
+				getClock(testContext.ctx).reset();
+			});
+			factory(testContext);
+		};
 		if (options === undefined) {
-			describeFn(name, factory);
+			describeFn(name, wrappedFactory);
 			return;
 		}
 		if (typeof options === "number") {
-			describeFn(name, factory, options);
+			describeFn(name, wrappedFactory, options);
 			return;
 		}
-		describeFn(name, options, factory);
+		describeFn(name, options, wrappedFactory);
+	};
+}
+
+function createBrowserTestContext(): BrowserTestContext {
+	return {
+		ctx: withLatencyProvider(withClock(context.background(), new Clock())),
 	};
 }
 

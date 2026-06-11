@@ -1,8 +1,8 @@
-import type { Clock } from "./clock";
+import { getClock } from "./clock-context";
 import { isConflictError } from "./client/errors";
+import type * as context from "./go/context";
 
 export interface RetryOptions {
-	clock: Clock;
 	retries?: number;
 	baseDelayMs?: number;
 	maxDelayMs?: number;
@@ -11,7 +11,6 @@ export interface RetryOptions {
 }
 
 export interface RetryConflictOptions {
-	clock: Clock;
 	attempts?: number;
 	baseDelayMs?: number;
 	maxDelayMs?: number;
@@ -19,6 +18,7 @@ export interface RetryConflictOptions {
 }
 
 export async function retry<T>(
+	ctx: context.Context,
 	operation: () => Promise<T>,
 	{
 		retries = 0,
@@ -26,9 +26,9 @@ export async function retry<T>(
 		maxDelayMs = 250,
 		jitterRatio = 0.2,
 		shouldRetry = () => true,
-		clock,
-	}: RetryOptions,
+	}: RetryOptions = {},
 ): Promise<T> {
+	const clock = getClock(ctx);
 	let lastError: unknown;
 	for (let attempt = 0; attempt <= retries; attempt++) {
 		try {
@@ -48,17 +48,16 @@ export async function retry<T>(
 }
 
 export async function retryConflicts<T>(
+	ctx: context.Context,
 	update: () => Promise<T>,
 	{
 		attempts = 5,
 		baseDelayMs = 10,
 		maxDelayMs = 250,
 		jitterRatio = 0.2,
-		clock,
-	}: RetryConflictOptions,
+	}: RetryConflictOptions = {},
 ): Promise<T> {
-	return await retry(update, {
-		clock,
+	return await retry(ctx, update, {
 		retries: attempts - 1,
 		baseDelayMs,
 		maxDelayMs,

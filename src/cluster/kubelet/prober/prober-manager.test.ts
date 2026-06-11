@@ -2,32 +2,32 @@
  * SPDX-License-Identifier: Apache-2.0
  * Derived from Kubernetes, translated and modified for Webernetes.
  */
-// oxlint-disable jest/expect-expect
 import { expect, it } from "vitest";
 
 import {
-	KubeConfig,
-	type V1Container,
 	type V1ContainerStatus,
 	type V1Pod,
 	type V1PodStatus,
 	type V1Probe,
 } from "../../../client";
-import { FakeRecorder } from "../../../client-go/tools/record/fake";
-import { Clock } from "../../../clock";
+import { getClock } from "../../../clock-context";
 import { Channel, select } from "../../../go/channel";
 import * as context from "../../../go/context";
 import { browser } from "../../../test/describe";
-import type { ExecCmd, ExecProbe, ProbeResult } from "../../probe";
-import { ClusterNetwork } from "../../cni";
-import { Etcd } from "../../etcd";
-import { KubeClient } from "../../cluster";
-import { buildContainerID, newContainerID, parseContainerID } from "../container";
-import { PodManager } from "../pod";
-import { StatusManagerImpl } from "../status";
-import { ProbeWorker } from "./worker";
+import { newContainerID, parseContainerID } from "../container";
 import { ProbeManagerImpl } from "./prober-manager";
-import { ResultsManager, type ProbeKey, type ProbeType, type ProbeUpdate } from "./results";
+import { type ProbeKey, type ProbeUpdate } from "./results";
+import {
+	getTestPod,
+	getTestRunningStatus,
+	newTestManager,
+	newTestWorker,
+	setTestProbe,
+	SyncExecProber,
+	testContainerID,
+	testContainerName,
+	testPodUID,
+} from "./common.test";
 
 // Models kubernetes/pkg/kubelet/prober/prober_manager_test.go defaultProbe.
 const defaultProbe: V1Probe = {
@@ -38,143 +38,13 @@ const defaultProbe: V1Probe = {
 	failureThreshold: 3,
 };
 
-const testPodUID = "test_pod";
-const testContainerName = "test_container";
-const testContainerID = buildContainerID("test", "test_container_id");
 const interval = 1000;
 const foreverTestTimeout = 30_000;
 
-// Models kubernetes/pkg/kubelet/prober/common_test.go newTestManager.
-function newTestManager(): ProbeManagerImpl {
-	const clock = new Clock();
-	clock.pause();
-	const kubeConfig = new KubeConfig({
-		clock,
-		etcd: new Etcd(clock),
-		nodePortRange: { from: 30000, to: 32767 },
-	});
-	const podManager = new PodManager();
-	podManager.addPod(getTestPod());
-	const statusManager = new StatusManagerImpl({
-		clock,
-		kubeClient: new KubeClient(kubeConfig),
-		podManager,
-		podDeletionSafety: {
-			podCouldHaveRunningContainers: async () => false,
-		},
-		podStartupLatencyHelper: {
-			recordStatusUpdated: () => undefined,
-			deletePodStartupState: () => undefined,
-		},
-	});
-	return new ProbeManagerImpl(
-		context.background(),
-		statusManager,
-		new ResultsManager(),
-		new ResultsManager(),
-		new ResultsManager(),
-		undefined,
-		new FakeRecorder(),
-		clock,
-		new ClusterNetwork(),
-	);
-}
-
-// Models kubernetes/pkg/kubelet/prober/common_test.go syncExecProber.
-class SyncExecProber implements ExecProbe {
-	constructor(
-		private result: ProbeResult,
-		private err: Error | undefined,
-	) {}
-
-	set(result: ProbeResult, err: Error | undefined): void {
-		this.result = result;
-		this.err = err;
-	}
-
-	async probe(_e: ExecCmd): Promise<[ProbeResult, string, Error | undefined]> {
-		return [this.result, "", this.err];
-	}
-}
-
-// Models kubernetes/pkg/kubelet/prober/common_test.go getTestPod.
-function getTestPod(): V1Pod {
-	return {
-		metadata: {
-			uid: testPodUID,
-			name: "testPod",
-			namespace: "testNamespace",
-		},
-		spec: {
-			restartPolicy: "Always",
-			containers: [
-				{
-					name: testContainerName,
-				},
-			],
-		},
-	};
-}
-
-// Models kubernetes/pkg/kubelet/prober/common_test.go getTestRunningStatusWithStarted.
-function containerStatus(status: Partial<V1ContainerStatus> = {}): V1ContainerStatus {
-	return {
-		name: testContainerName,
-		image: "",
-		imageID: "",
-		containerID: testContainerID.toString(),
-		ready: false,
-		restartCount: 0,
-		started: true,
-		state: {
-			running: {
-				startedAt: new Date(0),
-			},
-		},
-		...status,
-	};
-}
-
-// Models kubernetes/pkg/kubelet/prober/common_test.go getTestRunningStatus.
-function getTestRunningStatus(): V1PodStatus {
-	return {
-		phase: "Running",
-		containerStatuses: [containerStatus()],
-	};
-}
-
-// Models kubernetes/pkg/kubelet/prober/common_test.go newTestWorker.
-function newTestWorker(m: ProbeManagerImpl, probeType: ProbeType, probe: V1Probe): ProbeWorker {
-	const pod = getTestPod();
-	setTestProbe(pod, probeType, probe);
-	return new ProbeWorker(m, probeType, pod, pod.spec?.containers?.[0] as V1Container);
-}
-
-// Models kubernetes/pkg/kubelet/prober/common_test.go setTestProbe.
-function setTestProbe(pod: V1Pod, probeType: ProbeType, probe: V1Probe): void {
-	const container = pod.spec?.containers?.[0];
-	if (!container) {
-		throw new Error("test pod missing container");
-	}
-	const mergedProbe = { ...defaultProbe, ...probe };
-	switch (probeType) {
-		case "readiness":
-			container.readinessProbe = mergedProbe;
-			break;
-		case "liveness":
-			container.livenessProbe = mergedProbe;
-			break;
-		case "startup":
-			container.startupProbe = mergedProbe;
-			break;
-	}
-}
-
 // Models kubernetes/pkg/kubelet/prober/prober_manager_test.go TestAddRemovePods.
-browser.describe("TestAddRemovePods", () => {
+browser.describe("TestAddRemovePods", ({ ctx }) => {
 	it("adds and removes regular-container probes", async () => {
-		const ctx = context.background();
-		const m = newTestManager();
+		const m = newTestManager(ctx);
 		try {
 			const noProbePod: V1Pod = {
 				metadata: {
@@ -218,22 +88,21 @@ browser.describe("TestAddRemovePods", () => {
 			expectProbes(m, probePaths);
 
 			m.removePod(probePod);
-			await waitForWorkerExit(m, probePaths);
+			await waitForWorkerExit(ctx, m, probePaths);
 			expectProbes(m, []);
 
 			m.removePod(probePod);
 			expectProbes(m, []);
 		} finally {
-			await cleanup(m);
+			await cleanup(ctx, m);
 		}
 	});
 });
 
 // Models kubernetes/pkg/kubelet/prober/prober_manager_test.go TestCleanupPods.
-browser.describe("TestCleanupPods", () => {
+browser.describe("TestCleanupPods", ({ ctx }) => {
 	it("cleans up probes whose pod UID is not desired", async () => {
-		const ctx = context.background();
-		const m = newTestManager();
+		const m = newTestManager(ctx);
 		try {
 			const podToCleanup: V1Pod = {
 				metadata: { uid: "pod_cleanup" },
@@ -272,19 +141,18 @@ browser.describe("TestCleanupPods", () => {
 				{ podUid: "pod_keep", containerName: "prober2", probeType: "liveness" },
 				{ podUid: "pod_keep", containerName: "prober3", probeType: "startup" },
 			];
-			await waitForWorkerExit(m, removedProbes);
+			await waitForWorkerExit(ctx, m, removedProbes);
 			expectProbes(m, expectedProbes);
 		} finally {
-			await cleanup(m);
+			await cleanup(ctx, m);
 		}
 	});
 });
 
 // Models kubernetes/pkg/kubelet/prober/prober_manager_test.go TestCleanupRepeated.
-browser.describe("TestCleanupRepeated", () => {
+browser.describe("TestCleanupRepeated", ({ ctx }) => {
 	it("repeatedly cleans up workers", async () => {
-		const ctx = context.background();
-		const m = newTestManager();
+		const m = newTestManager(ctx);
 		try {
 			const podTemplate: V1Pod = {
 				spec: {
@@ -310,16 +178,15 @@ browser.describe("TestCleanupRepeated", () => {
 				m.cleanupPods(new Set());
 			}
 		} finally {
-			await cleanup(m);
+			await cleanup(ctx, m);
 		}
 	});
 });
 
 // Models kubernetes/pkg/kubelet/prober/prober_manager_test.go TestUpdatePodStatus.
-browser.describe("TestUpdatePodStatus", () => {
+browser.describe("TestUpdatePodStatus", ({ ctx }) => {
 	it("updates readiness from cached regular-container probe results", async () => {
-		const ctx = context.background();
-		const m = newTestManager();
+		const m = newTestManager(ctx);
 
 		const unprobed = runningContainerStatus("unprobed_container");
 		const probedReady = runningContainerStatus("probed_container_ready");
@@ -411,12 +278,11 @@ browser.describe("TestUpdatePodStatus", () => {
 });
 
 // Models kubernetes/pkg/kubelet/prober/prober_manager_test.go TestUpdateReadiness.
-browser.describe("TestUpdateReadiness", () => {
+browser.describe("TestUpdateReadiness", ({ ctx }) => {
 	it("updates container readiness from worker readiness updates", async () => {
-		const ctx = context.background();
 		const testPod = getTestPod();
 		setTestProbe(testPod, "readiness", {});
-		const m = newTestManager();
+		const m = newTestManager(ctx);
 		const readinessHandling = startReadinessHandling(m);
 		try {
 			const exec = new SyncExecProber("success", undefined);
@@ -430,13 +296,13 @@ browser.describe("TestUpdateReadiness", () => {
 			];
 			expectProbes(m, probePaths);
 
-			await waitForReadyStatus(m, true);
+			await waitForReadyStatus(ctx, m, true);
 
 			exec.set("failure", undefined);
-			await waitForReadyStatus(m, false);
+			await waitForReadyStatus(ctx, m, false);
 		} finally {
 			await readinessHandling.stop();
-			await cleanup(m);
+			await cleanup(ctx, m);
 		}
 	});
 });
@@ -479,22 +345,26 @@ function expectProbes(m: ProbeManagerImpl, expectedProbes: ProbeKey[]): void {
 }
 
 // Models kubernetes/pkg/kubelet/prober/prober_manager_test.go waitForWorkerExit.
-async function waitForWorkerExit(m: ProbeManagerImpl, workerPaths: ProbeKey[]): Promise<void> {
+async function waitForWorkerExit(
+	ctx: context.Context,
+	m: ProbeManagerImpl,
+	workerPaths: ProbeKey[],
+): Promise<void> {
 	for (const w of workerPaths) {
 		const condition = () => m.getWorker(w.podUid, w.containerName, w.probeType) === undefined;
 		if (condition()) {
 			continue;
 		}
-		await poll(m, interval, foreverTestTimeout, condition);
+		await poll(ctx, interval, foreverTestTimeout, condition);
 	}
 }
 
 // Models kubernetes/pkg/kubelet/prober/prober_manager_test.go cleanup.
-async function cleanup(m: ProbeManagerImpl): Promise<void> {
+async function cleanup(ctx: context.Context, m: ProbeManagerImpl): Promise<void> {
 	m.cleanupPods(new Set());
 	const condition = () => m.workerCount() === 0;
 	if (!condition()) {
-		await poll(m, interval, foreverTestTimeout, condition);
+		await poll(ctx, interval, foreverTestTimeout, condition);
 	}
 	await m.close();
 	expect(m.workerCount()).toBe(0);
@@ -509,7 +379,11 @@ function probeKeyEqual(left: ProbeKey, right: ProbeKey): boolean {
 }
 
 // Models kubernetes/pkg/kubelet/prober/prober_manager_test.go waitForReadyStatus.
-async function waitForReadyStatus(m: ProbeManagerImpl, ready: boolean): Promise<void> {
+async function waitForReadyStatus(
+	ctx: context.Context,
+	m: ProbeManagerImpl,
+	ready: boolean,
+): Promise<void> {
 	const condition = async () => {
 		const status = m.statusManager.getPodStatus(testPodUID);
 		const containerStatus = status?.containerStatuses?.[0];
@@ -528,7 +402,7 @@ async function waitForReadyStatus(m: ProbeManagerImpl, ready: boolean): Promise<
 		}
 		return containerStatus.ready === ready;
 	};
-	await poll(m, interval, foreverTestTimeout, condition);
+	await poll(ctx, interval, foreverTestTimeout, condition);
 }
 
 function startReadinessHandling(m: ProbeManagerImpl): { stop(): Promise<void> } {
@@ -562,22 +436,23 @@ async function extractedReadinessHandling(m: ProbeManagerImpl, update: ProbeUpda
 }
 
 async function poll(
-	m: ProbeManagerImpl,
+	ctx: context.Context,
 	intervalMs: number,
 	timeoutMs: number,
 	condition: () => boolean | Promise<boolean>,
 ): Promise<void> {
-	const deadline = m.clock.nowMs() + timeoutMs;
+	const clock = getClock(ctx);
+	const deadline = clock.nowMs() + timeoutMs;
 	for (;;) {
 		if (await condition()) {
 			return;
 		}
-		if (m.clock.nowMs() >= deadline) {
+		if (clock.nowMs() >= deadline) {
 			expect(await condition()).toBe(true);
 			return;
 		}
 		await Promise.resolve();
-		m.clock.step(Math.min(intervalMs, deadline - m.clock.nowMs()));
+		clock.step(Math.min(intervalMs, deadline - clock.nowMs()));
 		await Promise.resolve();
 	}
 }

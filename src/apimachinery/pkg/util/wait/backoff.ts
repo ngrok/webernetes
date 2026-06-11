@@ -3,6 +3,7 @@
  * Derived from Kubernetes, translated and modified for Webernetes.
  */
 import type { Clock } from "../../../../clock";
+import { getClock } from "../../../../clock-context";
 import { select } from "../../../../go/channel";
 import * as context from "../../../../go/context";
 import type { MaybePromise } from "../../../../promise";
@@ -29,13 +30,15 @@ export interface BackoffOptions {
 
 // Models staging/src/k8s.io/apimachinery/pkg/util/wait/backoff.go Backoff.
 export class Backoff {
+	private readonly ctx: context.Context;
 	durationMs: number;
 	factor: number;
 	jitter: number;
 	steps: number;
 	capMs: number;
 
-	constructor(options: BackoffOptions = {}) {
+	constructor(ctx: context.Context, options: BackoffOptions = {}) {
+		this.ctx = ctx;
 		this.durationMs = options.durationMs ?? 0;
 		this.factor = options.factor ?? 0;
 		this.jitter = options.jitter ?? 0;
@@ -58,47 +61,47 @@ export class Backoff {
 	}
 
 	// Models staging/src/k8s.io/apimachinery/pkg/util/wait/backoff.go Backoff.DelayFunc.
-	delayFunc(clock: Clock): DelayFunc {
+	delayFunc(): DelayFunc {
 		let steps = this.steps;
 		let durationMs = this.durationMs;
 		const capMs = this.capMs;
 		const factor = this.factor;
 		const jitter = this.jitter;
 
-		return new DelayFunc(() => {
+		return new DelayFunc(this.ctx, () => {
 			let nextDuration: number;
 			[nextDuration, durationMs, steps] = delay(steps, durationMs, capMs, factor, jitter);
 			return nextDuration;
-		}, clock);
+		});
 	}
 
 	// Models staging/src/k8s.io/apimachinery/pkg/util/wait/backoff.go Backoff.Timer.
-	timer(clock: Clock): Timer {
+	timer(): Timer {
 		if (this.steps > 1 || this.jitter !== 0) {
-			return new VariableTimer(this.delayFunc(clock), realTimer(clock));
+			return new VariableTimer(this.delayFunc(), realTimer(this.ctx));
 		}
 		if (this.durationMs > 0) {
-			return new FixedTimer(this.durationMs, realTicker(clock));
+			return new FixedTimer(this.durationMs, realTicker(this.ctx));
 		}
 		return newNoopTimer();
 	}
 
 	// Models staging/src/k8s.io/apimachinery/pkg/util/wait/backoff.go Backoff.DelayWithReset.
-	delayWithReset(clock: Clock, resetIntervalMs: number): DelayFunc {
+	delayWithReset(resetIntervalMs: number): DelayFunc {
 		if (this.factor <= 0) {
-			return this.delayFunc(clock);
+			return this.delayFunc();
 		}
 		if (resetIntervalMs <= 0) {
 			this.steps = 0;
 			this.factor = 0;
-			return this.delayFunc(clock);
+			return this.delayFunc();
 		}
-		const manager = new BackoffManager(this, resetIntervalMs, clock);
-		return new DelayFunc(manager.step.bind(manager), clock);
+		const manager = new BackoffManager(this.ctx, this, resetIntervalMs);
+		return new DelayFunc(this.ctx, manager.step.bind(manager));
 	}
 
 	copy(): Backoff {
-		return new Backoff({
+		return new Backoff(this.ctx, {
 			durationMs: this.durationMs,
 			factor: this.factor,
 			jitter: this.jitter,
@@ -116,10 +119,11 @@ class BackoffManager {
 	private readonly clock: Clock;
 	private lastStart: Date;
 
-	constructor(backoff: Backoff, resetIntervalMs: number, clock: Clock) {
+	constructor(ctx: context.Context, backoff: Backoff, resetIntervalMs: number) {
 		this.backoff = backoff.copy();
 		this.initialBackoff = backoff.copy();
 		this.resetIntervalMs = resetIntervalMs;
+		const clock = getClock(ctx);
 		this.clock = clock;
 		this.lastStart = clock.now();
 	}
@@ -141,9 +145,8 @@ export async function untilWithContext(
 	ctx: context.Context,
 	f: FuncWithContext,
 	periodMs: number,
-	clock: Clock,
 ): Promise<void> {
-	await backoffUntilWithContext(ctx, f, new Backoff({ durationMs: periodMs }).timer(clock), true);
+	await backoffUntilWithContext(ctx, f, new Backoff(ctx, { durationMs: periodMs }).timer(), true);
 }
 
 // Models staging/src/k8s.io/apimachinery/pkg/util/wait/backoff.go BackoffUntilWithContext.

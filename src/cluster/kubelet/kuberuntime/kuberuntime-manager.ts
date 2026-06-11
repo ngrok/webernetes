@@ -3,7 +3,7 @@
  * Derived from Kubernetes, translated and modified for Webernetes.
  */
 import type { V1Container, V1Pod } from "../../../client";
-import type { Clock } from "../../../clock";
+import { getClock } from "../../../clock-context";
 import type { Backoff } from "../../../client-go/util/flowcontrol/backoff";
 import { KeyFnMap } from "../../../collections";
 import { Channel, select } from "../../../go/channel";
@@ -147,7 +147,6 @@ export interface KubeGenericRuntimeManagerOptions {
 	maxParallelImagePulls?: number;
 	network: ClusterNetwork;
 	startupManager: ResultsManager;
-	clock: Clock;
 }
 
 // Models kubernetes/pkg/kubelet/kuberuntime/kuberuntime_manager.go podStateProvider.
@@ -168,10 +167,9 @@ export class KubeGenericRuntimeManager implements Runtime, CommandRunner {
 	private readonly imagePuller: ImageManager;
 	private readonly events: EventRecorder;
 	private readonly internalLifecycle: InternalContainerLifecycle;
-	private readonly livenessManager: ResultsManager;
+	readonly livenessManager: ResultsManager;
 	private readonly runner: HandlerRunner;
-	private readonly startupManager: ResultsManager;
-	readonly clock: Clock;
+	readonly startupManager: ResultsManager;
 
 	constructor(options: KubeGenericRuntimeManagerOptions) {
 		this.ctx = options.ctx;
@@ -183,11 +181,10 @@ export class KubeGenericRuntimeManager implements Runtime, CommandRunner {
 		this.internalLifecycle = options.internalLifecycle ?? newFakeInternalContainerLifecycle();
 		this.livenessManager = options.livenessManager;
 		this.startupManager = options.startupManager;
-		this.clock = options.clock;
 		this.imagePuller = new KubeletImageManager({
+			ctx: options.ctx,
 			recorder: this.events,
 			imageService: this,
-			clock: this.clock,
 			imageBackOff: options.imageBackOff,
 			qps: options.registryPullQPS,
 			burst: options.registryBurst,
@@ -198,7 +195,6 @@ export class KubeGenericRuntimeManager implements Runtime, CommandRunner {
 			},
 		});
 		this.runner = newHandlerRunner({
-			clock: this.clock,
 			commandRunner: this,
 			containerManager: this,
 			eventRecorder: this.events,
@@ -285,7 +281,7 @@ export class KubeGenericRuntimeManager implements Runtime, CommandRunner {
 		opts: ListOptions,
 	): Promise<[pods: Map<string, RuntimePod>, err: Error | undefined]> {
 		const pods = new Map<string, RuntimePod>();
-		const timestamp = this.clock.now();
+		const timestamp = getClock(ctx).now();
 		const [sandboxes, sandboxErr] = await this.getSandboxes(ctx, opts);
 		if (sandboxErr) {
 			return [pods, sandboxErr];
@@ -1246,7 +1242,7 @@ export class KubeGenericRuntimeManager implements Runtime, CommandRunner {
 			ips: podIPs,
 			sandboxStatuses: [event.podSandboxStatus],
 			containerStatuses: kubeContainerStatuses,
-			timestamp: this.clock.now(),
+			timestamp: getClock(ctx).now(),
 		};
 	}
 
@@ -1531,7 +1527,8 @@ export class KubeGenericRuntimeManager implements Runtime, CommandRunner {
 		if (!preStop) {
 			return 0;
 		}
-		const start = this.clock.nowMs();
+		const clock = getClock(ctx);
+		const start = clock.nowMs();
 		const done = new Channel<void>(1);
 		void (async () => {
 			let err: Error | undefined;
@@ -1555,13 +1552,13 @@ export class KubeGenericRuntimeManager implements Runtime, CommandRunner {
 		})();
 
 		const selected = await select()
-			.case(time.after(this.clock, gracePeriod * 1000), () => "timeout" as const)
+			.case(time.after(ctx, gracePeriod * 1000), () => "timeout" as const)
 			.case(done, () => "done" as const)
 			.case(ctx.done(), () => "canceled" as const);
 		if (selected === "canceled") {
 			throw ctx.err() ?? context.Canceled;
 		}
-		return Math.floor((this.clock.nowMs() - start) / 1000);
+		return Math.floor((clock.nowMs() - start) / 1000);
 	}
 
 	// Models kubernetes/pkg/kubelet/kuberuntime/kuberuntime_container.go generateContainerConfig.

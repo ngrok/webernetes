@@ -64,7 +64,6 @@ export class Server {
 		};
 		this.runtime = new InProcessRuntimeService({
 			ctx: cluster.ctx,
-			clock: cluster.clock,
 			kubeConfig: cluster.kubeConfig,
 			network: cluster.network,
 			podCIDR: this.podCIDR,
@@ -81,8 +80,8 @@ export class Server {
 			{
 				kubeClient: cluster.api,
 				recorder: new EventRecorderImpl({
+					ctx: cluster.ctx,
 					api: cluster.api.corev1,
-					clock: cluster.clock,
 					component: "kubelet",
 					host: this.name,
 				}),
@@ -90,7 +89,6 @@ export class Server {
 				remoteRuntimeService: this.runtimeService,
 				remoteImageService: this.imageService,
 				network: this.network,
-				clock: cluster.clock,
 				node: this.node,
 				hostDNSConfig: this.dnsConfig,
 			},

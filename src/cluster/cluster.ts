@@ -20,6 +20,7 @@ import { type NodePortRange, ServiceStore } from "./storage";
 import { applyResources } from "./apply";
 import type { KubeletConfiguration } from "./kubelet/apis/config";
 import { buildPodFullName } from "./kubelet/container";
+import { withClock } from "../clock-context";
 import { type LatencyProvider, withLatencyProvider } from "../latency";
 
 const DEFAULT_NODE_PORT_RANGE: NodePortRange = {
@@ -60,13 +61,13 @@ export class Cluster {
 	public constructor(options: ClusterOptions = {}) {
 		this.clock = new Clock();
 		const [ctx, cancelContext] = context.withCancel(context.background());
-		this.ctx = withLatencyProvider(ctx, options.latencyProvider);
+		this.ctx = withLatencyProvider(withClock(ctx, this.clock), options.latencyProvider);
 		this.cancelContext = cancelContext;
-		this.etcd = new Etcd(this.clock);
+		this.etcd = new Etcd(this.ctx);
 		this.serviceCIDR = options.serviceCIDR;
 		this.nodePortRange = options.nodePortRange ?? DEFAULT_NODE_PORT_RANGE;
 		this.kubeConfig = new k8s.KubeConfig({
-			clock: this.clock,
+			ctx: this.ctx,
 			etcd: this.etcd,
 			serviceCIDR: this.serviceCIDR,
 			nodePortRange: this.nodePortRange,
@@ -74,7 +75,7 @@ export class Cluster {
 				this.exec(namespace, podName, containerName, argv),
 		});
 		this.api = new KubeClient(this.kubeConfig);
-		this.network = new ClusterNetwork({ clusterDNS: [this.dnsServiceIp], clock: this.clock });
+		this.network = new ClusterNetwork({ clusterDNS: [this.dnsServiceIp] });
 
 		this.imageRegistry = new ImageRegistry();
 		this.imageRegistry.register(PauseImage);
@@ -137,7 +138,7 @@ export class Cluster {
 		// This sets up some key spaces in this.etcd for allocating IP ranges and
 		// node port ranges for services. It's quite hacky and inelegant and I would
 		// like to find a better way in future.
-		await ServiceStore.initialize(this.etcd, {
+		await ServiceStore.initialize(this.ctx, this.etcd, {
 			serviceCIDR: this.serviceCIDR,
 			nodePortRange: this.nodePortRange,
 		});

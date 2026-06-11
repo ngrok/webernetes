@@ -371,16 +371,15 @@ async function drainWorkers(podWorkers: PodWorkersImpl, numPods: number): Promis
 }
 
 // Models kubernetes/pkg/kubelet/pod_workers_test.go TestUpdatePodParallel.
-browser.describe("TestUpdatePodParallel", () => {
+browser.describe("TestUpdatePodParallel", ({ ctx }) => {
 	it("runs", async () => {
-		const tCtx = context.background();
 		const [podWorkers, , processed] = createPodWorkers();
 		try {
 			const numPods = 20;
 			for (let i = 0; i < numPods; i++) {
 				for (let j = i; j < numPods; j++) {
 					await podWorkers.updatePod(
-						tCtx,
+						ctx,
 						newUpdatePodOptions({
 							pod: newNamedPod(String(j), "ns", String(i), false),
 							updateType: "create",
@@ -580,9 +579,8 @@ browser.describe("completeWork_PendingUpdate", () => {
 	});
 });
 
-browser.describe("updatePod locking", () => {
+browser.describe("updatePod locking", ({ ctx }) => {
 	it("serializes updates while first-time terminal status checks await the pod cache", async () => {
-		const tCtx = context.background();
 		const clock = newFakePassiveClock(new Date(1_000));
 		let releaseGet: (() => void) | undefined;
 		let getStarted = false;
@@ -621,13 +619,13 @@ browser.describe("updatePod locking", () => {
 		);
 		try {
 			const pod = newPodWithPhase("pod-with-lock", "pod-with-lock", "Failed");
-			const first = p.updatePod(tCtx, newUpdatePodOptions({ pod, updateType: "update" }));
+			const first = p.updatePod(ctx, newUpdatePodOptions({ pod, updateType: "update" }));
 			await wait(0);
 			expect(getStarted).toBe(true);
 
 			let secondDone = false;
 			const second = (async () => {
-				await p.updatePod(tCtx, newUpdatePodOptions({ pod, updateType: "kill" }));
+				await p.updatePod(ctx, newUpdatePodOptions({ pod, updateType: "kill" }));
 				secondDone = true;
 			})();
 			await wait(0);
@@ -646,13 +644,12 @@ browser.describe("updatePod locking", () => {
 });
 
 // Models kubernetes/pkg/kubelet/pod_workers_test.go TestUpdatePodForRuntimePod.
-browser.describe("updatePodForRuntimePod", () => {
+browser.describe("updatePodForRuntimePod", ({ ctx }) => {
 	it("creates synthetic pod only for runtime kill updates", async () => {
-		const tCtx = context.background();
 		const [podWorkers, , processed] = createPodWorkers();
 		try {
 			await podWorkers.updatePod(
-				tCtx,
+				ctx,
 				newUpdatePodOptions({
 					updateType: "create",
 					runningPod: newPod({ id: "1", namespace: "test", name: "1" }),
@@ -662,7 +659,7 @@ browser.describe("updatePodForRuntimePod", () => {
 			expect(processed.size).toBe(0);
 
 			await podWorkers.updatePod(
-				tCtx,
+				ctx,
 				newUpdatePodOptions({
 					updateType: "kill",
 					runningPod: newPod({ id: "1", namespace: "test", name: "1" }),
@@ -681,9 +678,8 @@ browser.describe("updatePodForRuntimePod", () => {
 });
 
 // Models kubernetes/pkg/kubelet/pod_workers_test.go TestUpdatePodForTerminatedRuntimePod.
-browser.describe("updatePodForTerminatedRuntimePod", () => {
+browser.describe("updatePodForTerminatedRuntimePod", ({ ctx }) => {
 	it("ignores runtime kill updates after runtime pod termination is complete", async () => {
-		const tCtx = context.background();
 		const [podWorkers, , processed] = createPodWorkers();
 		try {
 			const now = new Date();
@@ -706,7 +702,7 @@ browser.describe("updatePodForTerminatedRuntimePod", () => {
 			});
 
 			await podWorkers.updatePod(
-				tCtx,
+				ctx,
 				newUpdatePodOptions({
 					updateType: "kill",
 					runningPod: newPod({ id: "1", namespace: "test", name: "1" }),
@@ -723,7 +719,7 @@ browser.describe("updatePodForTerminatedRuntimePod", () => {
 });
 
 // Models kubernetes/pkg/kubelet/pod_workers_test.go TestUpdatePod.
-browser.describe("updatePod", () => {
+browser.describe("updatePod", ({ ctx }) => {
 	const one = 1;
 	const hasCancelFn = (status: PodSyncStatus): PodSyncStatus => {
 		status.cancelFn = () => {};
@@ -753,7 +749,7 @@ browser.describe("updatePod", () => {
 		update: UpdatePodOptions;
 		runtimeStatus?: PodRuntimeStatus;
 		prepare?: (
-			tCtx: context.Context,
+			ctx: context.Context,
 			podWorkers: timeIncrementingWorkers,
 		) => Promise<AfterUpdateFn | undefined>;
 		expect?: PodSyncStatus;
@@ -783,9 +779,9 @@ browser.describe("updatePod", () => {
 				updateType: "create",
 				pod: withLabel(newNamedPod("1", "ns", "running-pod", false), "updated", "value"),
 			}),
-			prepare: async (tCtx, w) => {
+			prepare: async (ctx, w) => {
 				await w.updatePod(
-					tCtx,
+					ctx,
 					newUpdatePodOptions({
 						updateType: "create",
 						pod: newNamedPod("1", "ns", "running-pod", false),
@@ -793,7 +789,7 @@ browser.describe("updatePod", () => {
 				);
 				w.pauseWorkers("1");
 				await w.updatePod(
-					tCtx,
+					ctx,
 					newUpdatePodOptions({
 						updateType: "kill",
 						pod: newNamedPod("1", "ns", "running-pod", false),
@@ -852,9 +848,9 @@ browser.describe("updatePod", () => {
 					15,
 				),
 			}),
-			prepare: async (tCtx, w) => {
+			prepare: async (ctx, w) => {
 				await w.updatePod(
-					tCtx,
+					ctx,
 					newUpdatePodOptions({
 						updateType: "create",
 						pod: newNamedPod("1", "ns", "running-pod", false),
@@ -896,9 +892,9 @@ browser.describe("updatePod", () => {
 					evict: true,
 				},
 			}),
-			prepare: async (tCtx, podWorkers) => {
+			prepare: async (ctx, podWorkers) => {
 				await podWorkers.updatePod(
-					tCtx,
+					ctx,
 					newUpdatePodOptions({
 						updateType: "create",
 						pod: newNamedPod("1", "ns", "running-pod", false),
@@ -1039,7 +1035,6 @@ browser.describe("updatePod", () => {
 			throw new Error("unable to find uid for update");
 		}
 
-		const tCtx = context.background();
 		const [podWorkers] = createTimeIncrementingPodWorkers();
 		try {
 			const fns: AfterUpdateFn[] = [];
@@ -1049,7 +1044,7 @@ browser.describe("updatePod", () => {
 				});
 			}
 			if (tc.prepare) {
-				const fn = await tc.prepare(tCtx, podWorkers);
+				const fn = await tc.prepare(ctx, podWorkers);
 				if (fn) {
 					fns.push(fn);
 				}
@@ -1067,7 +1062,7 @@ browser.describe("updatePod", () => {
 				podWorkers.runtime.err = undefined;
 			});
 
-			await podWorkers.updatePod(tCtx, tc.update, ...fns);
+			await podWorkers.updatePod(ctx, tc.update, ...fns);
 
 			expect(await podWorkers.w.isPodKnownTerminated(uid)).toBe(tc.expectKnownTerminated ?? false);
 			expectPodSyncStatus(tc.expect, podWorkers.w.podSyncStatuses.get(uid));
@@ -1078,9 +1073,8 @@ browser.describe("updatePod", () => {
 });
 
 // Models kubernetes/pkg/kubelet/pod_workers_test.go TestTerminalPhaseTransition.
-browser.describe("TestTerminalPhaseTransition", () => {
+browser.describe("TestTerminalPhaseTransition", ({ ctx }) => {
 	it("runs", async () => {
-		const tCtx = context.background();
 		const [podWorkers] = createPodWorkers();
 		const channels = new WorkChannel();
 		podWorkers.workerChannelFn = channels.intercept.bind(channels);
@@ -1090,7 +1084,7 @@ browser.describe("TestTerminalPhaseTransition", () => {
 		podWorkers.podSyncer.syncPod = terminalPhaseSyncer.syncPod.bind(terminalPhaseSyncer);
 		try {
 			await podWorkers.updatePod(
-				tCtx,
+				ctx,
 				newUpdatePodOptions({
 					pod: newNamedPod("1", "test1", "pod1", false),
 					updateType: "update",
@@ -1104,7 +1098,7 @@ browser.describe("TestTerminalPhaseTransition", () => {
 			}
 
 			await podWorkers.updatePod(
-				tCtx,
+				ctx,
 				newUpdatePodOptions({
 					pod: newNamedPod("1", "test1", "pod1", false),
 					updateType: "update",
@@ -1119,7 +1113,7 @@ browser.describe("TestTerminalPhaseTransition", () => {
 
 			await terminalPhaseSyncer.setTerminal("1");
 			await podWorkers.updatePod(
-				tCtx,
+				ctx,
 				newUpdatePodOptions({
 					pod: newNamedPod("1", "test1", "pod1", false),
 					updateType: "update",
@@ -1138,9 +1132,8 @@ browser.describe("TestTerminalPhaseTransition", () => {
 });
 
 // Models kubernetes/pkg/kubelet/pod_workers_test.go TestUpdatePodDoesNotForgetSyncPodKill.
-browser.describe("updatePodDoesNotForgetSyncPodKill", () => {
+browser.describe("updatePodDoesNotForgetSyncPodKill", ({ ctx }) => {
 	it("preserves kill update when a later update is received", async () => {
-		const tCtx = context.background();
 		const [podWorkers, , processed] = createPodWorkers();
 		try {
 			const numPods = 20;
@@ -1148,21 +1141,21 @@ browser.describe("updatePodDoesNotForgetSyncPodKill", () => {
 				const uid = String(i);
 				const pod = newNamedPod(uid, "ns", uid, false);
 				await podWorkers.updatePod(
-					tCtx,
+					ctx,
 					newUpdatePodOptions({
 						pod,
 						updateType: "create",
 					}),
 				);
 				await podWorkers.updatePod(
-					tCtx,
+					ctx,
 					newUpdatePodOptions({
 						pod,
 						updateType: "kill",
 					}),
 				);
 				await podWorkers.updatePod(
-					tCtx,
+					ctx,
 					newUpdatePodOptions({
 						pod,
 						updateType: "update",
@@ -1475,15 +1468,14 @@ browser.describe("Test_calculateEffectiveGracePeriod", () => {
 });
 
 // Models kubernetes/pkg/kubelet/pod_workers_test.go TestSyncKnownPods.
-browser.describe("syncKnownPods", () => {
+browser.describe("syncKnownPods", ({ ctx }) => {
 	it("tracks lifecycle query state while forgetting terminated workers", async () => {
-		const tCtx = context.background();
 		const [podWorkers] = createPodWorkers();
 		try {
 			const numPods = 20;
 			for (let i = 0; i < numPods; i++) {
 				await podWorkers.updatePod(
-					tCtx,
+					ctx,
 					newUpdatePodOptions({
 						pod: newNamedPod(String(i), "ns", "name", false),
 						updateType: "update",
@@ -1510,7 +1502,7 @@ browser.describe("syncKnownPods", () => {
 					pod.metadata.deletionTimestamp = new Date();
 				}
 				await podWorkers.updatePod(
-					tCtx,
+					ctx,
 					newUpdatePodOptions({
 						pod,
 						updateType: "kill",
@@ -1554,7 +1546,7 @@ browser.describe("syncKnownPods", () => {
 
 			for (const uid of desiredPods) {
 				await podWorkers.updatePod(
-					tCtx,
+					ctx,
 					newUpdatePodOptions({
 						pod: newNamedPod(uid, "ns", "name", false),
 						updateType: "kill",

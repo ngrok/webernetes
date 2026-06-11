@@ -33,8 +33,12 @@
 
 import { Buffer } from "buffer";
 import { EventEmitter } from "events";
-import { Clock } from "../clock";
+import { type Clock } from "../clock";
+import { getClock } from "../clock-context";
 import { SortedMap } from "../collections";
+import { Channel, select, type ReadOnlyChannel } from "../go/channel";
+import type * as context from "../go/context";
+import * as time from "../go/time";
 
 const zeroKey = "\0";
 
@@ -231,6 +235,10 @@ interface EtcdOptions {
 	retainedRevisions?: number;
 }
 
+export interface WithLockOptions {
+	timeoutMs?: number;
+}
+
 interface LeaseRecord {
 	id: string;
 	key: string;
@@ -378,11 +386,14 @@ class FakeState {
 	private readonly history = new SortedMap<number, RevisionEvent[]>((l, r) => l - r);
 	private readonly watchers = new Set<WatcherImpl>();
 	private readonly leases = new Map<string, LeaseRecord>();
+	private readonly clock: Clock;
 
 	constructor(
-		private readonly clock: Clock,
+		private readonly ctx: context.Context,
 		private readonly options: Required<EtcdOptions>,
-	) {}
+	) {
+		this.clock = getClock(ctx);
+	}
 
 	public range(namespace: string, options: RangeOptions): RangeResponse {
 		this.assertValidRange(options.key, options.rangeEnd);
@@ -607,8 +618,8 @@ class FakeState {
 		}
 
 		const lease = new FakeLease(
+			this.ctx,
 			this,
-			this.clock,
 			leaseId,
 			absoluteKey,
 			Math.max(1, ttlSeconds) * 1000,
@@ -951,14 +962,16 @@ class FakeState {
 
 class FakeLease {
 	public readonly record: LeaseRecord;
+	private readonly clock: Clock;
 
 	constructor(
+		ctx: context.Context,
 		private readonly state: FakeState,
-		private readonly clock: Clock,
 		public readonly id: string,
 		key: string,
 		private readonly ttlMs: number,
 	) {
+		this.clock = getClock(ctx);
 		this.record = {
 			id,
 			key,
@@ -1086,11 +1099,8 @@ export class Etcd extends Namespace {
 		}) => Promise<{ header: ResponseHeader }>;
 	};
 
-	constructor(
-		public readonly clock: Clock,
-		options?: EtcdOptions,
-	) {
-		const state = new FakeState(clock, {
+	constructor(ctx: context.Context, options?: EtcdOptions) {
+		const state = new FakeState(ctx, {
 			retainedRevisions: Math.max(1, options?.retainedRevisions ?? 3),
 		});
 		super(state, "");
@@ -1107,6 +1117,106 @@ export class Etcd extends Namespace {
 	public close(): void {
 		this.stateRef.close();
 	}
+
+	// Simulator-specific helpers.
+	public async withLock<T>(
+		ctx: context.Context,
+		key: string,
+		options: WithLockOptions,
+		fn: () => T | Promise<T>,
+	): Promise<T> {
+		const clock = getClock(ctx);
+		const timeoutMs = options.timeoutMs ?? 5000;
+		const ttlSeconds = Math.max(1, Math.ceil(timeoutMs / 1000));
+		const deadline = clock.nowMs() + timeoutMs;
+
+		for (;;) {
+			if (ctx.err()) {
+				throw ctx.err();
+			}
+			const lock = await this.tryAcquireLock(key, ttlSeconds);
+			if (lock) {
+				return await runWithEtcdLock(lock, fn);
+			}
+
+			const remainingMs = deadline - clock.nowMs();
+			if (remainingMs <= 0) {
+				throw new Error(`timed out waiting for lock ${key}`);
+			}
+			const acquired = await this.waitForLockDeleteOrAcquire(ctx, key, remainingMs, ttlSeconds);
+			if (acquired) {
+				return await runWithEtcdLock(acquired, fn);
+			}
+		}
+	}
+
+	private async tryAcquireLock(key: string, ttlSeconds: number): Promise<Lock | undefined> {
+		try {
+			return await this.lock(key).ttl(ttlSeconds).acquire();
+		} catch (error) {
+			if (!isLockAcquireFailure(error)) {
+				throw error;
+			}
+			return undefined;
+		}
+	}
+
+	private async waitForLockDeleteOrAcquire(
+		ctx: context.Context,
+		key: string,
+		timeoutMs: number,
+		ttlSeconds: number,
+	): Promise<Lock | undefined> {
+		const watcher = await this.watch().key(key).only("delete").create();
+		const [deleted, stopWatchingDelete] = watcherEventChannel(watcher, "delete");
+		try {
+			const lock = await this.tryAcquireLock(key, ttlSeconds);
+			if (lock) {
+				return lock;
+			}
+			const selected = await select()
+				.case(ctx.done(), () => ctx.err() ?? new Error(`context canceled waiting for lock ${key}`))
+				.case(deleted, () => undefined)
+				.case(time.after(ctx, timeoutMs), () => undefined);
+			if (selected) {
+				throw selected;
+			}
+			return undefined;
+		} finally {
+			stopWatchingDelete();
+			await watcher.cancel();
+		}
+	}
+}
+
+function watcherEventChannel(
+	watcher: Watcher,
+	event: "delete",
+): [ReadOnlyChannel<void>, () => void] {
+	const channel = new Channel<void>(1);
+	const handler = () => {
+		channel.trySend(undefined);
+		channel.close();
+	};
+	watcher.on(event, handler);
+	return [
+		channel.readOnly(),
+		() => {
+			watcher.off(event, handler);
+		},
+	];
+}
+
+async function runWithEtcdLock<T>(lock: Lock, fn: () => T | Promise<T>): Promise<T> {
+	try {
+		return await fn();
+	} finally {
+		await lock.release();
+	}
+}
+
+function isLockAcquireFailure(error: unknown): boolean {
+	return error instanceof Error && /Failed to acquire a lock/.test(error.message);
 }
 
 abstract class RangeBuilder<T> extends PromiseWrap<T> {

@@ -2,7 +2,6 @@
  * SPDX-License-Identifier: Apache-2.0
  * Derived from Kubernetes, translated and modified for Webernetes.
  */
-// oxlint-disable jest/no-standalone-expect
 // oxlint-disable jest/no-conditional-expect
 // oxlint-disable typescript-eslint/no-non-null-assertion
 import { expect, it } from "vitest";
@@ -19,7 +18,6 @@ import type {
 	V1PodStatus,
 	V1Service,
 } from "../../client";
-import * as context from "../../go/context";
 import { browser } from "../../test/describe";
 import { ClusterNetwork } from "../cni";
 import {
@@ -1423,7 +1421,7 @@ browser.describe("podPhaseWithRestartAllContainers", () => {
 });
 
 // Models kubernetes/pkg/kubelet/kubelet_pods_test.go TestMakeEnvironmentVariables.
-browser.describe("makeEnvironmentVariables", () => {
+browser.describe("makeEnvironmentVariables", ({ ctx }) => {
 	interface MakeEnvironmentVariablesTestCase {
 		name: string; // the name of the test case
 		ns: string; // the namespace to generate environment for
@@ -2000,7 +1998,7 @@ browser.describe("makeEnvironmentVariables", () => {
 		},
 	])("$name", async (tc) => {
 		const fakeRecorder = newFakeRecorder(1);
-		const testKubelet = newTestKubelet(false);
+		const testKubelet = newTestKubelet(ctx, false);
 		try {
 			const kl = testKubelet.kubelet;
 			kl.recorder = fakeRecorder;
@@ -2033,7 +2031,7 @@ browser.describe("makeEnvironmentVariables", () => {
 			const podIP = podIPs[0] ?? "";
 
 			const [result, err] = await kl.makeEnvironmentVariables(
-				context.background(),
+				ctx,
 				testPod,
 				tc.container,
 				podIP,
@@ -2062,7 +2060,7 @@ browser.describe("makeEnvironmentVariables", () => {
 });
 
 // Models kubernetes/pkg/kubelet/kubelet_pods_test.go TestGeneratePodHostNameAndDomain.
-browser.describe("generatePodHostNameAndDomain", () => {
+browser.describe("generatePodHostNameAndDomain", ({ ctx }) => {
 	it.each([
 		{
 			name: "Default behavior - pod name as hostname",
@@ -2185,7 +2183,7 @@ browser.describe("generatePodHostNameAndDomain", () => {
 			expectedDomain,
 			errorContains,
 		}) => {
-			const testKubelet = newTestKubelet(false);
+			const testKubelet = newTestKubelet(ctx, false);
 			const pod: V1Pod = {
 				metadata: {
 					name: podName,
@@ -2214,7 +2212,7 @@ browser.describe("generatePodHostNameAndDomain", () => {
 });
 
 // Models kubernetes/pkg/kubelet/kubelet_pods_test.go TestKubelet_HandlePodCleanups.
-browser.describe("kubeletHandlePodCleanups", () => {
+browser.describe("kubeletHandlePodCleanups", ({ ctx }) => {
 	const one = 1;
 	const two = 2;
 	const deleted = new Date(2_000);
@@ -2309,7 +2307,7 @@ browser.describe("kubeletHandlePodCleanups", () => {
 						containers: [{ name: "container-1" }],
 					},
 				};
-				await w.updatePod(context.background(), {
+				await w.updatePod(ctx, {
 					updateType: "create",
 					startTime: new Date(1_000),
 					pod,
@@ -2328,7 +2326,7 @@ browser.describe("kubeletHandlePodCleanups", () => {
 						containers: [{ name: "container-1" }],
 					},
 				};
-				await w.updatePod(context.background(), {
+				await w.updatePod(ctx, {
 					updateType: "kill",
 					startTime: new Date(3_000),
 					pod: updatedPod,
@@ -2492,7 +2490,7 @@ browser.describe("kubeletHandlePodCleanups", () => {
 						containers: [{ name: "container-1" }],
 					},
 				};
-				await w.updatePod(context.background(), {
+				await w.updatePod(ctx, {
 					updateType: "create",
 					startTime: new Date(1_000),
 					pod,
@@ -2511,7 +2509,7 @@ browser.describe("kubeletHandlePodCleanups", () => {
 						containers: [{ name: "container-1" }],
 					},
 				};
-				await w.updatePod(context.background(), {
+				await w.updatePod(ctx, {
 					updateType: "kill",
 					startTime: new Date(3_000),
 					pod: updatedPod,
@@ -2548,7 +2546,7 @@ browser.describe("kubeletHandlePodCleanups", () => {
 			terminatingErr: new Error("unable to terminate"),
 			prepareWorker: async (podWorkers, records) => {
 				const pod = staticPod();
-				await podWorkers.updatePod(context.background(), {
+				await podWorkers.updatePod(ctx, {
 					updateType: "create",
 					startTime: new Date(1_000),
 					pod,
@@ -2589,14 +2587,14 @@ browser.describe("kubeletHandlePodCleanups", () => {
 			],
 			prepareWorker: async (podWorkers) => {
 				const pod = simplePod();
-				await podWorkers.updatePod(context.background(), {
+				await podWorkers.updatePod(ctx, {
 					updateType: "create",
 					startTime: new Date(1_000),
 					pod,
 				});
 				await drainAllWorkers(podWorkers);
 				await podWorkers.updatePod(
-					context.background(),
+					ctx,
 					newUpdatePodOptions({
 						updateType: "kill",
 						pod,
@@ -2605,7 +2603,7 @@ browser.describe("kubeletHandlePodCleanups", () => {
 				const pod2 = simplePod();
 				pod2.metadata = { ...pod2.metadata, annotations: { version: "2" } };
 				await podWorkers.updatePod(
-					context.background(),
+					ctx,
 					newUpdatePodOptions({
 						updateType: "create",
 						pod: pod2,
@@ -2645,8 +2643,7 @@ browser.describe("kubeletHandlePodCleanups", () => {
 	];
 
 	it.each(tests)("$name", async (test) => {
-		const tCtx = context.background();
-		const testKubelet = newTestKubelet(false);
+		const testKubelet = newTestKubelet(ctx, false);
 		const kl = testKubelet.kubelet;
 		const [podWorkers, fakeRuntime, records] = createPodWorkers();
 		kl.podWorkers = podWorkers;
@@ -2685,17 +2682,17 @@ browser.describe("kubeletHandlePodCleanups", () => {
 				if (!pod) {
 					throw new Error(`unable to reject pod by UID ${reject.uid}`);
 				}
-				await kl.rejectPod(tCtx, pod, reject.reason, reject.message);
+				await kl.rejectPod(ctx, pod, reject.reason, reject.message);
 			}
 
-			const err = await kl.handlePodCleanups(tCtx);
+			const err = await kl.handlePodCleanups(ctx);
 			expect(err !== undefined).toBe(test.wantErr ?? false);
 			await drainAllWorkers(podWorkers);
 			await test.wantWorker?.(podWorkers, records);
 
 			if (test.wantWorkerAfterRetry) {
 				podWorkers.podSyncer = originalPodSyncer;
-				const retryErr = await kl.handlePodCleanups(tCtx);
+				const retryErr = await kl.handlePodCleanups(ctx);
 				expect(retryErr !== undefined).toBe(test.wantErr ?? false);
 				await drainAllWorkers(podWorkers);
 				test.wantWorkerAfterRetry(podWorkers, records);
@@ -2708,7 +2705,7 @@ browser.describe("kubeletHandlePodCleanups", () => {
 });
 
 // Models kubernetes/pkg/kubelet/kubelet_pods_test.go TestConvertToAPIContainerStatuses.
-browser.describe("convertToAPIContainerStatuses", () => {
+browser.describe("convertToAPIContainerStatuses", ({ ctx }) => {
 	const desiredState = {
 		nodeName: "machine",
 		containers: [{ name: "containerA" }, { name: "containerB" }],
@@ -3127,11 +3124,10 @@ browser.describe("convertToAPIContainerStatuses", () => {
 	];
 
 	it.each(upstreamTestCases)("$name", async (tc) => {
-		const tCtx = context.background();
-		const testKubelet = newTestKubelet(false);
+		const testKubelet = newTestKubelet(ctx, false);
 		try {
 			const containerStatuses = testKubelet.kubelet.convertToAPIContainerStatuses(
-				tCtx,
+				ctx,
 				tc.pod,
 				tc.currentStatus,
 				tc.previousStatus,
@@ -3156,12 +3152,11 @@ browser.describe("convertToAPIContainerStatuses", () => {
 	});
 
 	it("throws when image volume status conversion is requested", async () => {
-		const tCtx = context.background();
-		const testKubelet = newTestKubelet(false);
+		const testKubelet = newTestKubelet(ctx, false);
 		try {
 			expect(() =>
 				testKubelet.kubelet.convertToAPIContainerStatuses(
-					tCtx,
+					ctx,
 					{ spec: desiredState },
 					{
 						id: "",
@@ -3186,8 +3181,7 @@ browser.describe("convertToAPIContainerStatuses", () => {
 	});
 
 	it("does not mutate runtime container status order while sorting by creation time", async () => {
-		const tCtx = context.background();
-		const testKubelet = newTestKubelet(false);
+		const testKubelet = newTestKubelet(ctx, false);
 		const firstStatus = runtimeStatus("containerA", { createdAt: 1 });
 		const secondStatus = runtimeStatus("containerB", { createdAt: 2 });
 		const currentStatus: PodRuntimeStatus = {
@@ -3202,7 +3196,7 @@ browser.describe("convertToAPIContainerStatuses", () => {
 
 		try {
 			testKubelet.kubelet.convertToAPIContainerStatuses(
-				tCtx,
+				ctx,
 				{ spec: desiredState },
 				currentStatus,
 				[],
@@ -3221,8 +3215,7 @@ browser.describe("convertToAPIContainerStatuses", () => {
 
 	// Simulator only test.
 	it("orders regular statuses by name and init statuses by pod spec order", async () => {
-		const tCtx = context.background();
-		const testKubelet = newTestKubelet(false);
+		const testKubelet = newTestKubelet(ctx, false);
 		const pod: V1Pod = {
 			spec: {
 				initContainers: [{ name: "initB" }, { name: "initA" }],
@@ -3246,7 +3239,7 @@ browser.describe("convertToAPIContainerStatuses", () => {
 
 		try {
 			const regularStatuses = testKubelet.kubelet.convertToAPIContainerStatuses(
-				tCtx,
+				ctx,
 				pod,
 				currentStatus,
 				[],
@@ -3257,7 +3250,7 @@ browser.describe("convertToAPIContainerStatuses", () => {
 				false,
 			);
 			const initStatuses = testKubelet.kubelet.convertToAPIContainerStatuses(
-				tCtx,
+				ctx,
 				pod,
 				currentStatus,
 				[],
@@ -3276,8 +3269,7 @@ browser.describe("convertToAPIContainerStatuses", () => {
 	});
 
 	it("propagates runtime reported container user", async () => {
-		const tCtx = context.background();
-		const testKubelet = newTestKubelet(false);
+		const testKubelet = newTestKubelet(ctx, false);
 		const pod: V1Pod = {
 			spec: {
 				containers: [{ name: "containerA" }],
@@ -3305,7 +3297,7 @@ browser.describe("convertToAPIContainerStatuses", () => {
 
 		try {
 			const statuses = testKubelet.kubelet.convertToAPIContainerStatuses(
-				tCtx,
+				ctx,
 				pod,
 				currentStatus,
 				[],
@@ -3330,10 +3322,9 @@ browser.describe("convertToAPIContainerStatuses", () => {
 });
 
 // Models kubernetes/pkg/kubelet/prober/prober_manager.go UpdatePodStatus.
-browser.describe("probeManagerUpdatePodStatus", () => {
+browser.describe("probeManagerUpdatePodStatus", ({ ctx }) => {
 	it("preserves old started true for a running container with a pending startup probe when kubelet restart status changes are disabled", async () => {
-		const tCtx = context.background();
-		const testKubelet = newTestKubelet(false);
+		const testKubelet = newTestKubelet(ctx, false);
 		const pod: V1Pod = {
 			metadata: {
 				uid: "pod-uid",
@@ -3363,20 +3354,19 @@ browser.describe("probeManagerUpdatePodStatus", () => {
 			],
 		};
 		const probeManager = new ProbeManagerImpl(
-			tCtx,
+			ctx,
 			testKubelet.kubelet.statusManager,
 			new ResultsManager(),
 			new ResultsManager(),
 			new ResultsManager(),
 			new FakeContainerCommandRunner(),
 			testKubelet.kubelet.recorder,
-			testKubelet.fakeClock,
 			new ClusterNetwork(),
 		);
 
 		try {
-			probeManager.addPod(tCtx, pod);
-			probeManager.updatePodStatus(tCtx, pod, podStatus);
+			probeManager.addPod(ctx, pod);
+			probeManager.updatePodStatus(ctx, pod, podStatus);
 
 			expect(podStatus.containerStatuses?.[0]?.started).toBe(true);
 		} finally {
@@ -3387,7 +3377,7 @@ browser.describe("probeManagerUpdatePodStatus", () => {
 });
 
 // Models kubernetes/pkg/kubelet/kubelet_pods_test.go TestConvertToAPIContainerStatusesForResources.
-browser.describe("convertToAPIContainerStatusesForResources", () => {
+browser.describe("convertToAPIContainerStatusesForResources", ({ ctx }) => {
 	const nowTime = new Date();
 	const testContainerName = "ctr0";
 	const testContainerID = buildContainerID("test", testContainerName);
@@ -3543,12 +3533,11 @@ browser.describe("convertToAPIContainerStatusesForResources", () => {
 	];
 
 	it.each(testCases)("$tdesc", async ({ state, oldStatus, expected }) => {
-		const tCtx = context.background();
-		const testKubelet = newTestKubelet(false);
+		const testKubelet = newTestKubelet(ctx, false);
 
 		try {
 			const cStatuses = testKubelet.kubelet.convertToAPIContainerStatuses(
-				tCtx,
+				ctx,
 				testPod,
 				testPodStatus(state ?? "Running"),
 				[oldStatus],
@@ -3567,7 +3556,7 @@ browser.describe("convertToAPIContainerStatusesForResources", () => {
 });
 
 // Models kubernetes/pkg/kubelet/kubelet_pods_test.go Test_generateAPIPodStatus.
-browser.describe("generateAPIPodStatus", () => {
+browser.describe("generateAPIPodStatus", ({ ctx }) => {
 	const now = new Date("2026-01-02T03:04:05.000Z");
 	const desiredState = {
 		nodeName: "machine",
@@ -4080,8 +4069,7 @@ browser.describe("generateAPIPodStatus", () => {
 	];
 
 	it.each(tests)("$name", async (test) => {
-		const tCtx = context.background();
-		const testKubelet = newTestKubelet(false);
+		const testKubelet = newTestKubelet(ctx, false);
 		try {
 			const kl = testKubelet.kubelet;
 			await kl.statusManager.setPodStatus(test.pod, test.previousStatus);
@@ -4097,7 +4085,7 @@ browser.describe("generateAPIPodStatus", () => {
 				);
 			}
 			const actual = await kl.generateAPIPodStatus(
-				tCtx,
+				ctx,
 				test.pod,
 				test.currentStatus,
 				test.isPodTerminal ?? false,
@@ -4130,8 +4118,7 @@ browser.describe("generateAPIPodStatus", () => {
 
 	// Simulator only test
 	it("does not copy unrelated fields from the old pod status", async () => {
-		const tCtx = context.background();
-		const testKubelet = newTestKubelet(false);
+		const testKubelet = newTestKubelet(ctx, false);
 		try {
 			const pod: V1Pod = {
 				metadata: { uid: "123456", name: "my-pod" },
@@ -4144,7 +4131,7 @@ browser.describe("generateAPIPodStatus", () => {
 			});
 
 			const actual = await testKubelet.kubelet.generateAPIPodStatus(
-				tCtx,
+				ctx,
 				pod,
 				{
 					...sandboxReadyStatus,
@@ -4164,7 +4151,7 @@ browser.describe("generateAPIPodStatus", () => {
 });
 
 // Models kubernetes/pkg/kubelet/kubelet_pods_test.go TestGenerateAPIPodStatusPodIPs.
-browser.describe("generateAPIPodStatusPodIPs", () => {
+browser.describe("generateAPIPodStatusPodIPs", ({ ctx }) => {
 	const tests: Array<{
 		name: string;
 		nodeIP: string;
@@ -4240,8 +4227,7 @@ browser.describe("generateAPIPodStatusPodIPs", () => {
 	];
 
 	it.each(tests)("$name", async (test) => {
-		const tCtx = context.background();
-		const testKubelet = newTestKubelet(false);
+		const testKubelet = newTestKubelet(ctx, false);
 		try {
 			const kl = testKubelet.kubelet;
 			if (test.nodeIP !== "") {
@@ -4249,7 +4235,7 @@ browser.describe("generateAPIPodStatusPodIPs", () => {
 			}
 			const pod = podWithUIDNameNs("12345", "test-pod", "test-namespace");
 			const status = await kl.generateAPIPodStatus(
-				tCtx,
+				ctx,
 				pod,
 				{
 					id: pod.metadata?.uid ?? "",
@@ -4309,7 +4295,7 @@ browser.describe("truncatePodHostname", () => {
 });
 
 // Models kubernetes/pkg/kubelet/kubelet_pods_test.go TestGenerateAPIPodStatusHostNetworkPodIPs.
-browser.describe("generateAPIPodStatusHostNetworkPodIPs", () => {
+browser.describe("generateAPIPodStatusHostNetworkPodIPs", ({ ctx }) => {
 	const testcases: Array<{
 		name: string;
 		nodeAddresses: V1NodeAddress[];
@@ -4381,8 +4367,7 @@ browser.describe("generateAPIPodStatusHostNetworkPodIPs", () => {
 	];
 
 	it.each(testcases)("$name", async (test) => {
-		const tCtx = context.background();
-		const testKubelet = newTestKubelet(false);
+		const testKubelet = newTestKubelet(ctx, false);
 		try {
 			const kl = testKubelet.kubelet;
 			const node = {
@@ -4400,7 +4385,7 @@ browser.describe("generateAPIPodStatusHostNetworkPodIPs", () => {
 				hostNetwork: true,
 			};
 			const status = await kl.generateAPIPodStatus(
-				tCtx,
+				ctx,
 				pod,
 				{
 					id: pod.metadata?.uid ?? "",
@@ -4426,7 +4411,7 @@ browser.describe("generateAPIPodStatusHostNetworkPodIPs", () => {
 });
 
 // Models kubernetes/pkg/kubelet/kubelet_pods_test.go TestSortPodIPs.
-browser.describe("sortPodIPs", () => {
+browser.describe("sortPodIPs", ({ ctx }) => {
 	const testcases: Array<{
 		name: string;
 		nodeIP: string;
@@ -4508,7 +4493,7 @@ browser.describe("sortPodIPs", () => {
 	];
 
 	it.each(testcases)("$name", async (test) => {
-		const testKubelet = newTestKubelet(false);
+		const testKubelet = newTestKubelet(ctx, false);
 		try {
 			const kl = testKubelet.kubelet;
 			if (test.nodeIP !== "") {

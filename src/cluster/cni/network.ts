@@ -1,6 +1,5 @@
 import { EventEmitter } from "events";
 
-import { Clock } from "../../clock";
 import { CIDR, isIPLiteral } from "../../net";
 import {
 	type DnsHandler,
@@ -70,7 +69,6 @@ export interface NetworkResponseEvent {
 
 export interface ClusterNetworkOptions {
 	clusterDNS?: readonly string[];
-	clock?: Clock;
 }
 
 const internalIPCIDRs = [
@@ -171,11 +169,9 @@ export class ClusterNetwork extends EventEmitter {
 	private servicesByNodePort = new Map<number, NodePortRoute>();
 	private targetListsByServicePort = new Map<string, TargetList>();
 	private nextRequestID = 1;
-	private readonly clock: Clock;
 
 	constructor(private readonly options: ClusterNetworkOptions = {}) {
 		super();
-		this.clock = options.clock ?? new Clock();
 	}
 
 	public override on(event: "request", handler: (event: NetworkRequestEvent) => void): this;
@@ -793,7 +789,7 @@ export class ClusterNetwork extends EventEmitter {
 		}
 		const selected = await select()
 			.case(ctx.done(), () => ctx.err() ?? context.Canceled)
-			.case(time.after(this.clock, latencyMs), () => undefined);
+			.case(time.after(ctx, latencyMs), () => undefined);
 		if (selected) {
 			throw selected;
 		}

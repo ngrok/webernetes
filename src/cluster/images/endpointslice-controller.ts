@@ -215,33 +215,30 @@ export class EndpointSliceController extends BaseImage {
 		const name = slice.metadata?.name ?? "";
 		const namespace = slice.metadata?.namespace ?? "default";
 		try {
-			await retryConflicts(
-				async () => {
-					try {
-						const current = await ctx.api.discoveryv1.readNamespacedEndpointSlice({
-							name,
-							namespace,
-						});
-						await ctx.api.discoveryv1.replaceNamespacedEndpointSlice({
-							name,
-							namespace,
-							body: {
-								...slice,
-								metadata: {
-									...slice.metadata,
-									resourceVersion: current.metadata?.resourceVersion,
-								},
+			await retryConflicts(ctx, async () => {
+				try {
+					const current = await ctx.api.discoveryv1.readNamespacedEndpointSlice({
+						name,
+						namespace,
+					});
+					await ctx.api.discoveryv1.replaceNamespacedEndpointSlice({
+						name,
+						namespace,
+						body: {
+							...slice,
+							metadata: {
+								...slice.metadata,
+								resourceVersion: current.metadata?.resourceVersion,
 							},
-						});
-					} catch (error) {
-						if (!isNotFoundError(error)) {
-							throw error;
-						}
-						await ctx.api.discoveryv1.createNamespacedEndpointSlice({ namespace, body: slice });
+						},
+					});
+				} catch (error) {
+					if (!isNotFoundError(error)) {
+						throw error;
 					}
-				},
-				{ clock: ctx.clock },
-			);
+					await ctx.api.discoveryv1.createNamespacedEndpointSlice({ namespace, body: slice });
+				}
+			});
 		} catch (error) {
 			if (!isNotFoundError(error)) {
 				throw error;

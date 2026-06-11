@@ -3,7 +3,6 @@
  * Derived from Kubernetes, translated and modified for Webernetes.
  */
 import type { V1Container, V1LifecycleHandler, V1Pod } from "../../../client";
-import type { Clock } from "../../../clock";
 import { select } from "../../../go/channel";
 import type * as context from "../../../go/context";
 import * as time from "../../../go/time";
@@ -27,7 +26,6 @@ interface PodStatusProvider {
 }
 
 export interface HandlerRunnerOptions {
-	clock: Clock;
 	commandRunner: CommandRunner;
 	containerManager: PodStatusProvider;
 	eventRecorder: EventRecorder;
@@ -41,14 +39,12 @@ export function newHandlerRunner(options: HandlerRunnerOptions): HandlerRunner {
 
 // Models kubernetes/pkg/kubelet/lifecycle/handlers.go handlerRunner.
 class LifecycleHandlerRunner implements HandlerRunner {
-	private readonly clock: Clock;
 	private readonly commandRunner: CommandRunner;
 	private readonly containerManager: PodStatusProvider;
 	private readonly eventRecorder: EventRecorder;
 	private readonly network: ClusterNetwork;
 
 	constructor(options: HandlerRunnerOptions) {
-		this.clock = options.clock;
 		this.commandRunner = options.commandRunner;
 		this.containerManager = options.containerManager;
 		this.eventRecorder = options.eventRecorder;
@@ -102,7 +98,7 @@ class LifecycleHandlerRunner implements HandlerRunner {
 	private async runSleepHandler(ctx: context.Context, seconds: number): Promise<Error | undefined> {
 		const selected = await select()
 			.case(ctx.done(), () => "done")
-			.case(time.after(this.clock, seconds * 1000), () => "timeout");
+			.case(time.after(ctx, seconds * 1000), () => "timeout");
 		if (selected === "done") {
 			return new Error("container terminated before sleep hook finished");
 		}

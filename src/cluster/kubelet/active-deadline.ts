@@ -5,6 +5,8 @@
 import type { V1Pod, V1PodStatus } from "../../client";
 import type { EventRecorder } from "../../client-go/tools/record/event";
 import type { Clock } from "../../clock";
+import { getClock } from "../../clock-context";
+import type * as context from "../../go/context";
 import type { PodSyncLoopHandler, PodSyncHandler, ShouldEvictResponse } from "./lifecycle";
 
 const reason = "DeadlineExceeded";
@@ -53,15 +55,15 @@ export class ActiveDeadlineHandler implements PodSyncLoopHandler, PodSyncHandler
 
 // Models kubernetes/pkg/kubelet/active_deadline.go newActiveDeadlineHandler.
 export function newActiveDeadlineHandler(
+	ctx: context.Context,
 	podStatusProvider: PodStatusProvider | undefined,
 	recorder: EventRecorder | undefined,
-	clock: Clock | undefined,
 ): [activeDeadlineHandler: ActiveDeadlineHandler | undefined, err: Error | undefined] {
-	if (!clock || !podStatusProvider || !recorder) {
+	if (!podStatusProvider || !recorder) {
 		return [
 			undefined,
-			new Error(`required arguments must not be nil: ${clock}, ${podStatusProvider}, ${recorder}`),
+			new Error(`required arguments must not be nil: ${podStatusProvider}, ${recorder}`),
 		];
 	}
-	return [new ActiveDeadlineHandler(podStatusProvider, recorder, clock), undefined];
+	return [new ActiveDeadlineHandler(podStatusProvider, recorder, getClock(ctx)), undefined];
 }

@@ -3,7 +3,7 @@
  * Derived from Kubernetes, translated and modified for Webernetes.
  */
 import { Channel, type ReadOnlyChannel } from "./channel";
-import { Clock } from "../clock";
+import { getClock } from "../clock-context";
 
 export class ContextError extends Error {}
 
@@ -177,11 +177,7 @@ export function withValue(parent: Context, key: unknown, val: unknown): Context 
 }
 
 // Models go/src/context/context.go WithTimeout.
-export function withTimeout(
-	parent: Context,
-	timeoutMs: number,
-	clock = new Clock(),
-): [Context, CancelFunc] {
+export function withTimeout(parent: Context, timeoutMs: number): [Context, CancelFunc] {
 	const context = newCancelContext(parent);
 	const cancel = () => {
 		context.cancel(true, Canceled);
@@ -193,6 +189,7 @@ export function withTimeout(
 		context.cancel(true, DeadlineExceeded);
 		return [context, cancel];
 	}
+	const clock = getClock(parent);
 	const timer = clock.setTimeout(() => {
 		context.cancel(true, DeadlineExceeded);
 	}, timeoutMs);

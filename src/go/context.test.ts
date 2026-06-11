@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 
-import { Clock } from "../clock";
+import { getClock } from "../clock-context";
 import { select } from "./channel";
 import * as context from "./context";
 import { browser } from "../test/describe";
@@ -14,7 +14,7 @@ import { browser } from "../test/describe";
 //   contexts, AfterFunc, goroutine allocation tests, and benchmarks.
 // - Tests that inspect Go's unexported child maps directly. We verify the
 //   observable behavior instead.
-browser.describe("Context", () => {
+browser.describe("Context", ({ ctx }) => {
 	// Mirrors Go TestBackground, lines 59-71:
 	// https://github.com/golang/go/blob/go1.26.0/src/context/x_test.go#L59-L71
 	it("background is never canceled", async () => {
@@ -223,18 +223,18 @@ browser.describe("Context", () => {
 	// Mirrors Go TestTimeout's observable deadline behavior, lines 171-184:
 	// https://github.com/golang/go/blob/go1.26.0/src/context/x_test.go#L171-L184
 	it("withTimeout closes done with DeadlineExceeded after the timeout", async () => {
-		const clock = new Clock();
+		const clock = getClock(ctx);
 		clock.pause();
-		const [ctx, cancel] = context.withTimeout(context.background(), 1000, clock);
+		const [timeoutCtx, cancel] = context.withTimeout(ctx, 1000);
 
 		try {
-			await expect(doneIsReady(ctx)).resolves.toBe(false);
+			await expect(doneIsReady(timeoutCtx)).resolves.toBe(false);
 
 			clock.step(1000);
 
-			await expect(doneIsReady(ctx)).resolves.toBe(true);
-			expect(ctx.err()).toBe(context.DeadlineExceeded);
-			expect(context.cause(ctx)).toBe(context.DeadlineExceeded);
+			await expect(doneIsReady(timeoutCtx)).resolves.toBe(true);
+			expect(timeoutCtx.err()).toBe(context.DeadlineExceeded);
+			expect(context.cause(timeoutCtx)).toBe(context.DeadlineExceeded);
 		} finally {
 			cancel();
 		}
@@ -243,10 +243,10 @@ browser.describe("Context", () => {
 	// Mirrors Go TestCanceledTimeout, lines 188-199:
 	// https://github.com/golang/go/blob/go1.26.0/src/context/x_test.go#L188-L199
 	it("canceling withTimeout propagates synchronously as Canceled", async () => {
-		const clock = new Clock();
+		const clock = getClock(ctx);
 		clock.pause();
-		const [parent] = context.withTimeout(context.background(), 1000, clock);
-		const [child, cancel] = context.withTimeout(parent, 60 * 60 * 1000, clock);
+		const [parent] = context.withTimeout(ctx, 1000);
+		const [child, cancel] = context.withTimeout(parent, 60 * 60 * 1000);
 
 		cancel();
 
@@ -263,10 +263,10 @@ browser.describe("Context", () => {
 	// Mirrors Go XTestParentFinishesChild timer-child behavior, lines 45-52 and 94-119:
 	// https://github.com/golang/go/blob/go1.26.0/src/context/context_test.go#L45-L52
 	it("canceling a parent cancels timeout children synchronously", async () => {
-		const clock = new Clock();
+		const clock = getClock(ctx);
 		clock.pause();
-		const [parent, cancelParent] = context.withCancel(context.background());
-		const [timerChild, stop] = context.withTimeout(parent, 60 * 60 * 1000, clock);
+		const [parent, cancelParent] = context.withCancel(ctx);
+		const [timerChild, stop] = context.withTimeout(parent, 60 * 60 * 1000);
 
 		try {
 			await expect(doneIsReady(parent)).resolves.toBe(false);
@@ -287,11 +287,11 @@ browser.describe("Context", () => {
 	// lines 45-52 and 94-119:
 	// https://github.com/golang/go/blob/go1.26.0/src/context/context_test.go#L45-L52
 	it("canceling a parent cancels timeout children through value contexts", async () => {
-		const clock = new Clock();
+		const clock = getClock(ctx);
 		clock.pause();
-		const [parent, cancelParent] = context.withCancel(context.background());
+		const [parent, cancelParent] = context.withCancel(ctx);
 		const valueChild = context.withValue(parent, "key", "value");
-		const [timerChild, stop] = context.withTimeout(valueChild, 60 * 60 * 1000, clock);
+		const [timerChild, stop] = context.withTimeout(valueChild, 60 * 60 * 1000);
 
 		try {
 			await expect(doneIsReady(parent)).resolves.toBe(false);
@@ -313,10 +313,10 @@ browser.describe("Context", () => {
 	});
 
 	it("timeout child expiration does not cancel the parent", async () => {
-		const clock = new Clock();
+		const clock = getClock(ctx);
 		clock.pause();
-		const [parent, cancelParent] = context.withCancel(context.background());
-		const [child, cancelChild] = context.withTimeout(parent, 1000, clock);
+		const [parent, cancelParent] = context.withCancel(ctx);
+		const [child, cancelChild] = context.withTimeout(parent, 1000);
 
 		try {
 			clock.step(1000);
@@ -473,9 +473,9 @@ browser.describe("Context", () => {
 			{
 				name: "WithTimeout",
 				ctx: () => {
-					const [ctx, cancel] = context.withTimeout(context.background(), 0);
+					const [timeoutCtx, cancel] = context.withTimeout(ctx, 0);
 					cancel();
-					return ctx;
+					return timeoutCtx;
 				},
 				err: context.DeadlineExceeded,
 				cause: context.DeadlineExceeded,
@@ -483,9 +483,9 @@ browser.describe("Context", () => {
 			{
 				name: "WithTimeout canceled",
 				ctx: () => {
-					const [ctx, cancel] = context.withTimeout(context.background(), 60 * 60 * 1000);
+					const [timeoutCtx, cancel] = context.withTimeout(ctx, 60 * 60 * 1000);
 					cancel();
-					return ctx;
+					return timeoutCtx;
 				},
 				err: context.Canceled,
 				cause: context.Canceled,
@@ -493,9 +493,9 @@ browser.describe("Context", () => {
 		];
 
 		for (const test of tests) {
-			const ctx = test.ctx();
-			expect(ctx.err()).toBe(test.err);
-			expect(context.cause(ctx)).toBe(test.cause);
+			const gotCtx = test.ctx();
+			expect(gotCtx.err()).toBe(test.err);
+			expect(context.cause(gotCtx)).toBe(test.cause);
 		}
 	});
 });

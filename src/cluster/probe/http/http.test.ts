@@ -5,7 +5,7 @@
 // oxlint-disable jest/no-conditional-expect
 import { expect, it } from "vitest";
 
-import { Clock } from "../../../clock";
+import { getClock } from "../../../clock-context";
 import * as context from "../../../go/context";
 import { browser } from "../../../test/describe";
 import { ClusterNetwork, type FetchOrigin } from "../../cni";
@@ -155,9 +155,9 @@ function handleReq(s: number, body: string): HTTPHandler {
 	};
 }
 
-browser.describe("HTTPProber cancellation", () => {
+browser.describe("HTTPProber cancellation", ({ ctx }) => {
 	it("cancels the request context when the probe times out", async () => {
-		const clock = new Clock();
+		const clock = getClock(ctx);
 		clock.pause();
 		const network = new ClusterNetwork();
 		let handlerDone: Promise<unknown> | undefined;
@@ -166,7 +166,7 @@ browser.describe("HTTPProber cancellation", () => {
 			await handlerDone;
 			return { status: 200, body: "late" };
 		});
-		const prober = new HTTPProber(context.background(), clock, network);
+		const prober = new HTTPProber(ctx, network);
 		const probePromise = prober.probe(testOrigin, networkRequest(host, 8080), 1000);
 
 		await Promise.resolve();
@@ -177,9 +177,9 @@ browser.describe("HTTPProber cancellation", () => {
 	});
 
 	it("cancels the request context when the parent context is canceled", async () => {
-		const clock = new Clock();
+		const clock = getClock(ctx);
 		clock.pause();
-		const [parentCtx, cancel] = context.withCancel(context.background());
+		const [parentCtx, cancel] = context.withCancel(ctx);
 		const network = new ClusterNetwork();
 		let handlerDone: Promise<unknown> | undefined;
 		const host = bindTestHTTP(network, 8080, async (ctx) => {
@@ -187,7 +187,7 @@ browser.describe("HTTPProber cancellation", () => {
 			await handlerDone;
 			return { status: 200, body: "late" };
 		});
-		const prober = new HTTPProber(parentCtx, clock, network);
+		const prober = new HTTPProber(parentCtx, network);
 		const probePromise = prober.probe(testOrigin, networkRequest(host, 8080), 10_000);
 
 		await Promise.resolve();

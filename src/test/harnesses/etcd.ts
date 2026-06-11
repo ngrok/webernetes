@@ -3,10 +3,12 @@ import type { SuiteOptions } from "../describe";
 import type { Etcd3 } from "etcd3";
 
 import type { Etcd } from "../../cluster/etcd";
+import type * as context from "../../go/context";
 
 export type EtcdTestTarget = "fake" | "real";
 
 export interface EtcdTestContext {
+	ctx: context.Context;
 	target: EtcdTestTarget;
 	name: string;
 	createEtcd: () => Promise<Etcd | Etcd3>;

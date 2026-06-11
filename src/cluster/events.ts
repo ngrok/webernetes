@@ -2,11 +2,12 @@ import * as k8s from "../client";
 import { isNotFoundError } from "../client/errors";
 import type { V1ObjectReference } from "../client";
 import type { EventObject, EventRecorder } from "../client-go/tools/record/event";
-import type { Clock } from "../clock";
+import { getClock } from "../clock-context";
+import type * as context from "../go/context";
 
 export interface EventRecorderOptions {
+	ctx: context.Context;
 	api: k8s.KubeClient["corev1"];
-	clock: Clock;
 	component: string;
 	host?: string;
 }
@@ -53,7 +54,7 @@ export class EventRecorderImpl implements EventRecorder {
 			return;
 		}
 
-		const now = this.options.clock.now();
+		const now = getClock(this.options.ctx).now();
 		try {
 			await this.options.api.createNamespacedEvent({
 				namespace,

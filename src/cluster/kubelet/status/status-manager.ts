@@ -11,7 +11,7 @@ import type {
 	V1PodStatus,
 } from "../../../client";
 import { isNotFoundError } from "../../../client/errors";
-import type { Clock } from "../../../clock";
+import { getClock } from "../../../clock-context";
 import type { KubeClient } from "../../cluster";
 import { deepEqual, dropUndefinedFields } from "../../../deep-equal";
 import { Channel, select } from "../../../go/channel";
@@ -37,7 +37,7 @@ import {
 } from "./generate";
 
 export interface StatusManagerOptions {
-	clock: Clock;
+	ctx: Context;
 	kubeClient: KubeClient;
 	podManager: PodManager;
 	podDeletionSafety: PodDeletionSafetyProvider;
@@ -110,17 +110,17 @@ export class StatusManagerImpl implements StatusManager {
 	// TypeScript-only teardown handle. Upstream Start launches a goroutine and
 	// returns void; kubelet.close awaits this promise so the ticker is stopped.
 	private startPromise: Promise<void> | undefined;
-	private readonly clock: Clock;
+	private readonly ctx: Context;
 	private readonly notifiers: PodUpdateNotifier[] = [];
 
 	constructor({
-		clock,
+		ctx,
 		kubeClient,
 		podManager,
 		podDeletionSafety,
 		podStartupLatencyHelper,
 	}: StatusManagerOptions) {
-		this.clock = clock;
+		this.ctx = ctx;
 		this.kubeClient = kubeClient;
 		this.podManager = podManager;
 		this.podDeletionSafety = podDeletionSafety;
@@ -130,7 +130,7 @@ export class StatusManagerImpl implements StatusManager {
 	// Models kubernetes/pkg/kubelet/status/status_manager.go Start.
 	start(ctx: Context): Promise<void> {
 		this.startPromise ??= (async () => {
-			const syncTicker = new time.Ticker(this.clock, syncPeriodMs);
+			const syncTicker = new time.Ticker(ctx, syncPeriodMs);
 			try {
 				while (!ctx.err()) {
 					await select()
@@ -475,18 +475,18 @@ export class StatusManagerImpl implements StatusManager {
 			return [false, undefined];
 		}
 
-		updateLastTransitionTime(this.clock, status, oldStatus, "ContainersReady");
-		updateLastTransitionTime(this.clock, status, oldStatus, "Ready");
-		updateLastTransitionTime(this.clock, status, oldStatus, "Initialized");
-		updateLastTransitionTime(this.clock, status, oldStatus, "PodReadyToStartContainers");
-		updateLastTransitionTime(this.clock, status, oldStatus, "PodScheduled");
-		updateLastTransitionTime(this.clock, status, oldStatus, "DisruptionTarget");
-		updateLastTransitionTime(this.clock, status, oldStatus, "AllContainersRestarting");
+		updateLastTransitionTime(this.ctx, status, oldStatus, "ContainersReady");
+		updateLastTransitionTime(this.ctx, status, oldStatus, "Ready");
+		updateLastTransitionTime(this.ctx, status, oldStatus, "Initialized");
+		updateLastTransitionTime(this.ctx, status, oldStatus, "PodReadyToStartContainers");
+		updateLastTransitionTime(this.ctx, status, oldStatus, "PodScheduled");
+		updateLastTransitionTime(this.ctx, status, oldStatus, "DisruptionTarget");
+		updateLastTransitionTime(this.ctx, status, oldStatus, "AllContainersRestarting");
 
 		if (oldStatus.startTime) {
 			status.startTime = new Date(oldStatus.startTime);
 		} else if (!status.startTime) {
-			status.startTime = this.clock.now();
+			status.startTime = getClock(this.ctx).now();
 		}
 
 		if ((oldStatus.observedGeneration ?? 0) > (status.observedGeneration ?? 0)) {
@@ -511,7 +511,7 @@ export class StatusManagerImpl implements StatusManager {
 		// so we track the time from the first status update until we retire it to
 		// the API.
 		if (cachedStatus?.at === undefined) {
-			newStatus.at = this.clock.now();
+			newStatus.at = getClock(this.ctx).now();
 		} else {
 			newStatus.at = cachedStatus.at;
 		}
@@ -640,7 +640,7 @@ export class StatusManagerImpl implements StatusManager {
 		}
 
 		const mergedStatus = mergePodStatus(
-			this.clock,
+			this.ctx,
 			pod,
 			pod.status ?? {},
 			status.status,
@@ -726,11 +726,12 @@ export class StatusManagerImpl implements StatusManager {
 
 // Models kubernetes/pkg/kubelet/status/status_manager.go updateLastTransitionTime.
 export function updateLastTransitionTime(
-	clock: Clock,
+	ctx: Context,
 	status: V1PodStatus,
 	oldStatus: V1PodStatus,
 	conditionType: V1PodCondition["type"],
 ): void {
+	const clock = getClock(ctx);
 	const condition = podutil.getPodCondition(status, conditionType);
 	if (!condition) {
 		return;
@@ -746,7 +747,7 @@ export function updateLastTransitionTime(
 
 // Models kubernetes/pkg/kubelet/status/status_manager.go mergePodStatus.
 export function mergePodStatus(
-	clock: Clock,
+	ctx: Context,
 	pod: V1Pod,
 	oldPodStatus: V1PodStatus,
 	newPodStatus: V1PodStatus,
@@ -772,7 +773,7 @@ export function mergePodStatus(
 		} else if (kubetypes.podConditionSharedByKubelet(c.type)) {
 			if (c.type === "DisruptionTarget") {
 				if (transitioningToTerminalPhase && !couldHaveRunningContainers) {
-					updateLastTransitionTime(clock, newPodStatus, oldPodStatus, c.type);
+					updateLastTransitionTime(ctx, newPodStatus, oldPodStatus, c.type);
 					const [, updatedCondition] = podutil.getPodConditionFromList(
 						newPodStatus.conditions,
 						c.type,
@@ -807,14 +808,14 @@ export function mergePodStatus(
 			oldPodStatus,
 			newPodStatus.phase,
 		);
-		podutil.updatePodCondition(clock, newPodStatus, containersReadyCondition);
+		podutil.updatePodCondition(ctx, newPodStatus, containersReadyCondition);
 
 		const podReadyCondition = generatePodReadyConditionForTerminalPhase(
 			pod,
 			oldPodStatus,
 			newPodStatus.phase,
 		);
-		podutil.updatePodCondition(clock, newPodStatus, podReadyCondition);
+		podutil.updatePodCondition(ctx, newPodStatus, podReadyCondition);
 	}
 
 	return newPodStatus;

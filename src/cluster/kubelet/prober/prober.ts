@@ -4,7 +4,6 @@
  */
 import type { V1Container, V1Pod, V1PodStatus, V1Probe } from "../../../client";
 import type { EventRecorder } from "../../../client-go/tools/record/event";
-import type { Clock } from "../../../clock";
 import type * as context from "../../../go/context";
 import type { ClusterNetwork } from "../../cni";
 import {
@@ -33,12 +32,11 @@ export class Prober {
 	constructor(
 		ctx: context.Context,
 		readonly runner: CommandRunner | undefined,
-		clock: Clock,
 		network: ClusterNetwork,
 		readonly recorder: EventRecorder | undefined,
 	) {
 		this.exec = new ExecProber();
-		this.http = new HTTPProber(ctx, clock, network);
+		this.http = new HTTPProber(ctx, network);
 		this.tcp = new TCPProber(network);
 	}
 

@@ -12,8 +12,8 @@ import {
 	type V1PodStatus,
 	type V1Probe,
 } from "../../../client";
-import type { Clock } from "../../../clock";
-import * as context from "../../../go/context";
+import { Clock } from "../../../clock";
+import { getClock } from "../../../clock-context";
 import { browser } from "../../../test/describe";
 import { buildContainerID } from "../container";
 import {
@@ -58,10 +58,8 @@ function setOnlyRunningStartedAt(status: V1PodStatus, startedAt: Date): void {
 }
 
 // Models kubernetes/pkg/kubelet/prober/worker_test.go TestDoProbe.
-browser.describe("TestDoProbe", () => {
+browser.describe("TestDoProbe", ({ ctx }) => {
 	it("handles regular-container probe states", async () => {
-		const ctx = context.background();
-
 		for (const probeType of [liveness, readiness, startup]) {
 			const runningStatus = getTestRunningStatusWithStarted(probeType !== startup);
 			const pendingStatus = getTestRunningStatusWithStarted(probeType !== startup);
@@ -156,7 +154,7 @@ browser.describe("TestDoProbe", () => {
 
 			for (let i = 0; i < tests.length; i++) {
 				const test = tests[i];
-				const m = newTestManager();
+				const m = newTestManager(ctx);
 				const w = newTestWorker(m, probeType, test?.probe ?? {});
 				if (test?.podStatus) {
 					await m.statusManager.setPodStatus(w.pod, test.podStatus);
@@ -179,10 +177,9 @@ browser.describe("TestDoProbe", () => {
 });
 
 // Models kubernetes/pkg/kubelet/prober/worker_test.go TestDoProbeWithContainerRestartRules.
-browser.describe("TestDoProbeWithContainerRestartRules", () => {
+browser.describe("TestDoProbeWithContainerRestartRules", ({ ctx }) => {
 	it("handles regular-container restart policy rules", async () => {
-		const ctx = context.background();
-		const m = newTestManager();
+		const m = newTestManager(ctx);
 		for (const probeType of [liveness, readiness, startup]) {
 			const restartPolicyAlways = "Always";
 			const restartPolicyNever = "Never";
@@ -272,10 +269,9 @@ browser.describe("TestDoProbeWithContainerRestartRules", () => {
 });
 
 // Models kubernetes/pkg/kubelet/prober/worker_test.go TestDoProbeWithContainerRestartAllContainers.
-browser.describe("TestDoProbeWithContainerRestartAllContainers", () => {
+browser.describe("TestDoProbeWithContainerRestartAllContainers", ({ ctx }) => {
 	it("handles regular-container restart-all rules", async () => {
-		const ctx = context.background();
-		const m = newTestManager();
+		const m = newTestManager(ctx);
 		for (const probeType of [liveness, readiness, startup]) {
 			const restartPolicyNever = "Never";
 			const testcases: Array<{
@@ -360,15 +356,15 @@ browser.describe("TestDoProbeWithContainerRestartAllContainers", () => {
 });
 
 // Models kubernetes/pkg/kubelet/prober/worker_test.go TestInitialDelay.
-browser.describe("TestInitialDelay", () => {
+browser.describe("TestInitialDelay", ({ ctx }) => {
 	it("honors initial delay for regular-container probes", async () => {
-		const ctx = context.background();
-		const m = newTestManager();
+		const m = newTestManager(ctx);
+		const clock = getClock(ctx);
 
 		for (const probeType of [liveness, readiness, startup]) {
 			const w = newTestWorker(m, probeType, { initialDelaySeconds: 10 });
 			const status = getTestRunningStatusWithStarted(probeType !== startup);
-			setOnlyRunningStartedAt(status, m.clock.now());
+			setOnlyRunningStartedAt(status, clock.now());
 			await m.statusManager.setPodStatus(w.pod, status);
 
 			expectContinue(w, await w.doProbe(ctx), "during initial delay");
@@ -385,7 +381,7 @@ browser.describe("TestInitialDelay", () => {
 			}
 
 			const laterStatus = getTestRunningStatusWithStarted(probeType !== startup);
-			setOnlyRunningStartedAt(laterStatus, new Date(m.clock.nowMs() - 100_000));
+			setOnlyRunningStartedAt(laterStatus, new Date(clock.nowMs() - 100_000));
 			await m.statusManager.setPodStatus(w.pod, laterStatus);
 
 			expectContinue(w, await w.doProbe(ctx), "after initial delay");
@@ -395,11 +391,11 @@ browser.describe("TestInitialDelay", () => {
 	});
 
 	it("truncates subsecond start-time skew for zero initial delay", async () => {
-		const ctx = context.background();
-		const m = newTestManager();
+		const m = newTestManager(ctx);
+		const clock = getClock(ctx);
 		const w = newTestWorker(m, readiness, {});
 		const status = getTestRunningStatus();
-		setOnlyRunningStartedAt(status, new Date(m.clock.nowMs() + 1));
+		setOnlyRunningStartedAt(status, new Date(clock.nowMs() + 1));
 		await m.statusManager.setPodStatus(w.pod, status);
 
 		expectContinue(w, await w.doProbe(ctx), "subsecond future start time");
@@ -408,10 +404,9 @@ browser.describe("TestInitialDelay", () => {
 });
 
 // Models kubernetes/pkg/kubelet/prober/worker_test.go TestFailureThreshold.
-browser.describe("TestFailureThreshold", () => {
+browser.describe("TestFailureThreshold", ({ ctx }) => {
 	it("applies failure threshold", async () => {
-		const ctx = context.background();
-		const m = newTestManager();
+		const m = newTestManager(ctx);
 		const w = newTestWorker(m, readiness, { successThreshold: 1, failureThreshold: 3 });
 		await m.statusManager.setPodStatus(w.pod, getTestRunningStatus());
 
@@ -440,10 +435,9 @@ browser.describe("TestFailureThreshold", () => {
 });
 
 // Models kubernetes/pkg/kubelet/prober/worker_test.go TestSuccessThreshold.
-browser.describe("TestSuccessThreshold", () => {
+browser.describe("TestSuccessThreshold", ({ ctx }) => {
 	it("applies success threshold", async () => {
-		const ctx = context.background();
-		const m = newTestManager();
+		const m = newTestManager(ctx);
 		const w = newTestWorker(m, readiness, { successThreshold: 3, failureThreshold: 1 });
 		await m.statusManager.setPodStatus(w.pod, getTestRunningStatus());
 		await w.resultsManager.set(testContainerID, "failure", {});
@@ -472,10 +466,9 @@ browser.describe("TestSuccessThreshold", () => {
 });
 
 // Models kubernetes/pkg/kubelet/prober/worker_test.go TestStartupProbeSuccessThreshold.
-browser.describe("TestStartupProbeSuccessThreshold", () => {
+browser.describe("TestStartupProbeSuccessThreshold", ({ ctx }) => {
 	it("puts startup probe on hold after success threshold", async () => {
-		const ctx = context.background();
-		const m = newTestManager();
+		const m = newTestManager(ctx);
 		const successThreshold = 1;
 		const failureThreshold = 3;
 		const w = newTestWorker(m, startup, {
@@ -500,10 +493,9 @@ browser.describe("TestStartupProbeSuccessThreshold", () => {
 });
 
 // Models kubernetes/pkg/kubelet/prober/worker_test.go TestStartupProbeFailureThreshold.
-browser.describe("TestStartupProbeFailureThreshold", () => {
+browser.describe("TestStartupProbeFailureThreshold", ({ ctx }) => {
 	it("puts startup probe on hold after failure threshold", async () => {
-		const ctx = context.background();
-		const m = newTestManager();
+		const m = newTestManager(ctx);
 		const successThreshold = 1;
 		const failureThreshold = 3;
 		const w = newTestWorker(m, startup, {
@@ -538,10 +530,9 @@ browser.describe("TestStartupProbeFailureThreshold", () => {
 });
 
 // Models kubernetes/pkg/kubelet/prober/worker_test.go TestCleanUp.
-browser.describe("TestCleanUp", () => {
+browser.describe("TestCleanUp", ({ ctx }) => {
 	it("clears results and workers when stopped", async () => {
-		const ctx = context.background();
-		const m = newTestManager();
+		const m = newTestManager(ctx);
 
 		for (const probeType of [liveness, readiness, startup]) {
 			const key = { podUid: testPodUID, containerName: testContainerName, probeType };
@@ -559,7 +550,7 @@ browser.describe("TestCleanUp", () => {
 				i++
 			) {
 				await Promise.resolve();
-				m.clock.step(1000);
+				getClock(ctx).step(1000);
 				await Promise.resolve();
 			}
 			expect(resultsManager(m, probeType).get(testContainerID), probeType).toBe("success");
@@ -567,7 +558,7 @@ browser.describe("TestCleanUp", () => {
 			for (let i = 0; i < 10; i++) {
 				w.stop();
 			}
-			await waitForWorkerExit(m.clock, m, key);
+			await waitForWorkerExit(getClock(ctx), m, key);
 			await run;
 
 			expect(resultsManager(m, probeType).get(testContainerID), probeType).toBeUndefined();
@@ -601,12 +592,10 @@ function resultsManager(m: ProbeManagerImpl, probeType: ProbeType): ResultsManag
 }
 
 // Models kubernetes/pkg/kubelet/prober/worker_test.go TestOnHoldOnLivenessOrStartupCheckFailure.
-browser.describe("TestOnHoldOnLivenessOrStartupCheckFailure", () => {
+browser.describe("TestOnHoldOnLivenessOrStartupCheckFailure", ({ ctx }) => {
 	it("holds liveness and startup probes after failure", async () => {
-		const ctx = context.background();
-
 		for (const probeType of [liveness, startup]) {
-			const m = newTestManager();
+			const m = newTestManager(ctx);
 			const w = newTestWorker(m, probeType, { successThreshold: 1, failureThreshold: 1 });
 			const status = getTestRunningStatusWithStarted(probeType !== startup);
 			await m.statusManager.setPodStatus(w.pod, status);
@@ -638,10 +627,9 @@ browser.describe("TestOnHoldOnLivenessOrStartupCheckFailure", () => {
 });
 
 // Models kubernetes/pkg/kubelet/prober/worker_test.go TestResultRunOnLivenessCheckFailure.
-browser.describe("TestResultRunOnLivenessCheckFailure", () => {
+browser.describe("TestResultRunOnLivenessCheckFailure", ({ ctx }) => {
 	it("resets result run after liveness failure threshold", async () => {
-		const ctx = context.background();
-		const m = newTestManager();
+		const m = newTestManager(ctx);
 		const w = newTestWorker(m, liveness, { successThreshold: 1, failureThreshold: 3 });
 		await m.statusManager.setPodStatus(w.pod, getTestRunningStatus());
 
@@ -671,10 +659,9 @@ browser.describe("TestResultRunOnLivenessCheckFailure", () => {
 });
 
 // Models kubernetes/pkg/kubelet/prober/worker_test.go TestResultRunOnStartupCheckFailure.
-browser.describe("TestResultRunOnStartupCheckFailure", () => {
+browser.describe("TestResultRunOnStartupCheckFailure", ({ ctx }) => {
 	it("resets result run after startup failure threshold", async () => {
-		const ctx = context.background();
-		const m = newTestManager();
+		const m = newTestManager(ctx);
 		const w = newTestWorker(m, startup, { successThreshold: 1, failureThreshold: 3 });
 		await m.statusManager.setPodStatus(w.pod, getTestRunningStatusWithStarted(false));
 
@@ -699,10 +686,9 @@ browser.describe("TestResultRunOnStartupCheckFailure", () => {
 });
 
 // Models kubernetes/pkg/kubelet/prober/worker_test.go TestDoProbe_TerminatedContainerWithRestartPolicyNever.
-browser.describe("TestDoProbe_TerminatedContainerWithRestartPolicyNever", () => {
+browser.describe("TestDoProbe_TerminatedContainerWithRestartPolicyNever", ({ ctx }) => {
 	it("stops probing regular terminated container when pod restart policy is Never", async () => {
-		const ctx = context.background();
-		const m = newTestManager();
+		const m = newTestManager(ctx);
 		const w = newTestWorker(m, startup, {});
 		w.container.restartPolicy = undefined;
 		if (!w.pod.spec) {
@@ -721,10 +707,9 @@ browser.describe("TestDoProbe_TerminatedContainerWithRestartPolicyNever", () => 
 });
 
 // Models kubernetes/pkg/kubelet/prober/worker_test.go TestLivenessProbeDisabledByStarted.
-browser.describe("TestLivenessProbeDisabledByStarted", () => {
+browser.describe("TestLivenessProbeDisabledByStarted", ({ ctx }) => {
 	it("disables liveness probe until container has started", async () => {
-		const ctx = context.background();
-		const m = newTestManager();
+		const m = newTestManager(ctx);
 		const w = newTestWorker(m, liveness, { successThreshold: 1, failureThreshold: 1 });
 		await m.statusManager.setPodStatus(w.pod, getTestRunningStatusWithStarted(false));
 		m.prober.exec = new FakeExecProber("failure");
@@ -740,10 +725,9 @@ browser.describe("TestLivenessProbeDisabledByStarted", () => {
 });
 
 // Models kubernetes/pkg/kubelet/prober/worker_test.go TestStartupProbeDisabledByStarted.
-browser.describe("TestStartupProbeDisabledByStarted", () => {
+browser.describe("TestStartupProbeDisabledByStarted", ({ ctx }) => {
 	it("disables startup probe after container has started", async () => {
-		const ctx = context.background();
-		const m = newTestManager();
+		const m = newTestManager(ctx);
 		const w = newTestWorker(m, startup, { successThreshold: 1, failureThreshold: 2 });
 		await m.statusManager.setPodStatus(w.pod, getTestRunningStatusWithStarted(false));
 		m.prober.exec = new FakeExecProber("failure");
@@ -765,7 +749,7 @@ browser.describe("TestStartupProbeDisabledByStarted", () => {
 });
 
 // Models kubernetes/pkg/kubelet/prober/worker_test.go TestChangeContainerStatusOnKubeletRestart.
-browser.describe("TestChangeContainerStatusOnKubeletRestart", () => {
+browser.describe("TestChangeContainerStatusOnKubeletRestart", ({ ctx }) => {
 	// Upstream rows for disabled feature gates and restartable init containers are outside the
 	// simulator's current feature-gate and init-container scope.
 	it.each([
@@ -830,8 +814,7 @@ browser.describe("TestChangeContainerStatusOnKubeletRestart", () => {
 			expectedResult: "unknown" as const,
 		},
 	])("$name", async (tc) => {
-		const ctx = context.background();
-		const m = newTestManager();
+		const m = newTestManager(ctx);
 		const podStatus = getTestRunningStatus();
 		const containerStatus = podStatus.containerStatuses?.[0];
 		if (!containerStatus?.state?.running) {

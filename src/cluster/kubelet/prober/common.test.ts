@@ -10,7 +10,7 @@ import {
 	type V1Probe,
 } from "../../../client";
 import { FakeRecorder } from "../../../client-go/tools/record/fake";
-import { Clock } from "../../../clock";
+import { getClock } from "../../../clock-context";
 import * as context from "../../../go/context";
 import type { ExecCmd, ExecProbe, ProbeResult } from "../../probe";
 import { ClusterNetwork } from "../../cni";
@@ -163,18 +163,20 @@ export function setTestProbe(pod: V1Pod, probeType: ProbeType, probeSpec: V1Prob
 }
 
 // Models kubernetes/pkg/kubelet/prober/common_test.go newTestManager.
-export function newTestManager(): ProbeManagerImpl {
-	const clock = new Clock();
-	clock.pause();
+export function newTestManager(ctx: context.Context): ProbeManagerImpl {
+	const clock = getClock(ctx);
+	if (!clock.isPaused()) {
+		clock.pause();
+	}
 	const kubeConfig = new KubeConfig({
-		clock,
-		etcd: new Etcd(clock),
+		ctx,
+		etcd: new Etcd(ctx),
 		nodePortRange: { from: 30000, to: 32767 },
 	});
 	const podManager = new PodManager();
 	podManager.addPod(getTestPod());
 	const statusManager = new StatusManagerImpl({
-		clock,
+		ctx,
 		kubeClient: new KubeClient(kubeConfig),
 		podManager,
 		podDeletionSafety: {
@@ -186,14 +188,13 @@ export function newTestManager(): ProbeManagerImpl {
 		},
 	});
 	const manager = new ProbeManagerImpl(
-		context.background(),
+		ctx,
 		statusManager,
 		new ResultsManager(),
 		new ResultsManager(),
 		new ResultsManager(),
 		undefined,
 		new FakeRecorder(),
-		clock,
 		new ClusterNetwork(),
 	);
 	manager.prober.exec = new FakeExecProber("success");
@@ -219,6 +220,23 @@ export class FakeExecProber implements ExecProbe {
 	) {}
 
 	set(result: ProbeResult, err?: Error): void {
+		this.result = result;
+		this.err = err;
+	}
+
+	async probe(_e: ExecCmd): Promise<[ProbeResult, string, Error | undefined]> {
+		return [this.result, "", this.err];
+	}
+}
+
+// Models kubernetes/pkg/kubelet/prober/common_test.go syncExecProber.
+export class SyncExecProber implements ExecProbe {
+	constructor(
+		private result: ProbeResult,
+		private err: Error | undefined,
+	) {}
+
+	set(result: ProbeResult, err: Error | undefined): void {
 		this.result = result;
 		this.err = err;
 	}

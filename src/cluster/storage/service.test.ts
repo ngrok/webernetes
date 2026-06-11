@@ -1,19 +1,20 @@
 import { afterEach, beforeEach, expect, it } from "vitest";
 
 import type { V1Service } from "../../client";
+import type * as context from "../../go/context";
 import { fakeEtcd } from "../../test/harnesses/etcd";
 import type { Etcd } from "../etcd";
 import { createBarrier } from "./helpers";
 import { NamespaceStore } from "./namespace";
 import { ServiceStore } from "./service";
 
-fakeEtcd.describe("ServiceStore allocation transactions", ({ createEtcd }) => {
+fakeEtcd.describe("ServiceStore allocation transactions", ({ ctx, createEtcd }) => {
 	let etcd: Etcd;
 
 	beforeEach(async () => {
 		etcd = (await createEtcd()) as Etcd;
 		await etcd.delete().all().exec();
-		await ServiceStore.initialize(etcd, { nodePortRange: { from: 30000, to: 30010 } });
+		await ServiceStore.initialize(ctx, etcd, { nodePortRange: { from: 30000, to: 30010 } });
 		await new NamespaceStore(etcd).create({ metadata: { name: "default" } });
 	});
 
@@ -23,7 +24,7 @@ fakeEtcd.describe("ServiceStore allocation transactions", ({ createEtcd }) => {
 
 	it("reverts allocations from a losing concurrent create", async () => {
 		const contended = new Map<number, V1Service>();
-		const store = new ContendedServiceStore(etcd, {
+		const store = new ContendedServiceStore(ctx, etcd, {
 			waitAtCreate: createBarrier(2),
 			onCreateReady: (service) => contended.set(service.spec?.ports?.[0]?.port ?? 0, service),
 		});
@@ -70,7 +71,7 @@ fakeEtcd.describe("ServiceStore allocation transactions", ({ createEtcd }) => {
 
 	it("reverts allocations from a losing concurrent update", async () => {
 		const contended = new Map<number, V1Service>();
-		const store = new ContendedServiceStore(etcd, {
+		const store = new ContendedServiceStore(ctx, etcd, {
 			waitAtUpdate: createBarrier(2),
 			onUpdateReady: (service) => contended.set(service.spec?.ports?.[0]?.port ?? 0, service),
 		});
@@ -129,10 +130,11 @@ interface ContendedServiceOptions {
 
 class ContendedServiceStore extends ServiceStore {
 	constructor(
+		ctx: context.Context,
 		etcd: Etcd,
 		private readonly contendedOptions: ContendedServiceOptions,
 	) {
-		super(etcd, { nodePortRange: { from: 30000, to: 30010 } });
+		super(ctx, etcd, { nodePortRange: { from: 30000, to: 30010 } });
 	}
 
 	protected override async validateCreate(service: V1Service): Promise<void> {

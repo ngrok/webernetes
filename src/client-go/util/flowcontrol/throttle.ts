@@ -107,13 +107,13 @@ class TokenBucketRateLimiter extends TokenBucketPassiveRateLimiter implements Ra
 }
 
 // Models staging/src/k8s.io/client-go/util/flowcontrol/throttle.go NewTokenBucketRateLimiter.
-export function newTokenBucketRateLimiter(qps: number, burst: number): RateLimiter {
-	return newTokenBucketRateLimiterWithClock(qps, burst, new Clock());
+export function newTokenBucketRateLimiter(_qps: number, _burst: number): RateLimiter {
+	throw new Error("newTokenBucketRateLimiter requires an explicit clock");
 }
 
 // Models staging/src/k8s.io/client-go/util/flowcontrol/throttle.go NewTokenBucketPassiveRateLimiter.
-export function newTokenBucketPassiveRateLimiter(qps: number, burst: number): PassiveRateLimiter {
-	return newTokenBucketPassiveRateLimiterWithClock(qps, burst, new Clock());
+export function newTokenBucketPassiveRateLimiter(_qps: number, _burst: number): PassiveRateLimiter {
+	throw new Error("newTokenBucketPassiveRateLimiter requires an explicit clock");
 }
 
 // Models staging/src/k8s.io/client-go/util/flowcontrol/throttle.go NewTokenBucketRateLimiterWithClock.

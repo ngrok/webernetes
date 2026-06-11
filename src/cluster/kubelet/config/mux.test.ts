@@ -12,15 +12,15 @@ import type { Merger } from "./mux";
 import { newMux } from "./mux";
 import type { SourceUpdate } from "./config";
 
-browser.describe("mux", () => {
+browser.describe("mux", ({ ctx }) => {
 	// Models kubernetes/pkg/kubelet/config/mux_test.go TestConfigurationChannels.
 	it("returns stable channels by source name", () => {
-		const [ctx, cancel] = context.withCancel(context.background());
+		const [childCtx, cancel] = context.withCancel(ctx);
 		try {
 			const mux = newMux(undefined as unknown as Merger);
-			const channelOne = mux.channelWithContext(ctx, "one");
-			expect(channelOne).toBe(mux.channelWithContext(ctx, "one"));
-			const channelTwo = mux.channelWithContext(ctx, "two");
+			const channelOne = mux.channelWithContext(childCtx, "one");
+			expect(channelOne).toBe(mux.channelWithContext(childCtx, "one"));
+			const channelTwo = mux.channelWithContext(childCtx, "two");
 			expect(channelOne).not.toBe(channelTwo);
 		} finally {
 			cancel();
@@ -29,7 +29,7 @@ browser.describe("mux", () => {
 
 	// Models kubernetes/pkg/kubelet/config/mux_test.go TestMergeInvoked.
 	it("invokes merge for source updates", async () => {
-		const [ctx, cancel] = context.withCancel(context.background());
+		const [childCtx, cancel] = context.withCancel(ctx);
 		try {
 			const expectedSource = "one";
 			const done = new Channel<void>();
@@ -41,7 +41,7 @@ browser.describe("mux", () => {
 			});
 
 			const mux = newMux(merger);
-			await mux.channelWithContext(ctx, expectedSource).send(fakeUpdate(expectedSource));
+			await mux.channelWithContext(childCtx, expectedSource).send(fakeUpdate(expectedSource));
 
 			const result = await done.receive();
 			expect(result.ok).toBe(true);
@@ -52,7 +52,7 @@ browser.describe("mux", () => {
 
 	// Models kubernetes/pkg/kubelet/config/mux_test.go TestSimultaneousMerge.
 	it("merges simultaneous source updates", async () => {
-		const [ctx, cancel] = context.withCancel(context.background());
+		const [childCtx, cancel] = context.withCancel(ctx);
 		try {
 			const ch = new Channel<boolean>(2);
 			const mux = newMux(
@@ -63,8 +63,8 @@ browser.describe("mux", () => {
 					return undefined;
 				}),
 			);
-			const source = mux.channelWithContext(ctx, "one");
-			const source2 = mux.channelWithContext(ctx, "two");
+			const source = mux.channelWithContext(childCtx, "one");
+			const source2 = mux.channelWithContext(childCtx, "two");
 			await Promise.all([source.send(fakeUpdate("one")), source2.send(fakeUpdate("two"))]);
 			await ch.receive();
 			await ch.receive();
@@ -74,10 +74,10 @@ browser.describe("mux", () => {
 	});
 
 	it("stops listening when context is canceled", async () => {
-		const [ctx, cancel] = context.withCancel(context.background());
+		const [childCtx, cancel] = context.withCancel(ctx);
 		const merger = mergeFunc(() => undefined);
 		const mux = newMux(merger);
-		const source = mux.channelWithContext(ctx, "one");
+		const source = mux.channelWithContext(childCtx, "one");
 		const merge = vi.spyOn(merger, "merge");
 
 		cancel();

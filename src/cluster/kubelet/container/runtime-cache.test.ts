@@ -3,13 +3,13 @@
  * Derived from Kubernetes, translated and modified for Webernetes.
  */
 import { expect, it } from "vitest";
-import { Clock } from "../../../clock";
+import { getClock } from "../../../clock-context";
 import * as context from "../../../go/context";
 import { browser } from "../../../test/describe";
 import { RuntimeCacheImpl } from "./runtime-cache";
 import type { Pod } from "./runtime";
 
-browser.describe("RuntimeCache", () => {
+browser.describe("RuntimeCache", ({ ctx }) => {
 	// Models kubernetes/pkg/kubelet/container/runtime_cache_test.go TestGetPods.
 	it("gets pods", async () => {
 		const runtime = new FakeRuntime();
@@ -17,7 +17,7 @@ browser.describe("RuntimeCache", () => {
 		runtime.podList = expected;
 		const cache = newTestRuntimeCache(runtime);
 
-		const [actual, err] = await cache.getPods(context.background());
+		const [actual, err] = await cache.getPods(ctx);
 
 		expect(err).toBeUndefined();
 		comparePods(expected, actual);
@@ -25,8 +25,7 @@ browser.describe("RuntimeCache", () => {
 
 	// Models kubernetes/pkg/kubelet/container/runtime_cache_test.go TestForceUpdateIfOlder.
 	it("force updates if older", async () => {
-		const ctx = context.background();
-		const clock = new Clock();
+		const clock = getClock(ctx);
 		const runtime = new FakeRuntime();
 		const cache = newTestRuntimeCache(runtime);
 
@@ -84,8 +83,11 @@ class TestRuntimeCache extends RuntimeCacheImpl {
 }
 
 // Models kubernetes/pkg/kubelet/container/runtime_cache_fake.go NewTestRuntimeCache.
-function newTestRuntimeCache(getter: FakeRuntime, clock: Clock = new Clock()): TestRuntimeCache {
-	return new TestRuntimeCache({ getter, cachePeriodMs: 0, clock });
+function newTestRuntimeCache(getter: FakeRuntime): TestRuntimeCache {
+	return new TestRuntimeCache({
+		getter,
+		cachePeriodMs: 0,
+	});
 }
 
 function pod(id: string): Pod {

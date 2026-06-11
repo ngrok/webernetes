@@ -3,13 +3,12 @@
  * Derived from Kubernetes, translated and modified for Webernetes.
  */
 import { expect, it } from "vitest";
-import { Clock } from "../../clock";
 import { browser } from "../../test/describe";
 import { RuntimeHandler } from "./container";
 import { RuntimeState } from "./runtime";
 
 // Models kubernetes/pkg/kubelet/runtime_test.go TestRuntimeStateSetRuntimeHandlersSortsAndCopies.
-browser.describe("runtimeStateSetRuntimeHandlersSortsAndCopies", () => {
+browser.describe("runtimeStateSetRuntimeHandlersSortsAndCopies", ({ ctx }) => {
 	const testCases: Array<{
 		name: string;
 		handlers: RuntimeHandler[];
@@ -42,7 +41,7 @@ browser.describe("runtimeStateSetRuntimeHandlersSortsAndCopies", () => {
 
 	for (const tt of testCases) {
 		it(tt.name, () => {
-			const state = new RuntimeState(0, new Clock());
+			const state = new RuntimeState(ctx, 0);
 			const input = tt.handlers.map((handler) => handler.clone());
 			const original = input.map((handler) => handler.clone());
 

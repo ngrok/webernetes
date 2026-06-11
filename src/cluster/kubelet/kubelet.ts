@@ -16,6 +16,7 @@ import { formatIP } from "../../go/net";
 import { Mutex } from "../../go/sync/mutex";
 import * as time from "../../go/time";
 import * as expansion from "../../third_party/forked/golang/expansion";
+import { getClock } from "../../clock-context";
 import type { Backoff } from "../../client-go/util/flowcontrol/backoff";
 import { newBackOff } from "../../client-go/util/flowcontrol/backoff";
 import type { DnsConfig, ImageManagerService, RuntimeService } from "../cri";
@@ -169,7 +170,6 @@ export interface KubeletDependencies {
 	podStartupLatencyTracker: PodStartupSLIObserver;
 
 	// Simulator-only dependencies.
-	clock: Clock;
 	network: ClusterNetwork;
 	node: V1Node;
 	hostDNSConfig?: DnsConfig;
@@ -208,7 +208,6 @@ interface KubeletOptions {
 	recorder: EventRecorder;
 	workQueue: WorkQueue;
 	crashLoopBackOff: Backoff;
-	clock: Clock;
 	nodeIPs: string[];
 	nodeStatusMaxImages: number;
 }
@@ -222,9 +221,8 @@ function makePodSourceConfig(
 	kubeDeps: KubeletDependencies,
 	nodeName: string,
 	nodeHasSynced: () => boolean,
-	clock: Clock,
 ): [podConfig: PodConfig, err: Error | undefined] {
-	const cfg = newPodConfig(kubeDeps.recorder, kubeDeps.podStartupLatencyTracker, clock);
+	const cfg = newPodConfig(kubeDeps.recorder, kubeDeps.podStartupLatencyTracker);
 
 	// Static pod file and URL sources are intentionally omitted: this simulator
 	// has partial static pod bookkeeping but does not support static pods end to end.
@@ -235,7 +233,6 @@ function makePodSourceConfig(
 			nodeName,
 			nodeHasSynced,
 			cfg.channel(ctx, apiserverSource),
-			clock,
 		);
 	} else {
 		// For now we will throw an error here to make it easier to identify
@@ -261,6 +258,7 @@ export function newMainKubelet(
 	nodeName: string,
 	nodeIPs: string[],
 ): Kubelet {
+	const clock = getClock(ctx);
 	if (!kubeDeps.kubeClient) {
 		throw new Error("standalone kubelet mode is not implemented");
 	}
@@ -274,7 +272,6 @@ export function newMainKubelet(
 			kubeDeps,
 			nodeName,
 			nodeHasSynced,
-			kubeDeps.clock,
 		);
 		if (podConfigErr) {
 			throw podConfigErr;
@@ -321,8 +318,8 @@ export function newMainKubelet(
 	const livenessManager = new ResultsManager();
 	const readinessManager = new ResultsManager();
 	const startupManager = new ResultsManager();
-	const runtimeState = newRuntimeState(maxWaitForContainerRuntimeMs, kubeDeps.clock);
-	const workQueue = new BasicWorkQueue(kubeDeps.clock);
+	const runtimeState = newRuntimeState(ctx, maxWaitForContainerRuntimeMs);
+	const workQueue = new BasicWorkQueue(clock);
 	const podCache = new PodStatusCache();
 	const kubelet = new Kubelet({
 		ctx: kubeletCtx,
@@ -349,20 +346,19 @@ export function newMainKubelet(
 		podCache,
 		recorder: kubeDeps.recorder,
 		workQueue,
-		crashLoopBackOff: newBackOff(initialCrashLoopBackOffMs, maxCrashLoopBackOffMs, kubeDeps.clock),
-		clock: kubeDeps.clock,
+		crashLoopBackOff: newBackOff(initialCrashLoopBackOffMs, maxCrashLoopBackOffMs, clock),
 		nodeIPs: normalizedNodeIPs,
 		nodeStatusMaxImages: kubeCfg.nodeStatusMaxImages,
 	});
 	kubelet.statusManager = new StatusManagerImpl({
-		clock: kubeDeps.clock,
+		ctx: kubeletCtx,
 		kubeClient,
 		podManager,
 		podDeletionSafety: kubelet,
 		podStartupLatencyHelper: kubeDeps.podStartupLatencyTracker,
 	});
 	kubelet.podWorkers = new PodWorkersImpl(
-		kubeDeps.clock,
+		clock,
 		kubelet.workQueue,
 		kubeCfg.syncFrequencyMs,
 		backOffPeriodMs,
@@ -377,13 +373,12 @@ export function newMainKubelet(
 		runtimeHelper: kubelet,
 		events: kubeDeps.recorder,
 		livenessManager,
-		imageBackOff: newBackOff(imageBackOffPeriodMs, maxImageBackOffMs, kubeDeps.clock),
+		imageBackOff: newBackOff(imageBackOffPeriodMs, maxImageBackOffMs, clock),
 		registryPullQPS: kubeCfg.registryPullQPS,
 		registryBurst: kubeCfg.registryBurst,
 		maxParallelImagePulls: kubeCfg.serializeImagePulls ? 1 : kubeCfg.maxParallelImagePulls,
 		network: kubeDeps.network,
 		startupManager,
-		clock: kubeDeps.clock,
 	});
 	kubelet.containerRuntime = containerRuntime;
 	const containerGCPolicy = {
@@ -404,13 +399,8 @@ export function newMainKubelet(
 		kubeletCtx,
 		kubelet.containerRuntime,
 		Math.max(containerGCPolicy.maxPerPodContainer, minDeadContainerInPod),
-		kubeDeps.clock,
 	);
-	kubelet.runtimeCache = newRuntimeCache(
-		kubelet.containerRuntime,
-		runtimeCacheRefreshPeriodMs,
-		kubeDeps.clock,
-	);
+	kubelet.runtimeCache = newRuntimeCache(kubelet.containerRuntime, runtimeCacheRefreshPeriodMs);
 	kubelet.runner = containerRuntime;
 	kubelet.probeManager = new ProbeManagerImpl(
 		kubeletCtx,
@@ -420,10 +410,10 @@ export function newMainKubelet(
 		startupManager,
 		kubelet.runner,
 		kubeDeps.recorder,
-		kubeDeps.clock,
 		kubeDeps.network,
 	);
 	kubelet.pleg = new GenericPLEG(
+		kubeletCtx,
 		kubelet.containerRuntime,
 		new Channel<PodLifecycleEvent>(100),
 		{
@@ -431,17 +421,15 @@ export function newMainKubelet(
 			relistThresholdMs: 3 * 60 * 1000,
 		},
 		kubelet.podCache,
-		kubeDeps.clock,
-		kubeletCtx,
 	);
 	runtimeState.addHealthCheck("PLEG", () => {
 		const health = kubelet.pleg.healthy();
 		return [health.ok, health.error];
 	});
 	const [activeDeadlineHandler, activeDeadlineHandlerErr] = newActiveDeadlineHandler(
+		kubeletCtx,
 		kubelet.statusManager,
 		kubelet.recorder,
-		kubelet.clock,
 	);
 	if (activeDeadlineHandlerErr) {
 		throw activeDeadlineHandlerErr;
@@ -602,7 +590,7 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 		this.nodeHasSynced = options.nodeHasSynced;
 		this.podConfig = options.podConfig;
 		this.sourcesReady = options.sourcesReady;
-		this.clock = options.clock;
+		this.clock = getClock(options.ctx);
 		this.ctx = options.ctx;
 		this.cancelContext = options.cancelContext;
 		this.runtimeService = options.runtimeService;
@@ -679,7 +667,6 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 			this.ctx,
 			(ctx) => this.updateRuntimeUp(ctx),
 			runtimeStatusUpdatePeriodMs,
-			this.clock,
 		);
 		this.statusManagerPromise = this.statusManager.start(this.ctx);
 		await this.pleg.start();
@@ -708,7 +695,6 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 				}
 			},
 			containerGCPeriodMs,
-			this.clock,
 		);
 
 		// TODO(samwho): implement image GC here
@@ -1086,8 +1072,8 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 		updates: ReadOnlyChannel<PodUpdate>,
 		handler: SyncHandler,
 	): Promise<void> {
-		const syncTicker = new time.Ticker(this.clock, syncTickerPeriodMs);
-		const housekeepingTicker = new time.Ticker(this.clock, housekeepingPeriodMs);
+		const syncTicker = new time.Ticker(ctx, syncTickerPeriodMs);
+		const housekeepingTicker = new time.Ticker(ctx, housekeepingPeriodMs);
 		const plegCh = this.pleg.watch();
 		const base = 100;
 		const max = 5 * 1000;
@@ -1099,7 +1085,7 @@ export class Kubelet implements RuntimeHelper, PodDeletionSafetyProvider {
 				if (err) {
 					const selected = await select()
 						.case(ctx.done(), () => "done")
-						.case(time.after(this.clock, duration), () => "timeout");
+						.case(time.after(ctx, duration), () => "timeout");
 					if (selected === "done") {
 						break;
 					}

@@ -1,4 +1,5 @@
 import { V1Service, V1ServicePort, V1ServiceSpec } from "../../client";
+import type * as context from "../../go/context";
 import { Etcd } from "../etcd";
 import { IpRange, PortRange } from "./allocatable";
 import { FinishFunc, Store } from "./store";
@@ -56,10 +57,15 @@ export class ServiceStore extends Store<V1Service> {
 	private readonly nodePorts: PortRange;
 	private readonly nodePortRange: NodePortRange;
 
-	static async initialize(etcd: Etcd, options: ServiceStoreOptions): Promise<void> {
+	static async initialize(
+		ctx: context.Context,
+		etcd: Etcd,
+		options: ServiceStoreOptions,
+	): Promise<void> {
 		const serviceCIDR = options.serviceCIDR ?? DEFAULT_SERVICE_CIDR;
-		await IpRange.create(etcd, clusterIPRangeName(serviceCIDR), serviceCIDR);
+		await IpRange.create(ctx, etcd, clusterIPRangeName(serviceCIDR), serviceCIDR);
 		await PortRange.create(
+			ctx,
 			etcd,
 			nodePortRangeName(),
 			options.nodePortRange.from,
@@ -67,7 +73,7 @@ export class ServiceStore extends Store<V1Service> {
 		);
 	}
 
-	constructor(etcd: Etcd, options: ServiceStoreOptions) {
+	constructor(ctx: context.Context, etcd: Etcd, options: ServiceStoreOptions) {
 		super(etcd, {
 			apiVersion: "v1",
 			defaultQualifiedResource: "services",
@@ -76,9 +82,10 @@ export class ServiceStore extends Store<V1Service> {
 			namespaced: true,
 		});
 		const serviceCIDR = options.serviceCIDR ?? DEFAULT_SERVICE_CIDR;
-		this.clusterIPs = IpRange.open(etcd, clusterIPRangeName(serviceCIDR), serviceCIDR);
+		this.clusterIPs = IpRange.open(ctx, etcd, clusterIPRangeName(serviceCIDR), serviceCIDR);
 		this.nodePortRange = options.nodePortRange;
 		this.nodePorts = PortRange.open(
+			ctx,
 			etcd,
 			nodePortRangeName(),
 			this.nodePortRange.from,

@@ -4,7 +4,7 @@
  */
 import type { V1Container, V1ContainerStatus, V1Pod, V1PodStatus } from "../../../client";
 import type { EventRecorder } from "../../../client-go/tools/record/event";
-import type { Clock } from "../../../clock";
+import { getClock } from "../../../clock-context";
 import { KeyFnMap } from "../../../collections";
 import type { Context } from "../../../go/context";
 import type { ClusterNetwork } from "../../cni";
@@ -35,7 +35,6 @@ export class ProbeManagerImpl implements ProbeManager {
 	readonly startupManager: ResultsManager;
 	readonly prober: Prober;
 	readonly statusManager: StatusManager;
-	readonly clock: Clock;
 	readonly workers = new KeyFnMap<ProbeKey, ProbeWorker>(probeKeyString);
 	// Go starts probe workers as goroutines and does not retain join handles.
 	// This simulator keeps the returned promises so close() can stop workers
@@ -52,16 +51,14 @@ export class ProbeManagerImpl implements ProbeManager {
 		startupManager: ResultsManager,
 		runner: CommandRunner | undefined,
 		recorder: EventRecorder | undefined,
-		clock: Clock,
 		network: ClusterNetwork,
 	) {
-		this.clock = clock;
 		this.livenessManager = livenessManager;
 		this.readinessManager = readinessManager;
 		this.startupManager = startupManager;
-		this.prober = new Prober(ctx, runner, clock, network, recorder);
+		this.prober = new Prober(ctx, runner, network, recorder);
 		this.statusManager = statusManager;
-		this.startedAt = clock.now();
+		this.startedAt = getClock(ctx).now();
 	}
 
 	// Models kubernetes/pkg/kubelet/prober/prober_manager.go AddPod.

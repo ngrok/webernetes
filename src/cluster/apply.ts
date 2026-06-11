@@ -61,19 +61,16 @@ async function applyNamespace(
 	const desired = prepareDesiredResource(resource, false);
 	const name = requiredName(desired);
 	try {
-		return await retryConflicts(
-			async () => {
-				const existing = await cluster.api.corev1.readNamespace({ name });
-				return await cluster.api.corev1.patchNamespace(
-					{
-						name,
-						body: createApplyPatch(existing, desired),
-					},
-					MERGE_PATCH_OPTIONS,
-				);
-			},
-			{ clock: cluster.clock },
-		);
+		return await retryConflicts(cluster.ctx, async () => {
+			const existing = await cluster.api.corev1.readNamespace({ name });
+			return await cluster.api.corev1.patchNamespace(
+				{
+					name,
+					body: createApplyPatch(existing, desired),
+				},
+				MERGE_PATCH_OPTIONS,
+			);
+		});
 	} catch (error) {
 		if (!isNotFoundError(error)) {
 			throw error;
@@ -86,19 +83,16 @@ async function applyNode(cluster: Cluster, resource: k8s.V1Node): Promise<k8s.V1
 	const desired = prepareDesiredResource(resource, false);
 	const name = requiredName(desired);
 	try {
-		return await retryConflicts(
-			async () => {
-				const existing = await cluster.api.corev1.readNode({ name });
-				return await cluster.api.corev1.patchNode(
-					{
-						name,
-						body: createApplyPatch(existing, desired),
-					},
-					MERGE_PATCH_OPTIONS,
-				);
-			},
-			{ clock: cluster.clock },
-		);
+		return await retryConflicts(cluster.ctx, async () => {
+			const existing = await cluster.api.corev1.readNode({ name });
+			return await cluster.api.corev1.patchNode(
+				{
+					name,
+					body: createApplyPatch(existing, desired),
+				},
+				MERGE_PATCH_OPTIONS,
+			);
+		});
 	} catch (error) {
 		if (!isNotFoundError(error)) {
 			throw error;
@@ -112,20 +106,17 @@ async function applyPod(cluster: Cluster, resource: k8s.V1Pod): Promise<k8s.V1Po
 	const name = requiredName(desired);
 	const namespace = requiredNamespace(desired);
 	try {
-		return await retryConflicts(
-			async () => {
-				const existing = await cluster.api.corev1.readNamespacedPod({ name, namespace });
-				return await cluster.api.corev1.patchNamespacedPod(
-					{
-						name,
-						namespace,
-						body: createApplyPatch(existing, desired),
-					},
-					MERGE_PATCH_OPTIONS,
-				);
-			},
-			{ clock: cluster.clock },
-		);
+		return await retryConflicts(cluster.ctx, async () => {
+			const existing = await cluster.api.corev1.readNamespacedPod({ name, namespace });
+			return await cluster.api.corev1.patchNamespacedPod(
+				{
+					name,
+					namespace,
+					body: createApplyPatch(existing, desired),
+				},
+				MERGE_PATCH_OPTIONS,
+			);
+		});
 	} catch (error) {
 		if (!isNotFoundError(error)) {
 			throw error;
@@ -142,20 +133,17 @@ async function applyService(cluster: Cluster, resource: k8s.V1Service): Promise<
 	const name = requiredName(desired);
 	const namespace = requiredNamespace(desired);
 	try {
-		return await retryConflicts(
-			async () => {
-				const existing = await cluster.api.corev1.readNamespacedService({ name, namespace });
-				return await cluster.api.corev1.patchNamespacedService(
-					{
-						name,
-						namespace,
-						body: createApplyPatch(existing, desired),
-					},
-					MERGE_PATCH_OPTIONS,
-				);
-			},
-			{ clock: cluster.clock },
-		);
+		return await retryConflicts(cluster.ctx, async () => {
+			const existing = await cluster.api.corev1.readNamespacedService({ name, namespace });
+			return await cluster.api.corev1.patchNamespacedService(
+				{
+					name,
+					namespace,
+					body: createApplyPatch(existing, desired),
+				},
+				MERGE_PATCH_OPTIONS,
+			);
+		});
 	} catch (error) {
 		if (!isNotFoundError(error)) {
 			throw error;

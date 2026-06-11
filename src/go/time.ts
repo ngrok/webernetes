@@ -1,10 +1,13 @@
 import { Channel, type ReadOnlyChannel } from "./channel";
 import type { Clock } from "../clock";
+import { getClock } from "../clock-context";
+import type { Context } from "./context";
 
 // after waits for the duration to elapse and then sends the current time on the
 // returned channel, matching Go's time.After:
 //   https://pkg.go.dev/time#After
-export function after(clock: Clock, delayMs: number): ReadOnlyChannel<Date> {
+export function after(ctx: Context, delayMs: number): ReadOnlyChannel<Date> {
+	const clock = getClock(ctx);
 	const channel = new Channel<Date>(1);
 	clock.setTimeout(() => {
 		channel.trySend(clock.now());
@@ -17,8 +20,8 @@ export function after(clock: Clock, delayMs: number): ReadOnlyChannel<Date> {
 //
 // Intentional divergence: Go returns nil when d <= 0. This helper throws
 // instead so TypeScript callers do not need to null-check every tick channel.
-export function tick(clock: Clock, intervalMs: number): ReadOnlyChannel<Date> {
-	return new Ticker(clock, intervalMs).C;
+export function tick(ctx: Context, intervalMs: number): ReadOnlyChannel<Date> {
+	return new Ticker(ctx, intervalMs).C;
 }
 
 // Timer models Go's time.Timer:
@@ -34,11 +37,10 @@ export class Timer {
 	private pendingTick = false;
 
 	readonly C: ReadOnlyChannel<Date> = this.ticks.readOnly();
+	private readonly clock: Clock;
 
-	constructor(
-		private readonly clock: Clock,
-		delayMs: number,
-	) {
+	constructor(ctx: Context, delayMs: number) {
+		this.clock = getClock(ctx);
 		this.reset(delayMs);
 	}
 
@@ -81,13 +83,12 @@ export class Timer {
 export class Ticker {
 	private readonly ticks = new Channel<Date>(1);
 	private intervalHandle: number | undefined;
+	private readonly clock: Clock;
 
 	readonly C: ReadOnlyChannel<Date> = this.ticks.readOnly();
 
-	constructor(
-		private readonly clock: Clock,
-		intervalMs: number,
-	) {
+	constructor(ctx: Context, intervalMs: number) {
+		this.clock = getClock(ctx);
 		this.start(intervalMs);
 	}
 

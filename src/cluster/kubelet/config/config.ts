@@ -7,7 +7,7 @@ import type { EventRecorder } from "../../../client-go/tools/record/event";
 import { failedValidation } from "../events";
 import * as kubecontainer from "../container";
 import * as format from "../util/format";
-import { Clock } from "../../../clock";
+import { getClock } from "../../../clock-context";
 import { Channel, type ReadOnlyChannel } from "../../../go/channel";
 import type * as context from "../../../go/context";
 import { Mutex, RWMutex } from "../../../go/sync/mutex";
@@ -69,8 +69,8 @@ export class PodConfig {
 	private readonly updateChannel = new Channel<PodUpdate>(50);
 	private readonly sources = new Set<string>();
 
-	constructor(recorder: EventRecorder, startupSLIObserver: PodStartupSLIObserver, clock: Clock) {
-		this.pods = newPodStorage(this.updateChannel, recorder, startupSLIObserver, clock);
+	constructor(recorder: EventRecorder, startupSLIObserver: PodStartupSLIObserver) {
+		this.pods = newPodStorage(this.updateChannel, recorder, startupSLIObserver);
 		this.mux = newMux(this.pods);
 	}
 
@@ -100,9 +100,8 @@ export class PodConfig {
 export function newPodConfig(
 	recorder: EventRecorder,
 	startupSLIObserver: PodStartupSLIObserver,
-	clock: Clock,
 ): PodConfig {
-	return new PodConfig(recorder, startupSLIObserver, clock);
+	return new PodConfig(recorder, startupSLIObserver);
 }
 
 // Models kubernetes/pkg/kubelet/config/config.go podStorage.
@@ -116,7 +115,6 @@ class PodStorage {
 		private readonly updateChannel: Channel<PodUpdate>,
 		private readonly recorder: EventRecorder,
 		private readonly startupSLIObserver: PodStartupSLIObserver,
-		private readonly clock: Clock,
 	) {}
 
 	// Models kubernetes/pkg/kubelet/config/config.go podStorage.Merge.
@@ -164,7 +162,7 @@ class PodStorage {
 
 	// Models kubernetes/pkg/kubelet/config/config.go podStorage.merge.
 	private async mergeInternal(
-		_ctx: context.Context,
+		ctx: context.Context,
 		source: string,
 		update: SourceUpdate,
 	): Promise<
@@ -177,6 +175,7 @@ class PodStorage {
 		]
 	> {
 		return await this.podLock.withLock(async () => {
+			const clock = getClock(ctx);
 			const addPods: V1Pod[] = [];
 			const updatePods: V1Pod[] = [];
 			const deletePods: V1Pod[] = [];
@@ -199,7 +198,7 @@ class PodStorage {
 					metadata.annotations ??= {};
 					metadata.annotations[configSourceAnnotationKey] = source;
 					if (!isStaticPod(ref)) {
-						this.startupSLIObserver.observedPodOnWatch(ref, this.clock.now());
+						this.startupSLIObserver.observedPodOnWatch(ref, clock.now());
 					}
 					const uid = metadata.uid ?? "";
 					const existing = oldPods.get(uid);
@@ -218,7 +217,7 @@ class PodStorage {
 						}
 						continue;
 					}
-					recordFirstSeenTime(ref, this.clock);
+					recordFirstSeenTime(ctx, ref);
 					pods.set(uid, ref);
 					addPods.push(ref);
 				}
@@ -262,9 +261,8 @@ function newPodStorage(
 	updates: Channel<PodUpdate>,
 	recorder: EventRecorder,
 	startupSLIObserver: PodStartupSLIObserver,
-	clock: Clock,
 ): PodStorage {
-	return new PodStorage(updates, recorder, startupSLIObserver, clock);
+	return new PodStorage(updates, recorder, startupSLIObserver);
 }
 
 // Models kubernetes/pkg/kubelet/config/config.go filterInvalidPods.
@@ -342,8 +340,8 @@ function isAnnotationMapEqual(
 }
 
 // Models kubernetes/pkg/kubelet/config/config.go recordFirstSeenTime.
-function recordFirstSeenTime(pod: V1Pod, clock: Clock): void {
-	((pod.metadata ??= {}).annotations ??= {})[configFirstSeenAnnotationKey] = clock
+function recordFirstSeenTime(ctx: context.Context, pod: V1Pod): void {
+	((pod.metadata ??= {}).annotations ??= {})[configFirstSeenAnnotationKey] = getClock(ctx)
 		.now()
 		.toISOString();
 }

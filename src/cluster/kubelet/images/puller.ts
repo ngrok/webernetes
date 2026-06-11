@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: Apache-2.0
  * Derived from Kubernetes, translated and modified for Webernetes.
  */
-import type { Clock } from "../../../clock";
+import { getClock } from "../../../clock-context";
 import { Channel, type SendChannel } from "../../../go/channel";
 import type * as context from "../../../go/context";
 import type { PodSandboxConfig } from "../../cri";
@@ -33,7 +33,6 @@ class ParallelImagePuller implements ImagePuller {
 	private readonly tokens: Channel<void> | undefined;
 
 	constructor(
-		private readonly clock: Clock,
 		private readonly imageService: ImageService,
 		maxParallelImagePulls: number | undefined,
 	) {
@@ -56,7 +55,8 @@ class ParallelImagePuller implements ImagePuller {
 				await this.tokens.send(undefined);
 			}
 			try {
-				const startTime = this.clock.nowMs();
+				const clock = getClock(ctx);
+				const startTime = clock.nowMs();
 				const [imageRef, credentialsUsed, err] = await this.imageService.pullImage(
 					ctx,
 					spec,
@@ -71,7 +71,7 @@ class ParallelImagePuller implements ImagePuller {
 					imageRef,
 					imageSize: size,
 					err,
-					pullDuration: this.clock.nowMs() - startTime,
+					pullDuration: clock.nowMs() - startTime,
 					credentialsUsed,
 				});
 			} finally {
@@ -85,9 +85,8 @@ class ParallelImagePuller implements ImagePuller {
 
 // Models kubernetes/pkg/kubelet/images/puller.go newParallelImagePuller.
 export function newParallelImagePuller(
-	clock: Clock,
 	imageService: ImageService,
 	maxParallelImagePulls?: number,
 ): ImagePuller {
-	return new ParallelImagePuller(clock, imageService, maxParallelImagePulls);
+	return new ParallelImagePuller(imageService, maxParallelImagePulls);
 }

@@ -1,4 +1,4 @@
-import type { Clock } from "../../../../clock";
+import { getClock } from "../../../../clock-context";
 import { retryConflicts } from "../../../../retry";
 import {
 	EventStore,
@@ -9,6 +9,7 @@ import {
 } from "../../../../cluster/storage";
 import type { NodePortRange } from "../../../../cluster/storage";
 import type { Etcd } from "../../../../cluster/etcd";
+import type * as context from "../../../../go/context";
 import { Store } from "../../../../cluster/storage/store";
 import { BadRequest, Invalid, NotFound, UnsupportedMediaType } from "../../../errors";
 import { filterByFields, parseFieldSelector } from "../../../fields";
@@ -70,14 +71,14 @@ import { rethrowApiErrors } from "./errors";
 import { listResourceVersionOptions, validateDeletePreconditions } from "./resource-version";
 
 export interface CoreV1ApiOptions {
-	clock: Clock;
+	ctx: context.Context;
 	etcd: Etcd;
 	serviceCIDR?: string;
 	nodePortRange: NodePortRange;
 }
 
 export class CoreV1Api implements CoreV1ApiInterface {
-	private readonly clock: Clock;
+	private readonly ctx: context.Context;
 	private readonly namespaces: Store<V1Namespace>;
 	private readonly nodes: Store<V1Node>;
 	private readonly events: Store<CoreV1Event>;
@@ -85,12 +86,12 @@ export class CoreV1Api implements CoreV1ApiInterface {
 	private readonly services: Store<V1Service>;
 
 	public constructor(options: CoreV1ApiOptions) {
-		this.clock = options.clock;
+		this.ctx = options.ctx;
 		this.namespaces = new NamespaceStore(options.etcd);
 		this.nodes = new NodeStore(options.etcd);
 		this.events = new EventStore(options.etcd);
 		this.pods = new PodStore(options.etcd);
-		this.services = new ServiceStore(options.etcd, {
+		this.services = new ServiceStore(this.ctx, options.etcd, {
 			serviceCIDR: options.serviceCIDR,
 			nodePortRange: options.nodePortRange,
 		});
@@ -115,30 +116,27 @@ export class CoreV1Api implements CoreV1ApiInterface {
 
 	async deleteNamespace(request: CoreV1ApiDeleteNamespaceRequest): Promise<V1Status> {
 		return await rethrowApiErrors(async () => {
-			await retryConflicts(
-				async () => {
-					const namespace = await this.namespaces.get(request.name);
-					if (!namespace) {
-						throw new NotFound(`namespaces "${request.name}" not found`);
-					}
-					validateDeletePreconditions("Namespace", request.name, request.body, namespace);
+			await retryConflicts(this.ctx, async () => {
+				const namespace = await this.namespaces.get(request.name);
+				if (!namespace) {
+					throw new NotFound(`namespaces "${request.name}" not found`);
+				}
+				validateDeletePreconditions("Namespace", request.name, request.body, namespace);
 
-					const finalizers = namespace.spec?.finalizers ?? [];
-					if (namespace.metadata?.deletionTimestamp && finalizers.length === 0) {
-						await this.namespaces.delete(request.name);
-						return;
-					}
+				const finalizers = namespace.spec?.finalizers ?? [];
+				if (namespace.metadata?.deletionTimestamp && finalizers.length === 0) {
+					await this.namespaces.delete(request.name);
+					return;
+				}
 
-					if (!namespace.metadata?.deletionTimestamp) {
-						namespace.metadata ??= {};
-						namespace.metadata.deletionTimestamp = this.clock.now();
-						namespace.status ??= {};
-						namespace.status.phase = "Terminating";
-						await this.namespaces.update(request.name, namespace, { skipValidateUpdate: true });
-					}
-				},
-				{ clock: this.clock },
-			);
+				if (!namespace.metadata?.deletionTimestamp) {
+					namespace.metadata ??= {};
+					namespace.metadata.deletionTimestamp = getClock(this.ctx).now();
+					namespace.status ??= {};
+					namespace.status.phase = "Terminating";
+					await this.namespaces.update(request.name, namespace, { skipValidateUpdate: true });
+				}
+			});
 			return {
 				status: "Success",
 			};
@@ -406,41 +404,36 @@ export class CoreV1Api implements CoreV1ApiInterface {
 
 	public async deleteNamespacedPod(request: CoreV1ApiDeleteNamespacedPodRequest): Promise<V1Pod> {
 		return await rethrowApiErrors(async () => {
-			return await retryConflicts(
-				async () => {
-					const pod = await this.pods.get(request.name, request.namespace);
-					if (!pod) {
-						throw new NotFound(`Pod "${request.name}" not found`);
-					}
-					validateDeletePreconditions("Pod", request.name, request.body, pod);
+			return await retryConflicts(this.ctx, async () => {
+				const pod = await this.pods.get(request.name, request.namespace);
+				if (!pod) {
+					throw new NotFound(`Pod "${request.name}" not found`);
+				}
+				validateDeletePreconditions("Pod", request.name, request.body, pod);
 
-					const gracePeriodSeconds = podDeletionGracePeriodSeconds(request, pod);
-					if (gracePeriodSeconds === 0) {
-						await this.pods.delete(request.name, request.namespace);
-						return pod;
-					}
-
-					pod.metadata ??= {};
-					if (pod.metadata.deletionTimestamp) {
-						if (
-							pod.metadata.deletionGracePeriodSeconds === undefined ||
-							gracePeriodSeconds < pod.metadata.deletionGracePeriodSeconds
-						) {
-							pod.metadata.deletionGracePeriodSeconds = gracePeriodSeconds;
-							return await this.pods.update(request.name, pod);
-						}
-						return pod;
-					}
-
-					pod.metadata.deletionTimestamp = this.clock.now();
-					pod.metadata.deletionGracePeriodSeconds = gracePeriodSeconds;
-					await this.pods.update(request.name, pod);
+				const gracePeriodSeconds = podDeletionGracePeriodSeconds(request, pod);
+				if (gracePeriodSeconds === 0) {
+					await this.pods.delete(request.name, request.namespace);
 					return pod;
-				},
-				{
-					clock: this.clock,
-				},
-			);
+				}
+
+				pod.metadata ??= {};
+				if (pod.metadata.deletionTimestamp) {
+					if (
+						pod.metadata.deletionGracePeriodSeconds === undefined ||
+						gracePeriodSeconds < pod.metadata.deletionGracePeriodSeconds
+					) {
+						pod.metadata.deletionGracePeriodSeconds = gracePeriodSeconds;
+						return await this.pods.update(request.name, pod);
+					}
+					return pod;
+				}
+
+				pod.metadata.deletionTimestamp = getClock(this.ctx).now();
+				pod.metadata.deletionGracePeriodSeconds = gracePeriodSeconds;
+				await this.pods.update(request.name, pod);
+				return pod;
+			});
 		});
 	}
 
@@ -489,7 +482,7 @@ export class CoreV1Api implements CoreV1ApiInterface {
 				return await replace();
 			}
 
-			return await retryConflicts(replace, { clock: this.clock });
+			return await retryConflicts(this.ctx, replace);
 		});
 	}
 
@@ -499,22 +492,19 @@ export class CoreV1Api implements CoreV1ApiInterface {
 	): Promise<V1Pod> {
 		return await rethrowApiErrors(async () => {
 			validateMergePatchContentType(options);
-			return await retryConflicts(
-				async () => {
-					const pod = await this.pods.get(request.name, request.namespace);
-					if (!pod) {
-						throw new NotFound(`Pod "${request.name}" not found`);
-					}
-					validatePatchName(request.body, request.name);
+			return await retryConflicts(this.ctx, async () => {
+				const pod = await this.pods.get(request.name, request.namespace);
+				if (!pod) {
+					throw new NotFound(`Pod "${request.name}" not found`);
+				}
+				validatePatchName(request.body, request.name);
 
-					const patched = mergePatch(pod, request.body);
-					patched.metadata ??= {};
-					patched.metadata.name = request.name;
-					patched.metadata.namespace ??= request.namespace;
-					return await this.pods.update(request.name, patched);
-				},
-				{ clock: this.clock },
-			);
+				const patched = mergePatch(pod, request.body);
+				patched.metadata ??= {};
+				patched.metadata.name = request.name;
+				patched.metadata.namespace ??= request.namespace;
+				return await this.pods.update(request.name, patched);
+			});
 		});
 	}
 
@@ -524,23 +514,20 @@ export class CoreV1Api implements CoreV1ApiInterface {
 	): Promise<V1Pod> {
 		return await rethrowApiErrors(async () => {
 			validateMergePatchContentType(options);
-			return await retryConflicts(
-				async () => {
-					const pod = await this.pods.get(request.name, request.namespace);
-					if (!pod) {
-						throw new NotFound(`Pod "${request.name}" not found`);
-					}
-					validatePatchName(request.body, request.name);
-					validatePatchUid(request.body, request.name, pod.metadata?.uid);
+			return await retryConflicts(this.ctx, async () => {
+				const pod = await this.pods.get(request.name, request.namespace);
+				if (!pod) {
+					throw new NotFound(`Pod "${request.name}" not found`);
+				}
+				validatePatchName(request.body, request.name);
+				validatePatchUid(request.body, request.name, pod.metadata?.uid);
 
-					const patched = mergePatch(pod, request.body);
-					patched.metadata ??= {};
-					patched.metadata.name = request.name;
-					patched.metadata.namespace ??= request.namespace;
-					return await this.pods.update(request.name, patched);
-				},
-				{ clock: this.clock },
-			);
+				const patched = mergePatch(pod, request.body);
+				patched.metadata ??= {};
+				patched.metadata.name = request.name;
+				patched.metadata.namespace ??= request.namespace;
+				return await this.pods.update(request.name, patched);
+			});
 		});
 	}
 
@@ -586,22 +573,19 @@ export class CoreV1Api implements CoreV1ApiInterface {
 	): Promise<V1Service> {
 		return await rethrowApiErrors(async () => {
 			validateMergePatchContentType(options);
-			return await retryConflicts(
-				async () => {
-					const service = await this.services.get(request.name, request.namespace);
-					if (!service) {
-						throw new NotFound(`Service "${request.name}" not found`);
-					}
-					validatePatchName(request.body, request.name);
+			return await retryConflicts(this.ctx, async () => {
+				const service = await this.services.get(request.name, request.namespace);
+				if (!service) {
+					throw new NotFound(`Service "${request.name}" not found`);
+				}
+				validatePatchName(request.body, request.name);
 
-					const patched = mergePatch(service, request.body);
-					patched.metadata ??= {};
-					patched.metadata.name = request.name;
-					patched.metadata.namespace ??= request.namespace;
-					return await this.services.update(request.name, patched);
-				},
-				{ clock: this.clock },
-			);
+				const patched = mergePatch(service, request.body);
+				patched.metadata ??= {};
+				patched.metadata.name = request.name;
+				patched.metadata.namespace ??= request.namespace;
+				return await this.services.update(request.name, patched);
+			});
 		});
 	}
 
@@ -619,21 +603,18 @@ export class CoreV1Api implements CoreV1ApiInterface {
 	): Promise<V1Namespace> {
 		return await rethrowApiErrors(async () => {
 			validateMergePatchContentType(options);
-			return await retryConflicts(
-				async () => {
-					const namespace = await this.namespaces.get(request.name);
-					if (!namespace) {
-						throw new NotFound(`Namespace "${request.name}" not found`);
-					}
-					validatePatchName(request.body, request.name);
+			return await retryConflicts(this.ctx, async () => {
+				const namespace = await this.namespaces.get(request.name);
+				if (!namespace) {
+					throw new NotFound(`Namespace "${request.name}" not found`);
+				}
+				validatePatchName(request.body, request.name);
 
-					const patched = mergePatch(namespace, request.body);
-					patched.metadata ??= {};
-					patched.metadata.name = request.name;
-					return await this.namespaces.update(request.name, patched);
-				},
-				{ clock: this.clock },
-			);
+				const patched = mergePatch(namespace, request.body);
+				patched.metadata ??= {};
+				patched.metadata.name = request.name;
+				return await this.namespaces.update(request.name, patched);
+			});
 		});
 	}
 
@@ -648,21 +629,18 @@ export class CoreV1Api implements CoreV1ApiInterface {
 	public async patchNode(request: CoreV1ApiPatchNodeRequest, options?: unknown): Promise<V1Node> {
 		return await rethrowApiErrors(async () => {
 			validateMergePatchContentType(options);
-			return await retryConflicts(
-				async () => {
-					const node = await this.nodes.get(request.name);
-					if (!node) {
-						throw new NotFound(`Node "${request.name}" not found`);
-					}
-					validatePatchName(request.body, request.name);
+			return await retryConflicts(this.ctx, async () => {
+				const node = await this.nodes.get(request.name);
+				if (!node) {
+					throw new NotFound(`Node "${request.name}" not found`);
+				}
+				validatePatchName(request.body, request.name);
 
-					const patched = mergePatch(node, request.body);
-					patched.metadata ??= {};
-					patched.metadata.name = request.name;
-					return await this.nodes.update(request.name, patched);
-				},
-				{ clock: this.clock },
-			);
+				const patched = mergePatch(node, request.body);
+				patched.metadata ??= {};
+				patched.metadata.name = request.name;
+				return await this.nodes.update(request.name, patched);
+			});
 		});
 	}
 }

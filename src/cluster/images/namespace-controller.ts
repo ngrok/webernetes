@@ -129,21 +129,18 @@ export class NamespaceController extends BaseImage {
 		if (remaining) {
 			throw new Error(`namespace ${namespaceName} still has content`);
 		}
-		await retryConflicts(
-			async () => {
-				const latest = await this.readNamespace(ctx, namespaceName);
-				if (!latest?.metadata?.deletionTimestamp) {
-					return;
-				}
-				latest.spec ??= {};
-				latest.spec.finalizers = (latest.spec.finalizers ?? []).filter(
-					(finalizer) => finalizer !== finalizerKubernetes,
-				);
-				await ctx.api.corev1.replaceNamespace({ name: namespaceName, body: latest });
-				await ctx.api.corev1.deleteNamespace({ name: namespaceName });
-			},
-			{ clock: ctx.clock },
-		);
+		await retryConflicts(ctx, async () => {
+			const latest = await this.readNamespace(ctx, namespaceName);
+			if (!latest?.metadata?.deletionTimestamp) {
+				return;
+			}
+			latest.spec ??= {};
+			latest.spec.finalizers = (latest.spec.finalizers ?? []).filter(
+				(finalizer) => finalizer !== finalizerKubernetes,
+			);
+			await ctx.api.corev1.replaceNamespace({ name: namespaceName, body: latest });
+			await ctx.api.corev1.deleteNamespace({ name: namespaceName });
+		});
 	}
 
 	// Models kubernetes/pkg/controller/namespace/deletion/namespaced_resources_deleter.go deleteAllContent.

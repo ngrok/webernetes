@@ -1,7 +1,7 @@
 import { Buffer } from "buffer";
 import { CIDR, ipToNumber, numberToIp } from "../../net";
+import type * as context from "../../go/context";
 import { Etcd } from "../etcd";
-import { withLock } from "../lock";
 
 function bitmapKey(name: string): string {
 	return `/registry/ranges/${name}/bitmap`;
@@ -38,17 +38,23 @@ export class NotAllocated extends Error {
 }
 
 export class AllocatableRange {
-	static async create(etcd: Etcd, name: string, size: number): Promise<AllocatableRange> {
-		const range = AllocatableRange.open(etcd, name, size);
+	static async create(
+		ctx: context.Context,
+		etcd: Etcd,
+		name: string,
+		size: number,
+	): Promise<AllocatableRange> {
+		const range = AllocatableRange.open(ctx, etcd, name, size);
 		await range.reset();
 		return range;
 	}
 
-	static open(etcd: Etcd, name: string, size: number): AllocatableRange {
-		return new AllocatableRange(etcd, name, size);
+	static open(ctx: context.Context, etcd: Etcd, name: string, size: number): AllocatableRange {
+		return new AllocatableRange(ctx, etcd, name, size);
 	}
 
 	private constructor(
+		private readonly ctx: context.Context,
 		private readonly etcd: Etcd,
 		public readonly name: string,
 		public readonly size: number,
@@ -110,7 +116,7 @@ export class AllocatableRange {
 	}
 
 	public async allocate(): Promise<number> {
-		return await withLock(this.etcd, lockKey(this.name), { timeoutMs: 5000 }, async () => {
+		return await this.etcd.withLock(this.ctx, lockKey(this.name), { timeoutMs: 5000 }, async () => {
 			const cursor = await this.getCursor();
 			const used = await this.getUsed();
 			if (used >= this.size) {
@@ -133,7 +139,7 @@ export class AllocatableRange {
 
 	public async claim(index: number): Promise<void> {
 		this.validateIndex(index);
-		await withLock(this.etcd, lockKey(this.name), { timeoutMs: 5000 }, async () => {
+		await this.etcd.withLock(this.ctx, lockKey(this.name), { timeoutMs: 5000 }, async () => {
 			const bitmap = await this.getBitmap();
 			if (this.getBit(bitmap, index)) {
 				throw new AlreadyAllocated(this.name, index);
@@ -147,7 +153,7 @@ export class AllocatableRange {
 
 	public async release(index: number): Promise<void> {
 		this.validateIndex(index);
-		await withLock(this.etcd, lockKey(this.name), { timeoutMs: 5000 }, async () => {
+		await this.etcd.withLock(this.ctx, lockKey(this.name), { timeoutMs: 5000 }, async () => {
 			const bitmap = await this.getBitmap();
 			if (!this.getBit(bitmap, index)) {
 				throw new NotAllocated(this.name, index);
@@ -161,7 +167,7 @@ export class AllocatableRange {
 
 	public async has(index: number): Promise<boolean> {
 		this.validateIndex(index);
-		return await withLock(this.etcd, lockKey(this.name), { timeoutMs: 5000 }, async () => {
+		return await this.etcd.withLock(this.ctx, lockKey(this.name), { timeoutMs: 5000 }, async () => {
 			const bitmap = await this.getBitmap();
 			return this.getBit(bitmap, index);
 		});
@@ -173,13 +179,19 @@ export class PortRange {
 	private readonly from: number;
 	private readonly to: number;
 
-	static async create(etcd: Etcd, name: string, from: number, to: number): Promise<PortRange> {
-		const range = await AllocatableRange.create(etcd, name, to - from + 1);
+	static async create(
+		ctx: context.Context,
+		etcd: Etcd,
+		name: string,
+		from: number,
+		to: number,
+	): Promise<PortRange> {
+		const range = await AllocatableRange.create(ctx, etcd, name, to - from + 1);
 		return new PortRange(range, from, to);
 	}
 
-	static open(etcd: Etcd, name: string, from: number, to: number): PortRange {
-		return new PortRange(AllocatableRange.open(etcd, name, to - from + 1), from, to);
+	static open(ctx: context.Context, etcd: Etcd, name: string, from: number, to: number): PortRange {
+		return new PortRange(AllocatableRange.open(ctx, etcd, name, to - from + 1), from, to);
 	}
 
 	private constructor(range: AllocatableRange, from: number, to: number) {
@@ -235,15 +247,20 @@ export class IpRange {
 	private readonly range: AllocatableRange;
 	private readonly cidr: CIDR;
 
-	static async create(etcd: Etcd, name: string, cidrStr: string): Promise<IpRange> {
+	static async create(
+		ctx: context.Context,
+		etcd: Etcd,
+		name: string,
+		cidrStr: string,
+	): Promise<IpRange> {
 		const cidr = new CIDR(cidrStr);
-		const range = await AllocatableRange.create(etcd, name, cidr.last - cidr.first + 1);
+		const range = await AllocatableRange.create(ctx, etcd, name, cidr.last - cidr.first + 1);
 		return new IpRange(range, cidr);
 	}
 
-	static open(etcd: Etcd, name: string, cidrStr: string): IpRange {
+	static open(ctx: context.Context, etcd: Etcd, name: string, cidrStr: string): IpRange {
 		const cidr = new CIDR(cidrStr);
-		return new IpRange(AllocatableRange.open(etcd, name, cidr.last - cidr.first + 1), cidr);
+		return new IpRange(AllocatableRange.open(ctx, etcd, name, cidr.last - cidr.first + 1), cidr);
 	}
 
 	private constructor(range: AllocatableRange, cidr: CIDR) {

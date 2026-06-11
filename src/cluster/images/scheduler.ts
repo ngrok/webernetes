@@ -26,8 +26,8 @@ export class Scheduler extends BaseImage {
 			return await super.exec(ctx, argv);
 		}
 		this.events = new EventRecorderImpl({
+			ctx,
 			api: ctx.api.corev1,
-			clock: ctx.clock,
 			component: "default-scheduler",
 		});
 		this.informer = k8s.makeInformer(
@@ -67,34 +67,29 @@ export class Scheduler extends BaseImage {
 	private async bindPod(ctx: ProcessContext, pod: V1Pod): Promise<void> {
 		const server = await this.nextServer(ctx);
 		let bound: V1Pod | undefined;
-		await retryConflicts(
-			async () => {
-				const name = pod.metadata?.name ?? "";
-				const namespace = pod.metadata?.namespace ?? "default";
-				const current = await ctx.api.corev1.readNamespacedPod({ name, namespace });
-				if (current.spec?.nodeName) {
-					return;
-				}
-				await ctx.api.corev1.createNamespacedPodBinding({
-					name,
-					namespace,
-					body: {
+		await retryConflicts(ctx, async () => {
+			const name = pod.metadata?.name ?? "";
+			const namespace = pod.metadata?.namespace ?? "default";
+			const current = await ctx.api.corev1.readNamespacedPod({ name, namespace });
+			if (current.spec?.nodeName) {
+				return;
+			}
+			await ctx.api.corev1.createNamespacedPodBinding({
+				name,
+				namespace,
+				body: {
+					apiVersion: "v1",
+					kind: "Binding",
+					metadata: { name, namespace },
+					target: {
 						apiVersion: "v1",
-						kind: "Binding",
-						metadata: { name, namespace },
-						target: {
-							apiVersion: "v1",
-							kind: "Node",
-							name: server.name,
-						},
+						kind: "Node",
+						name: server.name,
 					},
-				});
-				bound = await ctx.api.corev1.readNamespacedPod({ name, namespace });
-			},
-			{
-				clock: ctx.clock,
-			},
-		);
+				},
+			});
+			bound = await ctx.api.corev1.readNamespacedPod({ name, namespace });
+		});
 		if (bound) {
 			await this.events?.event(
 				bound,

@@ -2,8 +2,8 @@
  * SPDX-License-Identifier: Apache-2.0
  * Derived from Kubernetes, translated and modified for Webernetes.
  */
-import type { Clock } from "../../../../clock";
 import { Channel, type ReadOnlyChannel } from "../../../../go/channel";
+import type * as context from "../../../../go/context";
 import * as time from "../../../../go/time";
 import type { DelayFunc } from "./delay";
 
@@ -120,10 +120,10 @@ export class FixedTimer implements Timer {
 }
 
 // Models staging/src/k8s.io/apimachinery/pkg/util/wait/timer.go RealTimer.
-export function realTimer(clock: Clock): NewTimerFunc {
-	return (delayMs) => new time.Timer(clock, delayMs);
+export function realTimer(ctx: context.Context): NewTimerFunc {
+	return (delayMs) => new time.Timer(ctx, delayMs);
 }
 
-export function realTicker(clock: Clock): NewTickerFunc {
-	return (intervalMs) => new time.Ticker(clock, intervalMs);
+export function realTicker(ctx: context.Context): NewTickerFunc {
+	return (intervalMs) => new time.Ticker(ctx, intervalMs);
 }

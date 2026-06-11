@@ -11,7 +11,6 @@ import {
 	type V1PodStatus,
 } from "../../client";
 import { Channel } from "../../go/channel";
-import * as context from "../../go/context";
 import { browser } from "../../test/describe";
 import {
 	ContainerID,
@@ -82,11 +81,10 @@ function checkPodStatus(kl: TestKubelet["kubelet"], pod: V1Pod, phase: V1PodStat
 }
 
 // Models kubernetes/pkg/kubelet/kubelet_test.go TestSyncLoopAbort.
-browser.describe("syncLoopAbort", () => {
+browser.describe("syncLoopAbort", ({ ctx }) => {
 	it("returns false when the config channel is closed", async () => {
 		expect.hasAssertions();
-		const tCtx = context.background();
-		const testKubelet = newTestKubelet(false);
+		const testKubelet = newTestKubelet(ctx, false);
 		const kubelet = testKubelet.kubelet;
 		try {
 			kubelet.runtimeState.setRuntimeSync(kubelet.clock.now());
@@ -95,7 +93,7 @@ browser.describe("syncLoopAbort", () => {
 			ch.close();
 
 			const ok = await kubelet.syncLoopIteration(
-				tCtx,
+				ctx,
 				ch.readOnly(),
 				kubelet,
 				new Channel<Date>().readOnly(),
@@ -104,7 +102,7 @@ browser.describe("syncLoopAbort", () => {
 			);
 			expect(ok).toBe(false);
 
-			await kubelet.syncLoop(tCtx, ch.readOnly(), kubelet);
+			await kubelet.syncLoop(ctx, ch.readOnly(), kubelet);
 		} finally {
 			await testKubelet.cleanup();
 		}
@@ -112,11 +110,10 @@ browser.describe("syncLoopAbort", () => {
 });
 
 // Models kubernetes/pkg/kubelet/kubelet_test.go TestSyncPodsStartPod.
-browser.describe("syncPodsStartPod", () => {
+browser.describe("syncPodsStartPod", ({ ctx }) => {
 	it("starts pods dispatched through handlePodSyncs", async () => {
 		expect.hasAssertions();
-		const tCtx = context.background();
-		const testKubelet = newTestKubelet(false);
+		const testKubelet = newTestKubelet(ctx, false);
 		const kubelet = testKubelet.kubelet;
 		const fakeRuntime = testKubelet.fakeRuntime;
 		try {
@@ -127,7 +124,7 @@ browser.describe("syncPodsStartPod", () => {
 			];
 
 			kubelet.podManager.setPods(pods);
-			await kubelet.handlePodSyncs(tCtx, pods);
+			await kubelet.handlePodSyncs(ctx, pods);
 			expect(fakeRuntime.assertStartedPods([pods[0].metadata?.uid ?? ""])).toBe(true);
 		} finally {
 			await testKubelet.cleanup();
@@ -136,11 +133,10 @@ browser.describe("syncPodsStartPod", () => {
 });
 
 // Models kubernetes/pkg/kubelet/kubelet_test.go TestDispatchWorkOfCompletedPod.
-browser.describe("dispatchWorkOfCompletedPod", () => {
+browser.describe("dispatchWorkOfCompletedPod", ({ ctx }) => {
 	it("does not skip completed pods when dispatching pod worker sync work", async () => {
 		expect.hasAssertions();
-		const tCtx = context.background();
-		const testKubelet = newTestKubelet(false);
+		const testKubelet = newTestKubelet(ctx, false);
 		const kubelet = testKubelet.kubelet;
 		try {
 			let got = false;
@@ -204,7 +200,7 @@ browser.describe("dispatchWorkOfCompletedPod", () => {
 			];
 
 			for (const pod of pods) {
-				await kubelet.podWorkers.updatePod(tCtx, {
+				await kubelet.podWorkers.updatePod(ctx, {
 					pod,
 					updateType: "sync",
 					startTime: kubelet.clock.now(),
@@ -219,11 +215,10 @@ browser.describe("dispatchWorkOfCompletedPod", () => {
 });
 
 // Models kubernetes/pkg/kubelet/kubelet_test.go TestDispatchWorkOfActivePod.
-browser.describe("dispatchWorkOfActivePod", () => {
+browser.describe("dispatchWorkOfActivePod", ({ ctx }) => {
 	it("does not skip active pods when dispatching pod worker sync work", async () => {
 		expect.hasAssertions();
-		const tCtx = context.background();
-		const testKubelet = newTestKubelet(false);
+		const testKubelet = newTestKubelet(ctx, false);
 		const kubelet = testKubelet.kubelet;
 		try {
 			let got = false;
@@ -265,7 +260,7 @@ browser.describe("dispatchWorkOfActivePod", () => {
 			];
 
 			for (const pod of pods) {
-				await kubelet.podWorkers.updatePod(tCtx, {
+				await kubelet.podWorkers.updatePod(ctx, {
 					pod,
 					updateType: "sync",
 					startTime: kubelet.clock.now(),
@@ -280,10 +275,10 @@ browser.describe("dispatchWorkOfActivePod", () => {
 });
 
 // Models kubernetes/pkg/kubelet/kubelet_test.go TestGetPodsToSync.
-browser.describe("getPodsToSync", () => {
+browser.describe("getPodsToSync", ({ ctx }) => {
 	it("returns due work queue pods and pods selected by sync-loop handlers", async () => {
 		expect.hasAssertions();
-		const testKubelet = newTestKubelet(false);
+		const testKubelet = newTestKubelet(ctx, false);
 		const kubelet = testKubelet.kubelet;
 		try {
 			const pods = newTestPods(5);
@@ -359,10 +354,10 @@ class testPodSyncHandler {
 }
 
 // Models kubernetes/pkg/kubelet/kubelet_test.go TestGetPodsToSyncInvokesPodSyncLoopHandlers.
-browser.describe("getPodsToSyncInvokesPodSyncLoopHandlers", () => {
+browser.describe("getPodsToSyncInvokesPodSyncLoopHandlers", ({ ctx }) => {
 	it("invokes registered sync-loop handlers", async () => {
 		expect.hasAssertions();
-		const testKubelet = newTestKubelet(false);
+		const testKubelet = newTestKubelet(ctx, false);
 		const kubelet = testKubelet.kubelet;
 		try {
 			const pods = newTestPods(5);
@@ -379,11 +374,10 @@ browser.describe("getPodsToSyncInvokesPodSyncLoopHandlers", () => {
 });
 
 // Models kubernetes/pkg/kubelet/kubelet_test.go TestGenerateAPIPodStatusInvokesPodSyncHandlers.
-browser.describe("generateAPIPodStatusInvokesPodSyncHandlers", () => {
+browser.describe("generateAPIPodStatusInvokesPodSyncHandlers", ({ ctx }) => {
 	it("invokes registered pod sync handlers and reports eviction status", async () => {
 		expect.hasAssertions();
-		const tCtx = context.background();
-		const testKubelet = newTestKubelet(false);
+		const testKubelet = newTestKubelet(ctx, false);
 		const kubelet = testKubelet.kubelet;
 		try {
 			const pod = newTestPods(1)[0];
@@ -395,7 +389,7 @@ browser.describe("generateAPIPodStatusInvokesPodSyncHandlers", () => {
 				namespace: pod.metadata?.namespace ?? "",
 			});
 
-			const apiStatus = await kubelet.generateAPIPodStatus(tCtx, pod, status, false);
+			const apiStatus = await kubelet.generateAPIPodStatus(ctx, pod, status, false);
 			expect(apiStatus.phase).toBe("Failed");
 			expect(apiStatus.reason).toBe("Evicted");
 			expect(apiStatus.message).toBe("because");
@@ -406,10 +400,9 @@ browser.describe("generateAPIPodStatusInvokesPodSyncHandlers", () => {
 });
 
 // Models kubernetes/pkg/kubelet/kubelet_test.go TestGenerateAPIPodStatusWithSortedContainers.
-browser.describe("generateAPIPodStatusWithSortedContainers", () => {
+browser.describe("generateAPIPodStatusWithSortedContainers", ({ ctx }) => {
 	it("sorts container statuses by pod spec container order", async () => {
-		const tCtx = context.background();
-		const testKubelet = newTestKubelet(false);
+		const testKubelet = newTestKubelet(ctx, false);
 		try {
 			const kubelet = testKubelet.kubelet;
 			const numContainers = 10;
@@ -444,7 +437,7 @@ browser.describe("generateAPIPodStatusWithSortedContainers", () => {
 			};
 
 			for (let i = 0; i < 5; i++) {
-				const apiStatus = await kubelet.generateAPIPodStatus(tCtx, pod, status, false);
+				const apiStatus = await kubelet.generateAPIPodStatus(ctx, pod, status, false);
 				expect(apiStatus.containerStatuses?.map((container) => container.name)).toEqual(
 					expectedOrder,
 				);
@@ -456,12 +449,11 @@ browser.describe("generateAPIPodStatusWithSortedContainers", () => {
 });
 
 // Models kubernetes/pkg/kubelet/kubelet_test.go TestHandlePodRemovesWhenSourcesAreReady.
-browser.describe("handlePodRemovesWhenSourcesAreReady", () => {
+browser.describe("handlePodRemovesWhenSourcesAreReady", ({ ctx }) => {
 	it("gates pod worker deletion on source readiness", async () => {
 		expect.hasAssertions();
-		const tCtx = context.background();
 		let ready = false;
-		const testKubelet = newTestKubelet(false);
+		const testKubelet = newTestKubelet(ctx, false);
 		const kubelet = testKubelet.kubelet;
 		try {
 			const fakePod: FakePod = newFakePod({
@@ -492,13 +484,13 @@ browser.describe("handlePodRemovesWhenSourcesAreReady", () => {
 			const pods = [podWithUIDNameNs("1", "foo", "new")];
 			kubelet.sourcesReady = { addSource: () => {}, allReady: () => ready };
 
-			await kubelet.handlePodRemoves(tCtx, pods);
+			await kubelet.handlePodRemoves(ctx, pods);
 			await Promise.resolve();
 
 			expect(testKubelet.fakePodWorkers.triggeredDeletion).toEqual([]);
 
 			ready = true;
-			await kubelet.handlePodRemoves(tCtx, pods);
+			await kubelet.handlePodRemoves(ctx, pods);
 			await Promise.resolve();
 
 			expect(testKubelet.fakePodWorkers.triggeredDeletion).toEqual(["1"]);
@@ -509,11 +501,10 @@ browser.describe("handlePodRemovesWhenSourcesAreReady", () => {
 });
 
 // Models kubernetes/pkg/kubelet/kubelet_test.go TestHandlePodCleanups.
-browser.describe("handlePodCleanups", () => {
+browser.describe("handlePodCleanups", ({ ctx }) => {
 	it("queues orphaned runtime pods for deletion through pod workers", async () => {
 		expect.hasAssertions();
-		const tCtx = context.background();
-		const testKubelet = newTestKubelet(false);
+		const testKubelet = newTestKubelet(ctx, false);
 		const kubelet = testKubelet.kubelet;
 		try {
 			testKubelet.fakeRuntime.podList = [
@@ -543,7 +534,7 @@ browser.describe("handlePodCleanups", () => {
 				}),
 			];
 
-			const err = await kubelet.handlePodCleanups(tCtx);
+			const err = await kubelet.handlePodCleanups(ctx);
 			expect(err).toBeUndefined();
 
 			expect(testKubelet.fakePodWorkers.triggeredDeletion).toEqual(["12345678"]);
@@ -555,11 +546,10 @@ browser.describe("handlePodCleanups", () => {
 });
 
 // Models kubernetes/pkg/kubelet/kubelet_test.go TestPurgingObsoleteStatusMapEntries.
-browser.describe("purgingObsoleteStatusMapEntries", () => {
+browser.describe("purgingObsoleteStatusMapEntries", ({ ctx }) => {
 	it("removes obsolete status manager cache entries during cleanup", async () => {
 		expect.hasAssertions();
-		const tCtx = context.background();
-		const testKubelet = newTestKubelet(false);
+		const testKubelet = newTestKubelet(ctx, false);
 		const kubelet = testKubelet.kubelet;
 		try {
 			const pods = [
@@ -574,11 +564,11 @@ browser.describe("purgingObsoleteStatusMapEntries", () => {
 			];
 			const podToTest = pods[1];
 
-			await kubelet.handlePodAdditions(tCtx, pods);
+			await kubelet.handlePodAdditions(ctx, pods);
 			expect(kubelet.statusManager.getPodStatus(podToTest.metadata?.uid ?? "")).toBeDefined();
 
 			kubelet.podManager.setPods([]);
-			const err = await kubelet.handlePodCleanups(tCtx);
+			const err = await kubelet.handlePodCleanups(ctx);
 			expect(err).toBeUndefined();
 
 			expect(kubelet.statusManager.getPodStatus(podToTest.metadata?.uid ?? "")).toBeUndefined();
@@ -589,10 +579,10 @@ browser.describe("purgingObsoleteStatusMapEntries", () => {
 });
 
 // Models kubernetes/pkg/kubelet/kubelet_test.go TestFilterOutInactivePods.
-browser.describe("filterOutInactivePods", () => {
+browser.describe("filterOutInactivePods", ({ ctx }) => {
 	it("excludes terminal and worker-known terminated pods while keeping active terminating pods", async () => {
 		expect.hasAssertions();
-		const testKubelet = newTestKubelet(false);
+		const testKubelet = newTestKubelet(ctx, false);
 		const kubelet = testKubelet.kubelet;
 		try {
 			const pods = newTestPods(8);
@@ -639,11 +629,10 @@ browser.describe("filterOutInactivePods", () => {
 });
 
 // Models kubernetes/pkg/kubelet/kubelet_test.go TestNetworkErrorsWithoutHostNetwork.
-browser.describe("networkErrorsWithoutHostNetwork", () => {
+browser.describe("networkErrorsWithoutHostNetwork", ({ ctx }) => {
 	it("blocks non-host-network pods when runtime network is not ready", async () => {
 		expect.hasAssertions();
-		const tCtx = context.background();
-		const testKubelet = newTestKubelet(false);
+		const testKubelet = newTestKubelet(ctx, false);
 		const kubelet = testKubelet.kubelet;
 		const fakeKubeClient = testKubelet.fakeKubeClient;
 		try {
@@ -658,7 +647,7 @@ browser.describe("networkErrorsWithoutHostNetwork", () => {
 			});
 
 			kubelet.podManager.setPods([pod]);
-			const [isTerminal, , err] = await kubelet.syncPod(tCtx, "update", pod, undefined, {
+			const [isTerminal, , err] = await kubelet.syncPod(ctx, "update", pod, undefined, {
 				id: "",
 				name: "",
 				namespace: "",
@@ -683,7 +672,7 @@ browser.describe("networkErrorsWithoutHostNetwork", () => {
 			pod.metadata.annotations ??= {};
 			pod.metadata.annotations[configSourceAnnotationKey] = "file";
 			pod.spec = { ...pod.spec, containers: pod.spec?.containers ?? [], hostNetwork: true };
-			const [hostIsTerminal, , hostErr] = await kubelet.syncPod(tCtx, "update", pod, undefined, {
+			const [hostIsTerminal, , hostErr] = await kubelet.syncPod(ctx, "update", pod, undefined, {
 				id: "",
 				name: "",
 				namespace: "",
@@ -701,11 +690,10 @@ browser.describe("networkErrorsWithoutHostNetwork", () => {
 });
 
 // Models kubernetes/pkg/kubelet/kubelet_test.go TestSyncPodsSetStatusToFailedForPodsThatRunTooLong.
-browser.describe("syncPodsSetStatusToFailedForPodsThatRunTooLong", () => {
+browser.describe("syncPodsSetStatusToFailedForPodsThatRunTooLong", ({ ctx }) => {
 	it("sets pod status to failed after active deadline is exceeded", async () => {
 		expect.hasAssertions();
-		const tCtx = context.background();
-		const testKubelet = newTestKubelet(false);
+		const testKubelet = newTestKubelet(ctx, false);
 		const fakeRuntime = testKubelet.fakeRuntime;
 		const kubelet = testKubelet.kubelet;
 		try {
@@ -740,7 +728,7 @@ browser.describe("syncPodsSetStatusToFailedForPodsThatRunTooLong", () => {
 				}),
 			];
 
-			await kubelet.handlePodUpdates(tCtx, pods);
+			await kubelet.handlePodUpdates(ctx, pods);
 			const status = kubelet.statusManager.getPodStatus(pods[0].metadata?.uid ?? "");
 			expect(status).toBeDefined();
 			expect(status?.phase).toBe("Failed");
@@ -752,11 +740,10 @@ browser.describe("syncPodsSetStatusToFailedForPodsThatRunTooLong", () => {
 });
 
 // Models kubernetes/pkg/kubelet/kubelet_test.go TestSyncPodsDoesNotSetPodsThatDidNotRunTooLongToFailed.
-browser.describe("syncPodsDoesNotSetPodsThatDidNotRunTooLongToFailed", () => {
+browser.describe("syncPodsDoesNotSetPodsThatDidNotRunTooLongToFailed", ({ ctx }) => {
 	it("does not set pod status to failed before active deadline is exceeded", async () => {
 		expect.hasAssertions();
-		const tCtx = context.background();
-		const testKubelet = newTestKubelet(false);
+		const testKubelet = newTestKubelet(ctx, false);
 		const fakeRuntime = testKubelet.fakeRuntime;
 		const kubelet = testKubelet.kubelet;
 		try {
@@ -792,7 +779,7 @@ browser.describe("syncPodsDoesNotSetPodsThatDidNotRunTooLongToFailed", () => {
 			];
 
 			kubelet.podManager.setPods(pods);
-			await kubelet.handlePodUpdates(tCtx, pods);
+			await kubelet.handlePodUpdates(ctx, pods);
 			const status = kubelet.statusManager.getPodStatus(pods[0].metadata?.uid ?? "");
 			expect(status).toBeDefined();
 			expect(status?.phase).not.toBe("Failed");
@@ -803,11 +790,10 @@ browser.describe("syncPodsDoesNotSetPodsThatDidNotRunTooLongToFailed", () => {
 });
 
 // Models kubernetes/pkg/kubelet/kubelet_test.go TestSyncPodRestartAllContainersRequeue.
-browser.describe("syncPodRestartAllContainersRequeue", () => {
+browser.describe("syncPodRestartAllContainersRequeue", ({ ctx }) => {
 	it("requeues immediately after successful restart-all container removal", async () => {
 		expect.hasAssertions();
-		const tCtx = context.background();
-		const testKubelet = newTestKubelet(false);
+		const testKubelet = newTestKubelet(ctx, false);
 		const kubelet = testKubelet.kubelet;
 		try {
 			const pod = podWithUIDNameNsSpec("12345678", "foo", "new", {
@@ -845,7 +831,7 @@ browser.describe("syncPodRestartAllContainersRequeue", () => {
 				},
 			);
 
-			const [isTerminal, , err] = await kubelet.syncPod(tCtx, "update", pod, undefined, {
+			const [isTerminal, , err] = await kubelet.syncPod(ctx, "update", pod, undefined, {
 				id: "",
 				name: "",
 				namespace: "",
@@ -878,7 +864,7 @@ browser.describe("syncPodRestartAllContainersRequeue", () => {
 });
 
 // Models kubernetes/pkg/kubelet/kubelet_test.go TestGenerateAPIPodStatusWithReasonCache.
-browser.describe("generateAPIPodStatusWithReasonCache", () => {
+browser.describe("generateAPIPodStatusWithReasonCache", ({ ctx }) => {
 	const testTimestamp = new Date(123456789000 + 987);
 	const testErrorReason = new Error("test-error");
 	const emptyContainerID = new ContainerID("", "").toString();
@@ -994,8 +980,7 @@ browser.describe("generateAPIPodStatusWithReasonCache", () => {
 
 	it("generates api pod status with reason cache", async () => {
 		expect.hasAssertions();
-		const tCtx = context.background();
-		const testKubelet = newTestKubelet(false);
+		const testKubelet = newTestKubelet(ctx, false);
 		const kubelet = testKubelet.kubelet;
 		try {
 			for (const test of tests) {
@@ -1006,7 +991,7 @@ browser.describe("generateAPIPodStatusWithReasonCache", () => {
 				pod.spec = { ...pod.spec, containers: test.containers };
 				pod.status = { containerStatuses: test.oldStatuses };
 				podStatus.containerStatuses = test.statuses;
-				const apiStatus = await kubelet.generateAPIPodStatus(tCtx, pod, podStatus, false);
+				const apiStatus = await kubelet.generateAPIPodStatus(ctx, pod, podStatus, false);
 
 				verifyContainerStatuses(
 					apiStatus.containerStatuses,
@@ -1025,7 +1010,7 @@ browser.describe("generateAPIPodStatusWithReasonCache", () => {
 });
 
 // Models kubernetes/pkg/kubelet/kubelet_test.go TestGenerateAPIPodStatusWithDifferentRestartPolicies.
-browser.describe("generateAPIPodStatusWithDifferentRestartPolicies", () => {
+browser.describe("generateAPIPodStatusWithDifferentRestartPolicies", ({ ctx }) => {
 	const testErrorReason = new Error("test-error");
 	const emptyContainerID = new ContainerID("", "").toString();
 	const containers: V1Container[] = [{ name: "succeed" }, { name: "failed" }];
@@ -1087,15 +1072,14 @@ browser.describe("generateAPIPodStatusWithDifferentRestartPolicies", () => {
 
 	it("generates api pod status with different restart policies", async () => {
 		expect.hasAssertions();
-		const tCtx = context.background();
-		const testKubelet = newTestKubelet(false);
+		const testKubelet = newTestKubelet(ctx, false);
 		const kubelet = testKubelet.kubelet;
 		try {
 			kubelet.reasonCache.add(pod.metadata?.uid ?? "", "succeed", testErrorReason, "");
 			kubelet.reasonCache.add(pod.metadata?.uid ?? "", "failed", testErrorReason, "");
 			for (const test of tests) {
 				pod.spec = { containers, restartPolicy: test.restartPolicy };
-				const apiStatus = await kubelet.generateAPIPodStatus(tCtx, pod, podStatus, false);
+				const apiStatus = await kubelet.generateAPIPodStatus(ctx, pod, podStatus, false);
 
 				verifyContainerStatuses(
 					apiStatus.containerStatuses,
@@ -1115,7 +1099,7 @@ browser.describe("generateAPIPodStatusWithDifferentRestartPolicies", () => {
 });
 
 // Models kubernetes/pkg/kubelet/kubelet_test.go TestGenerateAPIPodStatusWithContainerRestartPolicies.
-browser.describe("generateAPIPodStatusWithContainerRestartPolicies", () => {
+browser.describe("generateAPIPodStatusWithContainerRestartPolicies", ({ ctx }) => {
 	const containerRestartPolicyAlways = "Always";
 	const containerRestartPolicyOnFailure = "OnFailure";
 	const containerRestartPolicyNever = "Never";
@@ -1258,15 +1242,14 @@ browser.describe("generateAPIPodStatusWithContainerRestartPolicies", () => {
 
 	it("generates api pod status with different container-level restart policies", async () => {
 		expect.hasAssertions();
-		const tCtx = context.background();
-		const testKubelet = newTestKubelet(false);
+		const testKubelet = newTestKubelet(ctx, false);
 		const kubelet = testKubelet.kubelet;
 		try {
 			kubelet.reasonCache.add(pod.metadata?.uid ?? "", "succeed", testErrorReason, "");
 			kubelet.reasonCache.add(pod.metadata?.uid ?? "", "failed", testErrorReason, "");
 			for (const test of tests) {
 				pod.spec = { containers: test.containers, restartPolicy: "Always" };
-				const apiStatus = await kubelet.generateAPIPodStatus(tCtx, pod, podStatus, false);
+				const apiStatus = await kubelet.generateAPIPodStatus(ctx, pod, podStatus, false);
 
 				verifyContainerStatuses(
 					apiStatus.containerStatuses,
@@ -1282,11 +1265,10 @@ browser.describe("generateAPIPodStatusWithContainerRestartPolicies", () => {
 });
 
 // Models kubernetes/pkg/kubelet/kubelet_test.go TestSyncTerminatingPodKillPod.
-browser.describe("syncTerminatingPodKillPod", () => {
+browser.describe("syncTerminatingPodKillPod", ({ ctx }) => {
 	it("kills the terminating pod and stores the supplied failed status", async () => {
 		expect.hasAssertions();
-		const tCtx = context.background();
-		const testKubelet = newTestKubelet(false);
+		const testKubelet = newTestKubelet(ctx, false);
 		const kl = testKubelet.kubelet;
 		try {
 			const pod: V1Pod = {
@@ -1304,7 +1286,7 @@ browser.describe("syncTerminatingPodKillPod", () => {
 			const gracePeriodOverride = 0;
 
 			const err = await kl.syncTerminatingPod(
-				tCtx,
+				ctx,
 				pod,
 				podStatus,
 				gracePeriodOverride,

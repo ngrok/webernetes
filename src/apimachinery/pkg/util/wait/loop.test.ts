@@ -7,19 +7,18 @@ import { expect, it } from "vitest";
 import { Channel, type ReadOnlyChannel } from "../../../../go/channel";
 import * as context from "../../../../go/context";
 import { browser } from "../../../../test/describe";
-import { Clock } from "../../../../clock";
 import { DelayFunc } from "./delay";
 import { loopConditionUntilContext } from "./loop";
 import { newNoopTimer, type Timer, VariableTimer } from "./timer";
 
-browser.describe("loopConditionUntilContext", () => {
+browser.describe("loopConditionUntilContext", ({ ctx }) => {
 	// Models staging/src/k8s.io/apimachinery/pkg/util/wait/loop_test.go Test_loopConditionWithContextImmediateDelay.
 	it("waits for the timer before the first non-immediate condition call", async () => {
 		const expectedError = new Error("Expected error");
 		const timer = new ManualTimer();
 		let attempts = 0;
 
-		const promise = loopConditionUntilContext(context.background(), timer, false, true, () => {
+		const promise = loopConditionUntilContext(ctx, timer, false, true, () => {
 			attempts++;
 			return [false, expectedError];
 		});
@@ -39,7 +38,7 @@ browser.describe("loopConditionUntilContext", () => {
 			name: string;
 			immediate?: boolean;
 			sliding?: boolean;
-			makeContext?: () => [context.Context, context.CancelFunc];
+			makeContext?: (ctx: context.Context) => [context.Context, context.CancelFunc];
 			callback: (calls: number) => [boolean, Error | undefined];
 			cancelContextAfter?: number;
 			attemptsExpected: number;
@@ -121,11 +120,11 @@ browser.describe("loopConditionUntilContext", () => {
 		];
 
 		for (const test of tests) {
-			const [ctx, cancel] = test.makeContext?.() ?? context.withCancel(context.background());
+			const [childCtx, cancel] = test.makeContext?.(ctx) ?? context.withCancel(ctx);
 			const timer = test.timer ?? newNoopTimer();
 			let attempts = 0;
 			const err = await loopConditionUntilContext(
-				ctx,
+				childCtx,
 				timer,
 				test.immediate ?? false,
 				test.sliding ?? false,
@@ -184,10 +183,10 @@ browser.describe("loopConditionUntilContext", () => {
 		];
 
 		for (const test of tests) {
-			const timer = newRecordingVariableTimer(test.delays);
+			const timer = newRecordingVariableTimer(ctx, test.delays);
 			let attempts = 0;
 			const err = await loopConditionUntilContext(
-				context.background(),
+				ctx,
 				timer,
 				test.immediate ?? false,
 				test.sliding ?? false,
@@ -252,10 +251,12 @@ class TimerWrapper {
 	}
 }
 
-function newRecordingVariableTimer(delays: number[]): VariableTimer & { wrapper: TimerWrapper } {
-	const clock = new Clock();
+function newRecordingVariableTimer(
+	ctx: context.Context,
+	delays: number[],
+): VariableTimer & { wrapper: TimerWrapper } {
 	let index = 0;
-	const delayFunc = new DelayFunc(() => delays[index++] ?? 0, clock);
+	const delayFunc = new DelayFunc(ctx, () => delays[index++] ?? 0);
 	let wrapper: TimerWrapper | undefined;
 	const timer = new VariableTimer(delayFunc, (delayMs) => {
 		wrapper = new TimerWrapper(delayMs);
@@ -272,8 +273,8 @@ function newRecordingVariableTimer(delays: number[]): VariableTimer & { wrapper:
 	return timer;
 }
 
-function cancelledContext(): [context.Context, context.CancelFunc] {
-	const [ctx, cancel] = context.withCancel(context.background());
+function cancelledContext(ctx: context.Context): [context.Context, context.CancelFunc] {
+	const [childCtx, cancel] = context.withCancel(ctx);
 	cancel();
-	return [ctx, cancel];
+	return [childCtx, cancel];
 }

@@ -3,7 +3,7 @@
  * Derived from Kubernetes, translated and modified for Webernetes.
  */
 import type { V1ObjectReference, V1Pod } from "../../../client";
-import type { Clock } from "../../../clock";
+import { getClock } from "../../../clock-context";
 import type { Backoff } from "../../../client-go/util/flowcontrol/backoff";
 import { Channel, select } from "../../../go/channel";
 import * as context from "../../../go/context";
@@ -17,9 +17,9 @@ import { newParallelImagePuller, type ImagePuller, type PullResult } from "./pul
 import { ImagePullError, type ImageManager } from "./types";
 
 export interface NewImageManagerOptions {
+	ctx: context.Context;
 	recorder: EventRecorder;
 	imageService: ImageService;
-	clock: Clock;
 	imageBackOff: Backoff;
 	imagePullManager?: ImagePullManager;
 	puller?: ImagePuller;
@@ -40,7 +40,6 @@ export class KubeletImageManager implements ImageManager {
 	private readonly recorder: EventRecorder;
 	private readonly imageService: ImageService;
 	private readonly imagePullManager: ImagePullManager;
-	private readonly clock: Clock;
 	private readonly backOff: Backoff;
 	private readonly prevPullErrMsg = new Map<string, string>();
 	private readonly puller: ImagePuller;
@@ -48,19 +47,17 @@ export class KubeletImageManager implements ImageManager {
 
 	constructor(options: NewImageManagerOptions) {
 		const imageService = throttleImagePulling(
+			options.ctx,
 			options.imageService,
 			options.qps,
 			options.burst,
-			options.clock,
 		);
 		this.recorder = options.recorder;
 		this.imageService = imageService;
 		this.imagePullManager = options.imagePullManager ?? new NoopImagePullManager();
-		this.clock = options.clock;
 		this.backOff = options.imageBackOff;
 		this.puller =
-			options.puller ??
-			newParallelImagePuller(this.clock, imageService, options.maxParallelImagePulls);
+			options.puller ?? newParallelImagePuller(imageService, options.maxParallelImagePulls);
 		this.podPullingTimeRecorder = options.podPullingTimeRecorder;
 	}
 
@@ -186,6 +183,7 @@ export class KubeletImageManager implements ImageManager {
 		let imageRef = "";
 		let pullSucceeded = false;
 		let finalPullCredentials: unknown | undefined;
+		const clock = getClock(ctx);
 
 		const recordPullIntentErr = await this.imagePullManager.recordPullIntent(image);
 		if (recordPullIntentErr !== undefined) {
@@ -198,7 +196,7 @@ export class KubeletImageManager implements ImageManager {
 
 		try {
 			const backOffKey = `${podUID}_${image}`;
-			if (this.backOff.isInBackOffSinceUpdate(backOffKey, this.clock.now())) {
+			if (this.backOff.isInBackOffSinceUpdate(backOffKey, clock.now())) {
 				let msg = `Back-off pulling image "${image}"`;
 				await this.logIt(objRef, "Normal", "BackOff", logPrefix, msg);
 				const prevPullErrMsg = this.prevPullErrMsg.get(backOffKey);
@@ -211,7 +209,7 @@ export class KubeletImageManager implements ImageManager {
 
 			this.podPullingTimeRecorder.recordImageStartedPulling(podUID);
 			await this.logIt(objRef, "Normal", "Pulling", logPrefix, `Pulling image "${image}"`);
-			const startTime = this.clock.nowMs();
+			const startTime = clock.nowMs();
 
 			const pullChan = new Channel<PullResult>();
 			this.puller.pullImage(ctx, spec, pullCredentials, pullChan, podSandboxConfig);
@@ -230,14 +228,14 @@ export class KubeletImageManager implements ImageManager {
 					logPrefix,
 					`Failed to pull image "${image}": ${imagePullResult.err.message}`,
 				);
-				this.backOff.next(backOffKey, this.clock.now());
+				this.backOff.next(backOffKey, clock.now());
 				const [errMsg, err] = evalCRIPullErr(image, imagePullResult.err);
 				this.prevPullErrMsg.set(backOffKey, `${err.message}: ${errMsg}`);
 				return ["", errMsg, err];
 			}
 
 			this.podPullingTimeRecorder.recordImageFinishedPulling(podUID);
-			const imagePullDuration = Math.trunc(this.clock.nowMs() - startTime);
+			const imagePullDuration = Math.trunc(clock.nowMs() - startTime);
 			const pullDuration = Math.trunc(imagePullResult.pullDuration);
 			await this.logIt(
 				objRef,

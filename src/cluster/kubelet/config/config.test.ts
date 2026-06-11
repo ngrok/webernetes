@@ -6,7 +6,6 @@ import { expect, it } from "vitest";
 
 import type { V1Pod } from "../../../client";
 import { FakeRecorder, newFakeRecorder } from "../../../client-go/tools/record/fake";
-import { Clock } from "../../../clock";
 import { select, type ReadOnlyChannel, type WriteOnlyChannel } from "../../../go/channel";
 import * as context from "../../../go/context";
 import { deepEqual } from "../../../deep-equal";
@@ -22,10 +21,10 @@ type TestPod = V1Pod & {
 	spec: NonNullable<V1Pod["spec"]>;
 };
 
-browser.describe("PodConfig", () => {
+browser.describe("PodConfig", ({ ctx }) => {
 	// Models kubernetes/pkg/kubelet/config/config_test.go TestNewPodAdded.
 	it("sends add updates for new pods", async () => {
-		const [channel, ch] = createPodConfigTester(context.background());
+		const [channel, ch] = createPodConfigTester(ctx);
 		await channel.send(createSourceUpdate(createValidPod("foo", "new")));
 
 		await expectPodUpdate(ch, createPodUpdate("ADD", testSource, createValidPod("foo", "new")));
@@ -33,7 +32,7 @@ browser.describe("PodConfig", () => {
 
 	// Models kubernetes/pkg/kubelet/config/config_test.go TestNewPodAddedInvalidNamespace.
 	it("sends add updates for new pods with invalid namespace", async () => {
-		const [channel, ch] = createPodConfigTester(context.background());
+		const [channel, ch] = createPodConfigTester(ctx);
 		await channel.send(createSourceUpdate(createValidPod("foo", "")));
 
 		await expectPodUpdate(ch, createPodUpdate("ADD", testSource, createValidPod("foo", "")));
@@ -41,7 +40,7 @@ browser.describe("PodConfig", () => {
 
 	// Models kubernetes/pkg/kubelet/config/config_test.go TestNewPodAddedDefaultNamespace.
 	it("sends add updates for new pods in the default namespace", async () => {
-		const [channel, ch] = createPodConfigTester(context.background());
+		const [channel, ch] = createPodConfigTester(ctx);
 		await channel.send(createSourceUpdate(createValidPod("foo", "default")));
 
 		await expectPodUpdate(ch, createPodUpdate("ADD", testSource, createValidPod("foo", "default")));
@@ -49,7 +48,7 @@ browser.describe("PodConfig", () => {
 
 	// Models kubernetes/pkg/kubelet/config/config_test.go TestNewPodAddedDifferentNamespaces.
 	it("treats pods with the same name in different namespaces as distinct", async () => {
-		const [channel, ch] = createPodConfigTester(context.background());
+		const [channel, ch] = createPodConfigTester(ctx);
 		const pod1 = createValidPod("foo", "default");
 		await channel.send(createSourceUpdate(pod1));
 		await expectPodUpdate(ch, createPodUpdate("ADD", testSource, createValidPod("foo", "default")));
@@ -61,7 +60,7 @@ browser.describe("PodConfig", () => {
 
 	// Models kubernetes/pkg/kubelet/config/config_test.go TestInvalidPodFiltered.
 	it("filters duplicate pod full names and records validation events", async () => {
-		const [channel, ch] = createPodConfigTester(context.background());
+		const [channel, ch] = createPodConfigTester(ctx);
 		await channel.send(createSourceUpdate(createValidPod("foo", "new")));
 		await expectPodUpdate(ch, createPodUpdate("ADD", testSource, createValidPod("foo", "new")));
 
@@ -72,8 +71,8 @@ browser.describe("PodConfig", () => {
 	// Simulator-only test.
 	it("records validation events for duplicate pod full names in a source update", async () => {
 		const recorder = newFakeRecorder(20);
-		const config = newPodConfig(recorder, new MockPodStartupSLIObserver(), new Clock());
-		const channel = config.channel(context.background(), testSource);
+		const config = newPodConfig(recorder, new MockPodStartupSLIObserver());
+		const channel = config.channel(ctx, testSource);
 		const ch = config.updates();
 		await channel.send(
 			createSourceUpdate(createValidPod("foo", "new"), createValidPod("foo", "new")),
@@ -85,7 +84,7 @@ browser.describe("PodConfig", () => {
 
 	// Models kubernetes/pkg/kubelet/config/config_test.go TestNewPodAddedUpdatedRemoved.
 	it("converts source snapshots into add, update, and remove operations", async () => {
-		const [channel, ch] = createPodConfigTester(context.background());
+		const [channel, ch] = createPodConfigTester(ctx);
 		await channel.send(createSourceUpdate(createValidPod("foo", "new")));
 		await expectPodUpdate(ch, createPodUpdate("ADD", testSource, createValidPod("foo", "new")));
 
@@ -105,7 +104,7 @@ browser.describe("PodConfig", () => {
 
 	// Models kubernetes/pkg/kubelet/config/config_test.go TestNewPodAddedDelete.
 	it("converts graceful deletion into delete operations", async () => {
-		const [channel, ch] = createPodConfigTester(context.background());
+		const [channel, ch] = createPodConfigTester(ctx);
 		const addedPod = createValidPod("foo", "new");
 		await channel.send(createSourceUpdate(addedPod));
 		await expectPodUpdate(ch, createPodUpdate("ADD", testSource, addedPod));
@@ -119,7 +118,7 @@ browser.describe("PodConfig", () => {
 
 	// Models kubernetes/pkg/kubelet/config/config_test.go TestNewPodAddedUpdatedSet.
 	it("orders remove, add, and update operations from a changed set", async () => {
-		const [channel, ch] = createPodConfigTester(context.background());
+		const [channel, ch] = createPodConfigTester(ctx);
 		let podUpdate = createSourceUpdate(
 			createValidPod("foo", "new"),
 			createValidPod("foo2", "new"),
@@ -162,7 +161,7 @@ browser.describe("PodConfig", () => {
 
 	// Models kubernetes/pkg/kubelet/config/config_test.go TestNewPodAddedSetReconciled.
 	it("converts status-only source changes into reconcile operations", async () => {
-		const [channel, ch] = createPodConfigTester(context.background());
+		const [channel, ch] = createPodConfigTester(ctx);
 		let podWithStatusChange: V1Pod;
 		let pods = newTestPods(false, false);
 
@@ -185,7 +184,7 @@ browser.describe("PodConfig", () => {
 
 	// Models kubernetes/pkg/kubelet/config/config_test.go TestInitialEmptySet.
 	it("sends an empty add update for the first empty source set", async () => {
-		const [channel, ch] = createPodConfigTester(context.background());
+		const [channel, ch] = createPodConfigTester(ctx);
 		await channel.send(createSourceUpdate());
 		await expectPodUpdate(ch, createPodUpdate("ADD", testSource));
 
@@ -196,7 +195,7 @@ browser.describe("PodConfig", () => {
 
 	// Models kubernetes/pkg/kubelet/config/config_test.go TestPodUpdateAnnotations.
 	it("updates pods when non-local annotations change", async () => {
-		const [channel, ch] = createPodConfigTester(context.background());
+		const [channel, ch] = createPodConfigTester(ctx);
 		const pod = createValidPod("foo2", "new");
 		pod.metadata.annotations = { "kubernetes.io/blah": "blah" };
 		const clone = deepCopyPod(pod);
@@ -236,7 +235,7 @@ browser.describe("PodConfig", () => {
 
 	// Models kubernetes/pkg/kubelet/config/config_test.go TestPodUpdateLabels.
 	it("updates pods when labels change", async () => {
-		const [channel, ch] = createPodConfigTester(context.background());
+		const [channel, ch] = createPodConfigTester(ctx);
 		const pod = createValidPod("foo2", "new");
 		pod.metadata.labels = { key: "value" };
 		const clone = deepCopyPod(pod);
@@ -251,8 +250,7 @@ browser.describe("PodConfig", () => {
 
 	// Models kubernetes/pkg/kubelet/config/config_test.go TestPodConfigRace.
 	it("handles concurrent channel and seen-source calls", async () => {
-		const clock = new Clock();
-		const config = newPodConfig(new FakeRecorder(), new MockPodStartupSLIObserver(), clock);
+		const config = newPodConfig(new FakeRecorder(), new MockPodStartupSLIObserver());
 		const seenSources = new Set<string>([testSource]);
 		const iterations = 100;
 
@@ -260,7 +258,7 @@ browser.describe("PodConfig", () => {
 			Promise.all([
 				(async () => {
 					for (let i = 0; i < iterations; i++) {
-						config.channel(context.background(), String(i));
+						config.channel(ctx, String(i));
 					}
 				})(),
 				(async () => {
@@ -295,8 +293,7 @@ function newTestPods(touchStatus: boolean, touchSpec: boolean): [TestPod, TestPo
 function createPodConfigTester(
 	ctx: context.Context,
 ): [WriteOnlyChannel<SourceUpdate>, ReadOnlyChannel<PodUpdate>, PodConfig] {
-	const clock = new Clock();
-	const config = newPodConfig(new FakeRecorder(), new MockPodStartupSLIObserver(), clock);
+	const config = newPodConfig(new FakeRecorder(), new MockPodStartupSLIObserver());
 	const channel = config.channel(ctx, testSource);
 	const ch = config.updates();
 	return [channel.writeOnly(), ch, config];

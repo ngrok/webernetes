@@ -2,9 +2,11 @@ import { browser, currentTestEnvironment, node } from "../describe";
 import type { SuiteOptions } from "../describe";
 import type { CoreV1Api, DiscoveryV1Api } from "../../client/gen/apis/types";
 import type { K8s, KubeConfig } from "../../client/types";
+import type * as context from "../../go/context";
 import type { KubernetesHelpers } from "./helpers";
 
 export interface KubernetesTestContext {
+	ctx: context.Context;
 	k8s: K8s;
 	kubeConfig: KubeConfig;
 	core: CoreV1Api;

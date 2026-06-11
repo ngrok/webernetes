@@ -1,4 +1,3 @@
-import { Clock } from "../../clock";
 import type { CoreV1Api } from "../../client/gen/apis/types";
 import type {
 	CoreV1Event,
@@ -13,6 +12,7 @@ import { isConflictError } from "../../client/errors";
 import type { K8s, KubeConfig, KubernetesObject } from "../../client/types";
 import { deepMerge } from "../../deep-merge";
 import { retry } from "../../retry";
+import type * as context from "../../go/context";
 import { waitFor } from "../wait";
 import type { FetchNodePort, NodePortRequest, NodePortResponse } from "./kubernetes";
 import type { DeepPartial } from "../../utility-types";
@@ -66,6 +66,7 @@ export interface KubernetesRuntimeHelpers extends KubernetesHelpers {
 }
 
 export interface KubernetesHelpersOptions {
+	ctx: context.Context;
 	k8s: K8s;
 	kubeConfig: KubeConfig;
 	core: CoreV1Api;
@@ -74,13 +75,13 @@ export interface KubernetesHelpersOptions {
 }
 
 export function createKubernetesHelpers({
+	ctx,
 	k8s,
 	kubeConfig,
 	core,
 	fetchNodePort: rawFetchNodePort,
 	apply,
 }: KubernetesHelpersOptions): KubernetesRuntimeHelpers {
-	const retryClock = new Clock();
 	let suiteNamespace: string | undefined;
 	let testNamespace: string | undefined;
 	const createNamespace = async (namespace: string | Partial<V1Namespace>): Promise<string> => {
@@ -197,6 +198,7 @@ export function createKubernetesHelpers({
 		): Promise<NodePortResponse> {
 			const { expectedCode = 200, retries = 10, ...nodePortRequest } = request;
 			return await retry(
+				ctx,
 				async () => {
 					const response = await rawFetchNodePort(nodePort, nodePortRequest);
 					if (response.status !== expectedCode) {
@@ -207,7 +209,6 @@ export function createKubernetesHelpers({
 					return response;
 				},
 				{
-					clock: retryClock,
 					retries,
 					baseDelayMs: 50,
 					maxDelayMs: 1000,
@@ -267,6 +268,7 @@ export function createKubernetesHelpers({
 				getTestNamespace,
 			);
 			return await retry(
+				ctx,
 				async () => {
 					const current = await core.readNamespacedPod({ name, namespace: podNamespace });
 					mutate(current);
@@ -277,7 +279,6 @@ export function createKubernetesHelpers({
 					});
 				},
 				{
-					clock: retryClock,
 					retries: 4,
 					baseDelayMs: 10,
 					maxDelayMs: 250,

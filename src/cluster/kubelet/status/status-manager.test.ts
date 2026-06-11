@@ -15,7 +15,6 @@ import {
 } from "../../../client";
 import { NotFound } from "../../../client/errors";
 import { clientAction, TestKubeClient, type ClientAction } from "../../../client/test";
-import { Clock } from "../../../clock";
 import { deepEqual, dropUndefinedFields } from "../../../deep-equal";
 import * as context from "../../../go/context";
 import { browser } from "../../../test/describe";
@@ -60,7 +59,7 @@ function getTestPod(): V1Pod {
 }
 
 // Models kubernetes/pkg/kubelet/status/status_manager_test.go manager.testSyncBatch.
-async function testSyncBatch(m: StatusManagerImpl, ctx: context.Context): Promise<void> {
+async function testSyncBatch(ctx: context.Context, m: StatusManagerImpl): Promise<void> {
 	for (const [uid, status] of m.podStatuses) {
 		const pod = m.podManager.getPodByUid(uid);
 		if (pod) {
@@ -75,8 +74,7 @@ async function testSyncBatch(m: StatusManagerImpl, ctx: context.Context): Promis
 }
 
 // Models kubernetes/pkg/kubelet/status/status_manager_test.go newTestManager.
-function newTestManager(kubeClient: TestKubeClient): TestStatusManager {
-	const clock = kubeClient.kubeConfig.options.clock;
+function newTestManager(ctx: context.Context, kubeClient: TestKubeClient): TestStatusManager {
 	const podManager = new PodManager();
 	podManager.addPod(getTestPod());
 	const podStartupLatencyTracker = {
@@ -84,7 +82,7 @@ function newTestManager(kubeClient: TestKubeClient): TestStatusManager {
 		deletePodStartupState(_podUid: string): void {},
 	};
 	const manager = new StatusManagerImpl({
-		clock,
+		ctx,
 		kubeClient,
 		podManager,
 		podDeletionSafety: {
@@ -97,11 +95,10 @@ function newTestManager(kubeClient: TestKubeClient): TestStatusManager {
 
 // TypeScript harness setup for constructing the kubeClient argument that upstream
 // receives from client-go fake.Clientset{}.
-function newTestKubeClient() {
-	const clock = new Clock();
+function newTestKubeClient(ctx: context.Context): TestKubeClient {
 	const kubeConfig = new KubeConfig({
-		clock,
-		etcd: new Etcd(clock),
+		ctx,
+		etcd: new Etcd(ctx),
 		nodePortRange: { from: 30000, to: 32767 },
 	});
 	return new TestKubeClient(kubeConfig);
@@ -109,8 +106,11 @@ function newTestKubeClient() {
 
 // TypeScript harness setup for constructing the kubeClient argument that upstream
 // receives from client-go fake.NewSimpleClientset(...objects).
-async function newSimpleTestKubeClient(...pods: V1Pod[]): Promise<TestKubeClient> {
-	const kubeClient = newTestKubeClient();
+async function newSimpleTestKubeClient(
+	ctx: context.Context,
+	...pods: V1Pod[]
+): Promise<TestKubeClient> {
+	const kubeClient = newTestKubeClient(ctx);
 	const namespaces = new Set<string>();
 	for (const pod of pods) {
 		namespaces.add(pod.metadata?.namespace ?? "new");
@@ -150,11 +150,11 @@ function getRandomPodStatus(): V1PodStatus {
 
 // Models kubernetes/pkg/kubelet/status/status_manager_test.go verifyActions.
 async function verifyActions(
+	ctx: context.Context,
 	manager: TestStatusManager,
 	expectedActions: ClientAction[],
 ): Promise<void> {
-	const ctx = context.background();
-	await consumeUpdates(manager, ctx);
+	await consumeUpdates(ctx, manager);
 	const actions = manager.kubeClient.actions();
 	try {
 		expect(actions.length).toBe(expectedActions.length);
@@ -171,14 +171,17 @@ async function verifyActions(
 }
 
 // Models kubernetes/pkg/kubelet/status/status_manager_test.go verifyUpdates.
-async function verifyUpdates(manager: StatusManagerImpl, expectedUpdates: number): Promise<void> {
-	const ctx = context.background();
-	const numUpdates = await consumeUpdates(manager, ctx);
+async function verifyUpdates(
+	ctx: context.Context,
+	manager: TestStatusManager,
+	expectedUpdates: number,
+): Promise<void> {
+	const numUpdates = await consumeUpdates(ctx, manager);
 	expect(numUpdates).toBe(expectedUpdates);
 }
 
 // Models kubernetes/pkg/kubelet/status/status_manager_test.go manager.consumeUpdates.
-async function consumeUpdates(m: StatusManagerImpl, ctx: context.Context): Promise<number> {
+async function consumeUpdates(ctx: context.Context, m: StatusManagerImpl): Promise<number> {
 	let updates = 0;
 	for (;;) {
 		const result = m.podStatusChannel.tryReceive();
@@ -190,12 +193,12 @@ async function consumeUpdates(m: StatusManagerImpl, ctx: context.Context): Promi
 }
 
 // Models kubernetes/pkg/kubelet/status/status_manager_test.go TestNewStatus.
-browser.describe("TestNewStatus", () => {
+browser.describe("TestNewStatus", ({ ctx }) => {
 	it("sets a new status", async () => {
-		const syncer = newTestManager(newTestKubeClient());
+		const syncer = newTestManager(ctx, newTestKubeClient(ctx));
 		const testPod = getTestPod();
 		await syncer.setPodStatus(testPod, getRandomPodStatus());
-		await verifyUpdates(syncer, 1);
+		await verifyUpdates(ctx, syncer, 1);
 
 		const status = expectPodStatus(syncer, testPod);
 		expect(status.startTime).toBeDefined();
@@ -203,9 +206,9 @@ browser.describe("TestNewStatus", () => {
 });
 
 // Models kubernetes/pkg/kubelet/status/status_manager_test.go TestNewStatusPreservesPodStartTime.
-browser.describe("TestNewStatusPreservesPodStartTime", () => {
+browser.describe("TestNewStatusPreservesPodStartTime", ({ ctx }) => {
 	it("preserves pod start time", async () => {
-		const syncer = newTestManager(newTestKubeClient());
+		const syncer = newTestManager(ctx, newTestKubeClient(ctx));
 		const pod: V1Pod = {
 			metadata: {
 				uid: "12345678",
@@ -236,9 +239,9 @@ function getReadyPodStatus(): V1PodStatus {
 }
 
 // Models kubernetes/pkg/kubelet/status/status_manager_test.go TestNewStatusSetsReadyTransitionTime.
-browser.describe("TestNewStatusSetsReadyTransitionTime", () => {
+browser.describe("TestNewStatusSetsReadyTransitionTime", ({ ctx }) => {
 	it("sets ready transition time", async () => {
-		const syncer = newTestManager(newTestKubeClient());
+		const syncer = newTestManager(ctx, newTestKubeClient(ctx));
 		const podStatus = getReadyPodStatus();
 		const pod: V1Pod = {
 			metadata: {
@@ -249,7 +252,7 @@ browser.describe("TestNewStatusSetsReadyTransitionTime", () => {
 			status: {},
 		};
 		await syncer.setPodStatus(pod, podStatus);
-		await verifyUpdates(syncer, 1);
+		await verifyUpdates(ctx, syncer, 1);
 		const status = expectPodStatus(syncer, pod);
 		const readyCondition = podutil.getPodReadyCondition(status);
 		expect(readyCondition?.lastTransitionTime).toBeDefined();
@@ -257,30 +260,30 @@ browser.describe("TestNewStatusSetsReadyTransitionTime", () => {
 });
 
 // Models kubernetes/pkg/kubelet/status/status_manager_test.go TestChangedStatus.
-browser.describe("TestChangedStatus", () => {
+browser.describe("TestChangedStatus", ({ ctx }) => {
 	it("generates updates for changed status", async () => {
 		expect.hasAssertions();
-		const syncer = newTestManager(newTestKubeClient());
+		const syncer = newTestManager(ctx, newTestKubeClient(ctx));
 		const testPod = getTestPod();
 		await syncer.setPodStatus(testPod, getRandomPodStatus());
-		await verifyUpdates(syncer, 1);
+		await verifyUpdates(ctx, syncer, 1);
 		await syncer.setPodStatus(testPod, getRandomPodStatus());
-		await verifyUpdates(syncer, 1);
+		await verifyUpdates(ctx, syncer, 1);
 	});
 });
 
 // Models kubernetes/pkg/kubelet/status/status_manager_test.go TestChangedStatusKeepsStartTime.
-browser.describe("TestChangedStatusKeepsStartTime", () => {
+browser.describe("TestChangedStatusKeepsStartTime", ({ ctx }) => {
 	it("keeps start time", async () => {
-		const syncer = newTestManager(newTestKubeClient());
+		const syncer = newTestManager(ctx, newTestKubeClient(ctx));
 		const testPod = getTestPod();
 		const now = new Date();
 		const firstStatus = getRandomPodStatus();
 		firstStatus.startTime = now;
 		await syncer.setPodStatus(testPod, firstStatus);
-		await verifyUpdates(syncer, 1);
+		await verifyUpdates(ctx, syncer, 1);
 		await syncer.setPodStatus(testPod, getRandomPodStatus());
-		await verifyUpdates(syncer, 1);
+		await verifyUpdates(ctx, syncer, 1);
 		const finalStatus = expectPodStatus(syncer, testPod);
 		expect(finalStatus.startTime).toBeDefined();
 		expect(finalStatus.startTime?.getTime()).toBe(now.getTime());
@@ -288,9 +291,9 @@ browser.describe("TestChangedStatusKeepsStartTime", () => {
 });
 
 // Models kubernetes/pkg/kubelet/status/status_manager_test.go TestChangedStatusUpdatesLastTransitionTime.
-browser.describe("TestChangedStatusUpdatesLastTransitionTime", () => {
+browser.describe("TestChangedStatusUpdatesLastTransitionTime", ({ ctx }) => {
 	it("updates last transition time", async () => {
-		const syncer = newTestManager(newTestKubeClient());
+		const syncer = newTestManager(ctx, newTestKubeClient(ctx));
 		const podStatus = getReadyPodStatus();
 		const pod: V1Pod = {
 			metadata: {
@@ -301,14 +304,14 @@ browser.describe("TestChangedStatusUpdatesLastTransitionTime", () => {
 			status: {},
 		};
 		await syncer.setPodStatus(pod, podStatus);
-		await verifyUpdates(syncer, 1);
+		await verifyUpdates(ctx, syncer, 1);
 		const oldStatus = expectPodStatus(syncer, pod);
 		const anotherStatus = getReadyPodStatus();
 		if (anotherStatus.conditions) {
 			anotherStatus.conditions[0].status = "False";
 		}
 		await syncer.setPodStatus(pod, anotherStatus);
-		await verifyUpdates(syncer, 1);
+		await verifyUpdates(ctx, syncer, 1);
 		const newStatus = expectPodStatus(syncer, pod);
 
 		const oldReadyCondition = podutil.getPodReadyCondition(oldStatus);
@@ -322,22 +325,22 @@ browser.describe("TestChangedStatusUpdatesLastTransitionTime", () => {
 });
 
 // Models kubernetes/pkg/kubelet/status/status_manager_test.go TestUnchangedStatus.
-browser.describe("TestUnchangedStatus", () => {
+browser.describe("TestUnchangedStatus", ({ ctx }) => {
 	it("does not generate a second update", async () => {
 		expect.hasAssertions();
-		const syncer = newTestManager(newTestKubeClient());
+		const syncer = newTestManager(ctx, newTestKubeClient(ctx));
 		const testPod = getTestPod();
 		const podStatus = getRandomPodStatus();
 		await syncer.setPodStatus(testPod, podStatus);
 		await syncer.setPodStatus(testPod, podStatus);
-		await verifyUpdates(syncer, 1);
+		await verifyUpdates(ctx, syncer, 1);
 	});
 });
 
 // Models kubernetes/pkg/kubelet/status/status_manager_test.go TestUnchangedStatusPreservesLastTransitionTime.
-browser.describe("TestUnchangedStatusPreservesLastTransitionTime", () => {
+browser.describe("TestUnchangedStatusPreservesLastTransitionTime", ({ ctx }) => {
 	it("preserves last transition time", async () => {
-		const syncer = newTestManager(newTestKubeClient());
+		const syncer = newTestManager(ctx, newTestKubeClient(ctx));
 		const podStatus = getReadyPodStatus();
 		const pod: V1Pod = {
 			metadata: {
@@ -348,11 +351,11 @@ browser.describe("TestUnchangedStatusPreservesLastTransitionTime", () => {
 			status: {},
 		};
 		await syncer.setPodStatus(pod, podStatus);
-		await verifyUpdates(syncer, 1);
+		await verifyUpdates(ctx, syncer, 1);
 		const oldStatus = expectPodStatus(syncer, pod);
 		const anotherStatus = getReadyPodStatus();
 		await syncer.setPodStatus(pod, anotherStatus);
-		await verifyUpdates(syncer, 0);
+		await verifyUpdates(ctx, syncer, 0);
 		const newStatus = expectPodStatus(syncer, pod);
 
 		const oldReadyCondition = podutil.getPodReadyCondition(oldStatus);
@@ -365,56 +368,56 @@ browser.describe("TestUnchangedStatusPreservesLastTransitionTime", () => {
 });
 
 // Models kubernetes/pkg/kubelet/status/status_manager_test.go TestSyncPodIgnoresNotFound.
-browser.describe("TestSyncPodIgnoresNotFound", () => {
+browser.describe("TestSyncPodIgnoresNotFound", ({ ctx }) => {
 	it("ignores not found pods", async () => {
 		expect.hasAssertions();
-		const kubeClient = newTestKubeClient();
-		const syncer = newTestManager(kubeClient);
+		const kubeClient = newTestKubeClient(ctx);
+		const syncer = newTestManager(ctx, kubeClient);
 		kubeClient.addReactor("get", "pods", () => {
 			return [true, undefined, new NotFound(`pods "test-pod" not found`)];
 		});
 		await syncer.setPodStatus(getTestPod(), getRandomPodStatus());
-		await verifyActions(syncer, [getAction()]);
+		await verifyActions(ctx, syncer, [getAction()]);
 	});
 });
 
 // Models kubernetes/pkg/kubelet/status/status_manager_test.go TestSyncPod.
-browser.describe("TestSyncPod", () => {
+browser.describe("TestSyncPod", ({ ctx }) => {
 	it("syncs pod status", async () => {
 		expect.hasAssertions();
 		const testPod = getTestPod();
-		const kubeClient = await newSimpleTestKubeClient(testPod);
-		const syncer = newTestManager(kubeClient);
+		const kubeClient = await newSimpleTestKubeClient(ctx, testPod);
+		const syncer = newTestManager(ctx, kubeClient);
 		const status = getRandomPodStatus();
 		await syncer.setPodStatus(testPod, status);
-		await verifyActions(syncer, [getAction(), patchAction()]);
+		await verifyActions(ctx, syncer, [getAction(), patchAction()]);
 	});
 });
 
 // Models kubernetes/pkg/kubelet/status/status_manager_test.go TestSyncPodChecksMismatchedUID.
-browser.describe("TestSyncPodChecksMismatchedUID", () => {
+browser.describe("TestSyncPodChecksMismatchedUID", ({ ctx }) => {
 	it("checks mismatched UID", async () => {
 		expect.hasAssertions();
 		const pod = getTestPod();
 		pod.metadata = { ...pod.metadata, uid: "first" };
 		const differentPod = getTestPod();
 		differentPod.metadata = { ...differentPod.metadata, uid: "second" };
-		const kubeClient = await newSimpleTestKubeClient(pod);
-		const syncer = newTestManager(kubeClient);
+		const kubeClient = await newSimpleTestKubeClient(ctx, pod);
+		const syncer = newTestManager(ctx, kubeClient);
 		const podManager = syncer.podManager;
 		podManager.addPod(pod);
 		podManager.addPod(differentPod);
 		await syncer.setPodStatus(differentPod, getRandomPodStatus());
-		await verifyActions(syncer, [getAction()]);
+		await verifyActions(ctx, syncer, [getAction()]);
 	});
 });
 
 // Models kubernetes/pkg/kubelet/status/status_manager_test.go TestSyncPodNoDeadlock.
-browser.describe("TestSyncPodNoDeadlock", () => {
+browser.describe("TestSyncPodNoDeadlock", ({ ctx }) => {
 	it("does not deadlock while syncing pods", async () => {
 		expect.hasAssertions();
-		const kubeClient = newTestKubeClient();
-		const m = newTestManager(kubeClient);
+		const kubeClient = newTestKubeClient(ctx);
+		const m = newTestManager(ctx, kubeClient);
 		const pod = getTestPod();
 
 		let ret: V1Pod | undefined;
@@ -438,21 +441,21 @@ browser.describe("TestSyncPodNoDeadlock", () => {
 		ret = undefined;
 		err = new NotFound(`pods "${pod.metadata?.name}" not found`);
 		await m.setPodStatus(pod, getRandomPodStatus());
-		await verifyActions(m, [getAction()]);
+		await verifyActions(ctx, m, [getAction()]);
 
 		ret = getTestPod();
 		ret.metadata = { ...ret.metadata, uid: "other_pod" };
 		err = undefined;
 		await m.setPodStatus(pod, getRandomPodStatus());
-		await verifyActions(m, [getAction()]);
+		await verifyActions(ctx, m, [getAction()]);
 
 		ret = getTestPod();
 		await m.setPodStatus(pod, getRandomPodStatus());
-		await verifyActions(m, [getAction(), patchAction()]);
+		await verifyActions(ctx, m, [getAction(), patchAction()]);
 
 		pod.metadata = { ...pod.metadata, deletionTimestamp: new Date() };
 		await m.setPodStatus(pod, getRandomPodStatus());
-		await verifyActions(m, [getAction(), patchAction()]);
+		await verifyActions(ctx, m, [getAction(), patchAction()]);
 
 		const containerStatus = pod.status.containerStatuses?.[0];
 		if (containerStatus?.state) {
@@ -460,23 +463,22 @@ browser.describe("TestSyncPodNoDeadlock", () => {
 			containerStatus.state.terminated = { exitCode: 0 };
 		}
 		await m.setPodStatus(pod, getRandomPodStatus());
-		await verifyActions(m, [getAction(), patchAction()]);
+		await verifyActions(ctx, m, [getAction(), patchAction()]);
 
 		ret = undefined;
 		err = new Error("intentional test error");
 		await m.setPodStatus(pod, getRandomPodStatus());
-		await verifyActions(m, [getAction()]);
+		await verifyActions(ctx, m, [getAction()]);
 	});
 });
 
 // Models kubernetes/pkg/kubelet/status/status_manager_test.go TestStaleUpdates.
-browser.describe("TestStaleUpdates", () => {
+browser.describe("TestStaleUpdates", ({ ctx }) => {
 	it("only pushes latest status", async () => {
 		expect.hasAssertions();
-		const ctx = context.background();
 		const pod = getTestPod();
-		const kubeClient = await newSimpleTestKubeClient(pod);
-		const m = newTestManager(kubeClient);
+		const kubeClient = await newSimpleTestKubeClient(ctx, pod);
+		const m = newTestManager(ctx, kubeClient);
 
 		const status: V1PodStatus = { message: "initial status" };
 		await m.setPodStatus(pod, status);
@@ -486,19 +488,19 @@ browser.describe("TestStaleUpdates", () => {
 		await m.setPodStatus(pod, status);
 
 		await m.syncBatch(ctx, true);
-		await verifyUpdates(m, 0);
-		await verifyActions(m, [getAction(), patchAction()]);
-		await verifyActions(m, []);
+		await verifyUpdates(ctx, m, 0);
+		await verifyActions(ctx, m, [getAction(), patchAction()]);
+		await verifyActions(ctx, m, []);
 
 		await m.setPodStatus(pod, status);
-		await verifyUpdates(m, 0);
+		await verifyUpdates(ctx, m, 0);
 
 		const mirrorPodUid = pod.metadata?.uid ?? "";
 		m.apiStatusVersions.set(mirrorPodUid, (m.apiStatusVersions.get(mirrorPodUid) ?? 0) - 1);
 		await m.setPodStatus(pod, status);
 		await m.syncBatch(ctx, true);
-		await verifyActions(m, [getAction()]);
-		await verifyUpdates(m, 0);
+		await verifyActions(ctx, m, [getAction()]);
+		await verifyUpdates(ctx, m, 0);
 	});
 });
 
@@ -664,9 +666,8 @@ browser.describe("TestStatusNormalizeTimeStamp", () => {
 });
 
 // Models kubernetes/pkg/kubelet/status/status_manager_test.go TestStaticPod.
-browser.describe("TestStaticPod", () => {
+browser.describe("TestStaticPod", ({ ctx }) => {
 	it("syncs static pod status through mirror pod", async () => {
-		const ctx = context.background();
 		const staticPod = getTestPod();
 		staticPod.metadata = {
 			...staticPod.metadata,
@@ -681,8 +682,8 @@ browser.describe("TestStaticPod", () => {
 				[configMirrorAnnotationKey]: "mirror",
 			},
 		};
-		const kubeClient = await newSimpleTestKubeClient(mirrorPod);
-		const m = newTestManager(kubeClient);
+		const kubeClient = await newSimpleTestKubeClient(ctx, mirrorPod);
+		const m = newTestManager(ctx, kubeClient);
 		const podManager = m.podManager;
 
 		podManager.addPod(staticPod);
@@ -696,7 +697,7 @@ browser.describe("TestStaticPod", () => {
 		expect(isPodStatusByKubeletEqual(status, retrievedStatus)).toBe(true);
 
 		expect(await m.syncBatch(ctx, true)).toBe(0);
-		await verifyActions(m, []);
+		await verifyActions(ctx, m, []);
 
 		podManager.addPod(mirrorPod);
 		const retrievedMirrorStatus = m.getPodStatus(mirrorPod.metadata?.uid ?? "");
@@ -704,10 +705,10 @@ browser.describe("TestStaticPod", () => {
 		expect(isPodStatusByKubeletEqual(status, retrievedMirrorStatus ?? {})).toBe(true);
 
 		expect(await m.syncBatch(ctx, true)).toBe(1);
-		await verifyActions(m, [getAction(), patchAction()]);
+		await verifyActions(ctx, m, [getAction(), patchAction()]);
 
-		await testSyncBatch(m, ctx);
-		await verifyActions(m, []);
+		await testSyncBatch(ctx, m);
+		await verifyActions(ctx, m, []);
 
 		podManager.removePod(mirrorPod);
 		mirrorPod.metadata = {
@@ -718,14 +719,14 @@ browser.describe("TestStaticPod", () => {
 		podManager.addPod(mirrorPod);
 
 		expect(await m.syncBatch(ctx, true)).toBe(1);
-		await verifyActions(m, [getAction()]);
+		await verifyActions(ctx, m, [getAction()]);
 	});
 });
 
 // Models kubernetes/pkg/kubelet/status/status_manager_test.go TestTerminatePod.
-browser.describe("TestTerminatePod", () => {
+browser.describe("TestTerminatePod", ({ ctx }) => {
 	it("preserves previous terminal status update", async () => {
-		const syncer = newTestManager(newTestKubeClient());
+		const syncer = newTestManager(ctx, newTestKubeClient(ctx));
 		const testPod = getTestPod();
 		testPod.spec = {
 			initContainers: [{ name: "init-test-1" }, { name: "init-test-2" }, { name: "init-test-3" }],
@@ -820,9 +821,9 @@ browser.describe("TestTerminatePod", () => {
 });
 
 // Models kubernetes/pkg/kubelet/status/status_manager_test.go TestTerminatePodWaiting.
-browser.describe("TestTerminatePodWaiting", () => {
+browser.describe("TestTerminatePodWaiting", ({ ctx }) => {
 	it("preserves waiting init container status", async () => {
-		const syncer = newTestManager(newTestKubeClient());
+		const syncer = newTestManager(ctx, newTestKubeClient(ctx));
 		const testPod = getTestPod();
 		testPod.spec = {
 			initContainers: [{ name: "init-test-1" }, { name: "init-test-2" }, { name: "init-test-3" }],
@@ -918,7 +919,7 @@ browser.describe("TestTerminatePodWaiting", () => {
 });
 
 // Models kubernetes/pkg/kubelet/status/status_manager_test.go TestTerminatePod_DefaultUnknownStatus.
-browser.describe("TestTerminatePod_DefaultUnknownStatus", () => {
+browser.describe("TestTerminatePod_DefaultUnknownStatus", ({ ctx }) => {
 	// Models kubernetes/pkg/kubelet/status/status_manager_test.go TestTerminatePod_DefaultUnknownStatus newPod.
 	const newPod = (
 		initContainers: number,
@@ -1381,14 +1382,14 @@ browser.describe("TestTerminatePod_DefaultUnknownStatus", () => {
 
 	for (const tc of testCases) {
 		it(tc.name, async () => {
-			const kubeClient = newTestKubeClient();
+			const kubeClient = newTestKubeClient(ctx);
 			const podManager = new PodManager();
 			const podStartupLatencyTracker = {
 				recordStatusUpdated(_pod: V1Pod): void {},
 				deletePodStartupState(_podUid: string): void {},
 			};
 			const syncer = new StatusManagerImpl({
-				clock: kubeClient.kubeConfig.options.clock,
+				ctx,
 				kubeClient,
 				podManager,
 				podDeletionSafety: {
@@ -1418,7 +1419,7 @@ browser.describe("TestTerminatePod_DefaultUnknownStatus", () => {
 });
 
 // Models kubernetes/pkg/kubelet/status/status_manager_test.go TestTerminatePod_EnsurePodPhaseIsTerminal.
-browser.describe("TestTerminatePod_EnsurePodPhaseIsTerminal", () => {
+browser.describe("TestTerminatePod_EnsurePodPhaseIsTerminal", ({ ctx }) => {
 	// Models kubernetes/pkg/kubelet/status/status_manager_test.go TestTerminatePod_EnsurePodPhaseIsTerminal testCases.
 	const testCases: Record<
 		string,
@@ -1479,14 +1480,14 @@ browser.describe("TestTerminatePod_EnsurePodPhaseIsTerminal", () => {
 
 	for (const [name, tc] of Object.entries(testCases)) {
 		it(name, async () => {
-			const kubeClient = newTestKubeClient();
+			const kubeClient = newTestKubeClient(ctx);
 			const podManager = new PodManager();
 			const podStartupLatencyTracker = {
 				recordStatusUpdated(_pod: V1Pod): void {},
 				deletePodStartupState(_podUid: string): void {},
 			};
 			const syncer = new StatusManagerImpl({
-				clock: kubeClient.kubeConfig.options.clock,
+				ctx,
 				kubeClient,
 				podManager,
 				podDeletionSafety: {
@@ -1507,7 +1508,7 @@ browser.describe("TestTerminatePod_EnsurePodPhaseIsTerminal", () => {
 });
 
 // Models kubernetes/pkg/kubelet/status/status_manager_test.go TestSetContainerReadiness.
-browser.describe("TestSetContainerReadiness", () => {
+browser.describe("TestSetContainerReadiness", ({ ctx }) => {
 	it("sets container readiness", async () => {
 		const cID1 = buildContainerID("test", "1");
 		const cID2 = buildContainerID("test", "2");
@@ -1564,43 +1565,43 @@ browser.describe("TestSetContainerReadiness", () => {
 			}
 		};
 
-		const m = newTestManager(newTestKubeClient());
+		const m = newTestManager(ctx, newTestKubeClient(ctx));
 		const podManager = m.podManager;
 		podManager.addPod(pod);
 
 		await m.setContainerReadiness(pod.metadata?.uid ?? "", cID1, true);
-		await verifyUpdates(m, 0);
+		await verifyUpdates(ctx, m, 0);
 		expect(m.getPodStatus(pod.metadata?.uid ?? "")).toBeUndefined();
 
 		await m.setPodStatus(pod, status);
-		await verifyUpdates(m, 1);
+		await verifyUpdates(ctx, m, 1);
 		let gotStatus = expectPodStatus(m, pod);
 		verifyReadiness("initial", gotStatus, false, false, false);
 
 		await m.setContainerReadiness(pod.metadata?.uid ?? "", cID1, false);
-		await verifyUpdates(m, 0);
+		await verifyUpdates(ctx, m, 0);
 		gotStatus = expectPodStatus(m, pod);
 		verifyReadiness("unchanged", gotStatus, false, false, false);
 
 		await m.setContainerReadiness(pod.metadata?.uid ?? "", cID1, true);
-		await verifyUpdates(m, 1);
+		await verifyUpdates(ctx, m, 1);
 		gotStatus = expectPodStatus(m, pod);
 		verifyReadiness("c1 ready", gotStatus, true, false, false);
 
 		await m.setContainerReadiness(pod.metadata?.uid ?? "", cID2, true);
-		await verifyUpdates(m, 1);
+		await verifyUpdates(ctx, m, 1);
 		gotStatus = expectPodStatus(m, pod);
 		verifyReadiness("all ready", gotStatus, true, true, true);
 
 		await m.setContainerReadiness(pod.metadata?.uid ?? "", buildContainerID("test", "foo"), true);
-		await verifyUpdates(m, 0);
+		await verifyUpdates(ctx, m, 0);
 		gotStatus = expectPodStatus(m, pod);
 		verifyReadiness("ignore non-existent", gotStatus, true, true, true);
 	});
 });
 
 // Models kubernetes/pkg/kubelet/status/status_manager_test.go TestSetContainerStartup.
-browser.describe("TestSetContainerStartup", () => {
+browser.describe("TestSetContainerStartup", ({ ctx }) => {
 	it("sets container startup", async () => {
 		const cID1 = buildContainerID("test", "1");
 		const cID2 = buildContainerID("test", "2");
@@ -1658,46 +1659,45 @@ browser.describe("TestSetContainerStartup", () => {
 			}
 		};
 
-		const m = newTestManager(newTestKubeClient());
+		const m = newTestManager(ctx, newTestKubeClient(ctx));
 		const podManager = m.podManager;
 		podManager.addPod(pod);
 
 		await m.setContainerStartup(pod.metadata?.uid ?? "", cID1, true);
-		await verifyUpdates(m, 0);
+		await verifyUpdates(ctx, m, 0);
 		expect(m.getPodStatus(pod.metadata?.uid ?? "")).toBeUndefined();
 
 		await m.setPodStatus(pod, status);
-		await verifyUpdates(m, 1);
+		await verifyUpdates(ctx, m, 1);
 		let gotStatus = expectPodStatus(m, pod);
 		verifyStartup("initial", gotStatus, false, false, false);
 
 		await m.setContainerStartup(pod.metadata?.uid ?? "", cID1, false);
-		await verifyUpdates(m, 1);
+		await verifyUpdates(ctx, m, 1);
 		gotStatus = expectPodStatus(m, pod);
 		verifyStartup("unchanged", gotStatus, false, false, false);
 
 		await m.setContainerStartup(pod.metadata?.uid ?? "", cID1, true);
-		await verifyUpdates(m, 1);
+		await verifyUpdates(ctx, m, 1);
 		gotStatus = expectPodStatus(m, pod);
 		verifyStartup("c1 ready", gotStatus, true, false, false);
 
 		await m.setContainerStartup(pod.metadata?.uid ?? "", cID2, true);
-		await verifyUpdates(m, 1);
+		await verifyUpdates(ctx, m, 1);
 		gotStatus = expectPodStatus(m, pod);
 		verifyStartup("all ready", gotStatus, true, true, true);
 
 		await m.setContainerStartup(pod.metadata?.uid ?? "", buildContainerID("test", "foo"), true);
-		await verifyUpdates(m, 0);
+		await verifyUpdates(ctx, m, 0);
 		gotStatus = expectPodStatus(m, pod);
 		verifyStartup("ignore non-existent", gotStatus, true, true, true);
 	});
 });
 
 // Models kubernetes/pkg/kubelet/status/status_manager_test.go TestSyncBatchCleanupVersions.
-browser.describe("TestSyncBatchCleanupVersions", () => {
+browser.describe("TestSyncBatchCleanupVersions", ({ ctx }) => {
 	it("cleans up versions", async () => {
-		const ctx = context.background();
-		const m = newTestManager(newTestKubeClient());
+		const m = newTestManager(ctx, newTestKubeClient(ctx));
 		const podManager = m.podManager;
 		const testPod = getTestPod();
 		const mirrorPod = getTestPod();
@@ -1728,19 +1728,18 @@ browser.describe("TestSyncBatchCleanupVersions", () => {
 		podManager.addPod(staticPod);
 		m.apiStatusVersions.set(testPod.metadata?.uid ?? "", 100);
 		m.apiStatusVersions.set(mirrorPod.metadata?.uid ?? "", 200);
-		await testSyncBatch(m, ctx);
+		await testSyncBatch(ctx, m);
 		expect(m.apiStatusVersions.has(testPod.metadata?.uid ?? "")).toBe(true);
 		expect(m.apiStatusVersions.has(mirrorPod.metadata?.uid ?? "")).toBe(true);
 	});
 });
 
 // Models kubernetes/pkg/kubelet/status/status_manager_test.go TestReconcilePodStatus.
-browser.describe("TestReconcilePodStatus", () => {
+browser.describe("TestReconcilePodStatus", ({ ctx }) => {
 	it("reconciles pod status", async () => {
-		const ctx = context.background();
 		const testPod = getTestPod();
-		const kubeClient = await newSimpleTestKubeClient(testPod);
-		const syncer = newTestManager(kubeClient);
+		const kubeClient = await newSimpleTestKubeClient(ctx, testPod);
+		const syncer = newTestManager(ctx, kubeClient);
 		const podManager = syncer.podManager;
 		await syncer.setPodStatus(testPod, getRandomPodStatus());
 		await syncer.syncBatch(ctx, true);
@@ -1754,7 +1753,7 @@ browser.describe("TestReconcilePodStatus", () => {
 		expect(syncer.needsReconcile(testPod.metadata?.uid ?? "", podStatus ?? {})).toBe(false);
 		await syncer.setPodStatus(testPod, podStatus ?? {});
 		await syncer.syncBatch(ctx, true);
-		await verifyActions(syncer, []);
+		await verifyActions(ctx, syncer, []);
 
 		const normalizedStartTime = new Date(testPod.status?.startTime?.toISOString() ?? "");
 		testPod.status = { ...testPod.status, startTime: normalizedStartTime };
@@ -1762,14 +1761,14 @@ browser.describe("TestReconcilePodStatus", () => {
 		expect(syncer.needsReconcile(testPod.metadata?.uid ?? "", podStatus ?? {})).toBe(false);
 		await syncer.setPodStatus(testPod, podStatus ?? {});
 		await syncer.syncBatch(ctx, true);
-		await verifyActions(syncer, []);
+		await verifyActions(ctx, syncer, []);
 
 		const changedPodStatus = getRandomPodStatus();
 		podManager.updatePod(testPod);
 		expect(syncer.needsReconcile(testPod.metadata?.uid ?? "", changedPodStatus)).toBe(true);
 		await syncer.setPodStatus(testPod, changedPodStatus);
 		await syncer.syncBatch(ctx, true);
-		await verifyActions(syncer, [getAction(), patchAction()]);
+		await verifyActions(ctx, syncer, [getAction(), patchAction()]);
 	});
 });
 
@@ -1783,40 +1782,40 @@ function expectPodStatus(m: StatusManager, pod: V1Pod): V1PodStatus {
 }
 
 // Models kubernetes/pkg/kubelet/status/status_manager_test.go TestDeletePodBeforeFinished.
-browser.describe("TestDeletePodBeforeFinished", () => {
+browser.describe("TestDeletePodBeforeFinished", ({ ctx }) => {
 	it("does not delete pod before finished", async () => {
 		expect.hasAssertions();
 		const pod = getTestPod();
 		pod.metadata = { ...pod.metadata, deletionTimestamp: new Date() };
-		const kubeClient = await newSimpleTestKubeClient(pod);
-		const m = newTestManager(kubeClient);
+		const kubeClient = await newSimpleTestKubeClient(ctx, pod);
+		const m = newTestManager(ctx, kubeClient);
 		const podManager = m.podManager;
 		podManager.addPod(pod);
 		const status = getRandomPodStatus();
 		status.phase = "Failed";
 		await m.setPodStatus(pod, status);
-		await verifyActions(m, [getAction(), patchAction()]);
+		await verifyActions(ctx, m, [getAction(), patchAction()]);
 	});
 });
 
 // Models kubernetes/pkg/kubelet/status/status_manager_test.go TestDeletePodFinished.
-browser.describe("TestDeletePodFinished", () => {
+browser.describe("TestDeletePodFinished", ({ ctx }) => {
 	it("deletes pod once finished", async () => {
 		expect.hasAssertions();
 		const pod = getTestPod();
 		pod.metadata = { ...pod.metadata, deletionTimestamp: new Date() };
 		pod.status = { phase: "Failed" };
-		const kubeClient = await newSimpleTestKubeClient(pod);
-		const m = newTestManager(kubeClient);
+		const kubeClient = await newSimpleTestKubeClient(ctx, pod);
+		const m = newTestManager(ctx, kubeClient);
 		const podManager = m.podManager;
 		podManager.addPod(pod);
 		await m.terminatePod(pod);
-		await verifyActions(m, [getAction(), patchAction(), deleteAction()]);
+		await verifyActions(ctx, m, [getAction(), patchAction(), deleteAction()]);
 	});
 });
 
 // Models kubernetes/pkg/kubelet/status/status_manager_test.go TestDoNotDeleteMirrorPods.
-browser.describe("TestDoNotDeleteMirrorPods", () => {
+browser.describe("TestDoNotDeleteMirrorPods", ({ ctx }) => {
 	it("does not delete mirror pods", async () => {
 		expect.hasAssertions();
 		const staticPod = getTestPod();
@@ -1834,8 +1833,8 @@ browser.describe("TestDoNotDeleteMirrorPods", () => {
 				[configMirrorAnnotationKey]: "mirror",
 			},
 		};
-		const kubeClient = await newSimpleTestKubeClient(mirrorPod);
-		const m = newTestManager(kubeClient);
+		const kubeClient = await newSimpleTestKubeClient(ctx, mirrorPod);
+		const m = newTestManager(ctx, kubeClient);
 		const podManager = m.podManager;
 		podManager.addPod(staticPod);
 		podManager.addPod(mirrorPod);
@@ -1849,12 +1848,12 @@ browser.describe("TestDoNotDeleteMirrorPods", () => {
 		const now = new Date();
 		status.startTime = now;
 		await m.setPodStatus(staticPod, status);
-		await verifyActions(m, [getAction(), patchAction()]);
+		await verifyActions(ctx, m, [getAction(), patchAction()]);
 	});
 });
 
 // Models kubernetes/pkg/kubelet/status/status_manager_test.go TestUpdateLastTransitionTime.
-browser.describe("TestUpdateLastTransitionTime", () => {
+browser.describe("TestUpdateLastTransitionTime", ({ ctx }) => {
 	const old = new Date(Date.now() - 1000);
 	const tests: Record<
 		string,
@@ -1902,7 +1901,6 @@ browser.describe("TestUpdateLastTransitionTime", () => {
 
 	for (const [desc, test] of Object.entries(tests)) {
 		it(desc, () => {
-			const clock = new Clock();
 			const status: V1PodStatus = {};
 			const oldStatus: V1PodStatus = {};
 			if (test.condition) {
@@ -1911,7 +1909,7 @@ browser.describe("TestUpdateLastTransitionTime", () => {
 			if (test.oldCondition) {
 				oldStatus.conditions = [structuredClone(test.oldCondition)];
 			}
-			updateLastTransitionTime(clock, status, oldStatus, "test-type");
+			updateLastTransitionTime(ctx, status, oldStatus, "test-type");
 			const actual = test.expectUpdate
 				? (status.conditions?.[0].lastTransitionTime?.getTime() ?? 0) > old.getTime()
 				: status.conditions?.[0].lastTransitionTime?.getTime();
@@ -1937,7 +1935,7 @@ function deleteAction(): ClientAction {
 }
 
 // Models kubernetes/pkg/kubelet/status/status_manager_test.go TestMergePodStatus.
-browser.describe("TestMergePodStatus", () => {
+browser.describe("TestMergePodStatus", ({ ctx }) => {
 	// Models kubernetes/pkg/kubelet/status/status_manager_test.go TestMergePodStatus useCases.
 	const useCases: Array<{
 		desc: string;
@@ -2250,11 +2248,10 @@ browser.describe("TestMergePodStatus", () => {
 
 	for (const tc of useCases) {
 		it(tc.desc, () => {
-			const clock = new Clock();
 			const oldPodStatus = tc.oldPodStatus(getPodStatus());
 			const pod: V1Pod = { status: oldPodStatus };
 			const output = mergePodStatus(
-				clock,
+				ctx,
 				pod,
 				oldPodStatus,
 				tc.newPodStatus(getPodStatus()),

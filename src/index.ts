@@ -1,4 +1,5 @@
 export { Clock } from "./clock";
+export { getClock, withClock } from "./clock-context";
 export { Cluster, KubeClient } from "./cluster/cluster";
 export { BaseImage } from "./cluster/images/base";
 export { ImageRegistry } from "./cluster/cri";

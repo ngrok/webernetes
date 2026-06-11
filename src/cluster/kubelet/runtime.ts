@@ -2,8 +2,9 @@
  * SPDX-License-Identifier: Apache-2.0
  * Derived from Kubernetes, translated and modified for Webernetes.
  */
-import type { Clock } from "../../clock";
 import { newAggregate } from "../../apimachinery/pkg/util/errors/errors";
+import { getClock } from "../../clock-context";
+import type * as context from "../../go/context";
 import { RuntimeFeatures, RuntimeHandler } from "./container";
 import { errNetworkUnknown } from "./errors";
 
@@ -28,8 +29,8 @@ export class RuntimeState {
 	private rtFeatures: RuntimeFeatures | undefined;
 
 	constructor(
+		private readonly ctx: context.Context,
 		private readonly baseRuntimeSyncThresholdMs: number,
-		private readonly clock: Clock,
 	) {}
 
 	// Models kubernetes/pkg/kubelet/runtime.go runtimeState.addHealthCheck.
@@ -97,7 +98,7 @@ export class RuntimeState {
 			errs.push(new Error("container runtime status check may not have completed yet"));
 		} else if (
 			this.lastBaseRuntimeSync.getTime() + this.baseRuntimeSyncThresholdMs <=
-			this.clock.now().getTime()
+			getClock(this.ctx).now().getTime()
 		) {
 			errs.push(new Error("container runtime is down"));
 		}
@@ -134,8 +135,11 @@ export class RuntimeState {
 }
 
 // Models kubernetes/pkg/kubelet/runtime.go newRuntimeState.
-export function newRuntimeState(runtimeSyncThresholdMs: number, clock: Clock): RuntimeState {
-	const state = new RuntimeState(runtimeSyncThresholdMs, clock);
+export function newRuntimeState(
+	ctx: context.Context,
+	runtimeSyncThresholdMs: number,
+): RuntimeState {
+	const state = new RuntimeState(ctx, runtimeSyncThresholdMs);
 	state.setNetworkState(errNetworkUnknown);
 	return state;
 }

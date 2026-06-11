@@ -1,14 +1,14 @@
 import { expect, it } from "vitest";
 
 import { browser } from "../test/describe";
-import { Clock } from "../clock";
+import { getClock } from "../clock-context";
+import * as context from "../go/context";
 import { Etcd } from "./etcd";
-import { withLock } from "./lock";
 
-browser.describe("withLock", () => {
+browser.describe("Etcd.withLock", ({ ctx }) => {
 	it("serializes many concurrent writers to shared state", async () => {
-		const clock = new Clock();
-		const etcd = new Etcd(clock);
+		const clock = getClock(ctx);
+		const etcd = newTestEtcd(ctx);
 		await etcd.put("counter").value(0);
 
 		const writerCount = 50;
@@ -16,7 +16,7 @@ browser.describe("withLock", () => {
 
 		await Promise.all(
 			Array.from({ length: writerCount }, async () => {
-				await withLock(etcd, "locks/counter", { timeoutMs: 5000 }, async () => {
+				await etcd.withLock(ctx, "locks/counter", { timeoutMs: 5000 }, async () => {
 					const current = await etcd.get("counter").number();
 					if (current === null) {
 						throw new Error("counter missing");
@@ -37,11 +37,11 @@ browser.describe("withLock", () => {
 	});
 
 	it("allows the next waiter to enter after the current holder releases", async () => {
-		const clock = new Clock();
-		const etcd = new Etcd(clock);
+		const clock = getClock(ctx);
+		const etcd = newTestEtcd(ctx);
 		const order: string[] = [];
 
-		const first = withLock(etcd, "locks/order", { timeoutMs: 5000 }, async () => {
+		const first = etcd.withLock(ctx, "locks/order", { timeoutMs: 5000 }, async () => {
 			order.push("first:start");
 			await clock.wait(10);
 			order.push("first:end");
@@ -49,7 +49,7 @@ browser.describe("withLock", () => {
 
 		await clock.wait(1);
 
-		const second = withLock(etcd, "locks/order", { timeoutMs: 5000 }, async () => {
+		const second = etcd.withLock(ctx, "locks/order", { timeoutMs: 5000 }, async () => {
 			order.push("second");
 		});
 
@@ -59,25 +59,24 @@ browser.describe("withLock", () => {
 	});
 
 	it("times out when the lock is not released before the deadline", async () => {
-		const clock = new Clock();
-		const etcd = new Etcd(clock);
+		const clock = getClock(ctx);
+		const etcd = newTestEtcd(ctx);
 
-		const held = withLock(etcd, "locks/timeout", { timeoutMs: 5000 }, async () => {
+		const held = etcd.withLock(ctx, "locks/timeout", { timeoutMs: 5000 }, async () => {
 			await clock.wait(100);
 		});
 
 		await clock.wait(1);
 
 		await expect(
-			withLock(etcd, "locks/timeout", { timeoutMs: 10 }, async () => "unreachable"),
+			etcd.withLock(ctx, "locks/timeout", { timeoutMs: 10 }, async () => "unreachable"),
 		).rejects.toThrow("timed out waiting for lock locks/timeout");
 
 		await held;
 	});
 
 	it("does not miss a release that happens before the wait watch is installed", async () => {
-		const clock = new Clock();
-		const etcd = new Etcd(clock);
+		const etcd = newTestEtcd(ctx);
 		const first = await etcd.lock("locks/missed-delete").ttl(5).acquire();
 		const originalWatch = etcd.watch.bind(etcd);
 		let releasedBeforeWatch = false;
@@ -91,17 +90,17 @@ browser.describe("withLock", () => {
 		};
 
 		await expect(
-			withLock(etcd, "locks/missed-delete", { timeoutMs: 50 }, async () => "acquired"),
+			etcd.withLock(ctx, "locks/missed-delete", { timeoutMs: 50 }, async () => "acquired"),
 		).resolves.toBe("acquired");
 		expect(releasedBeforeWatch).toBe(true);
 	});
 
 	it("keeps the lock held while the callback runs longer than the acquisition timeout", async () => {
-		const clock = new Clock();
-		const etcd = new Etcd(clock);
+		const clock = getClock(ctx);
+		const etcd = newTestEtcd(ctx);
 		let inside = false;
 
-		const held = withLock(etcd, "locks/long-callback", { timeoutMs: 10 }, async () => {
+		const held = etcd.withLock(ctx, "locks/long-callback", { timeoutMs: 10 }, async () => {
 			inside = true;
 			await clock.wait(1500);
 			inside = false;
@@ -119,18 +118,39 @@ browser.describe("withLock", () => {
 		await expect(etcd.lock("locks/long-callback").ttl(1).acquire()).resolves.toBeDefined();
 	});
 
+	it("stops waiting when the context is canceled", async () => {
+		const etcd = newTestEtcd(ctx);
+		const held = await etcd.lock("locks/canceled").ttl(5).acquire();
+		const [childCtx, cancel] = context.withCancel(ctx);
+
+		const waiting = etcd.withLock(
+			childCtx,
+			"locks/canceled",
+			{ timeoutMs: 5000 },
+			async () => "unreachable",
+		);
+		await Promise.resolve();
+		cancel();
+
+		await expect(waiting).rejects.toBe(context.Canceled);
+		await held.release();
+	});
+
 	it("releases the lock when the callback throws", async () => {
-		const clock = new Clock();
-		const etcd = new Etcd(clock);
+		const etcd = newTestEtcd(ctx);
 
 		await expect(
-			withLock(etcd, "locks/throws", { timeoutMs: 5000 }, async () => {
+			etcd.withLock(ctx, "locks/throws", { timeoutMs: 5000 }, async () => {
 				throw new Error("boom");
 			}),
 		).rejects.toThrow("boom");
 
 		await expect(
-			withLock(etcd, "locks/throws", { timeoutMs: 5000 }, async () => "acquired"),
+			etcd.withLock(ctx, "locks/throws", { timeoutMs: 5000 }, async () => "acquired"),
 		).resolves.toBe("acquired");
 	});
 });
+
+function newTestEtcd(ctx: context.Context): Etcd {
+	return new Etcd(ctx);
+}

@@ -196,6 +196,15 @@ export class Clock implements PassiveClock {
 		this.microtasks.length = 0;
 	}
 
+	public reset(nowMs = Date.now()) {
+		this.clear();
+		this.paused = false;
+		this.wallStartedAtMs = nowMs;
+		this.simulatedNowMs = nowMs;
+		this.microtaskFlushScheduled = false;
+		this.flushingMicrotasks = false;
+	}
+
 	public pendingTaskCount(): number {
 		return this.tasks.size;
 	}

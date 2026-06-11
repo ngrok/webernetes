@@ -4,7 +4,6 @@
  */
 import { expect, it } from "vitest";
 import type { V1Container, V1ContainerPort, V1Lifecycle, V1Pod } from "../../../client";
-import * as context from "../../../go/context";
 import { browser } from "../../../test/describe";
 import { hashContainer, type RunContainerOptions } from "../container";
 import {
@@ -14,9 +13,8 @@ import {
 } from "./labels";
 
 // Models kubernetes/pkg/kubelet/kuberuntime/labels_test.go TestContainerAnnotations.
-browser.describe("TestContainerAnnotations", () => {
+browser.describe("TestContainerAnnotations", ({ ctx }) => {
 	it("TestContainerAnnotations", () => {
-		const tCtx = context.background();
 		const restartCount = 5;
 		const deletionGracePeriod = 10;
 		const terminationGracePeriod = 10;
@@ -83,8 +81,8 @@ browser.describe("TestContainerAnnotations", () => {
 			preStopHandler: container.lifecycle?.preStop,
 		};
 
-		let annotations = newContainerAnnotations(tCtx, container, pod, restartCount, opts);
-		let containerInfo = getContainerInfoFromAnnotations(tCtx, annotations);
+		let annotations = newContainerAnnotations(ctx, container, pod, restartCount, opts);
+		let containerInfo = getContainerInfoFromAnnotations(ctx, annotations);
 		expect(containerInfo).toEqual(expected);
 		const optAnnotation = opts.annotations?.[0];
 		expect(optAnnotation).toBeDefined();
@@ -101,8 +99,8 @@ browser.describe("TestContainerAnnotations", () => {
 		expected.podTerminationGracePeriod = undefined;
 		expected.preStopHandler = undefined;
 		expected.hash = hashContainer(container);
-		annotations = newContainerAnnotations(tCtx, container, pod, restartCount, opts);
-		containerInfo = getContainerInfoFromAnnotations(tCtx, annotations);
+		annotations = newContainerAnnotations(ctx, container, pod, restartCount, opts);
+		containerInfo = getContainerInfoFromAnnotations(ctx, annotations);
 		expect(containerInfo).toEqual(expected);
 		expect(annotations[optAnnotation?.name ?? ""]).toBe(optAnnotation?.value);
 	});

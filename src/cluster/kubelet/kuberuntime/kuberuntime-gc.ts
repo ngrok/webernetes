@@ -3,6 +3,7 @@
  * Derived from Kubernetes, translated and modified for Webernetes.
  */
 import { newAggregate } from "../../../apimachinery/pkg/util/errors/errors";
+import { getClock } from "../../../clock-context";
 import type * as context from "../../../go/context";
 import type { RuntimeService } from "../../cri";
 import { buildContainerID, type GCPolicy } from "../container";
@@ -107,7 +108,7 @@ export class ContainerGC {
 		}
 
 		const evictUnits = new ContainersByEvictUnit();
-		const newestGCTime = this.manager.clock.nowMs() - minAgeMs;
+		const newestGCTime = getClock(ctx).nowMs() - minAgeMs;
 		for (const container of containers) {
 			if (container.state === "Running") {
 				continue;

@@ -1,6 +1,6 @@
-import type { Clock } from "../clock";
 import type { Etcd } from "../cluster/etcd";
 import type { NodePortRange } from "../cluster/storage";
+import type * as context from "../go/context";
 
 // oxlint-disable typescript/no-explicit-any
 export interface ApiType {}
@@ -13,7 +13,7 @@ export interface ExecResult {
 }
 
 export interface KubeConfigOptions {
-	clock: Clock;
+	ctx: context.Context;
 	etcd: Etcd;
 	serviceCIDR?: string;
 	nodePortRange: NodePortRange;
@@ -27,10 +27,6 @@ export interface KubeConfigOptions {
 
 export class KubeConfig {
 	constructor(readonly options: KubeConfigOptions) {}
-
-	get clock(): Clock {
-		return this.options.clock;
-	}
 
 	get etcd(): Etcd {
 		return this.options.etcd;

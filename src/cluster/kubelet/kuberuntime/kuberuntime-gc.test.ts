@@ -4,7 +4,7 @@
  */
 import { expect, it } from "vitest";
 import type { V1Container, V1Pod } from "../../../client";
-import * as context from "../../../go/context";
+import { getClock } from "../../../clock-context";
 import { browser } from "../../../test/describe";
 import type { ContainerStatus as CRIContainerStatus } from "../../cri";
 import type { PodSandbox } from "../../cri/runtime/v1/api";
@@ -20,10 +20,9 @@ import {
 } from "./kuberuntime-test-helpers";
 
 // Models kubernetes/pkg/kubelet/kuberuntime/kuberuntime_gc_test.go TestSandboxGC.
-browser.describe("sandboxGC", () => {
+browser.describe("sandboxGC", ({ ctx }) => {
 	it("evicts sandboxes using upstream table cases", async () => {
-		const tCtx = context.background();
-		const [fakeRuntime, , m, err] = createTestRuntimeManager(tCtx);
+		const [fakeRuntime, , m, err] = createTestRuntimeManager(ctx);
 		expect(err).toBeUndefined();
 		const podStateProvider = m.containerGC.podStateProvider as FakePodStateProvider;
 
@@ -160,8 +159,8 @@ browser.describe("sandboxGC", () => {
 		for (const test of tests) {
 			podStateProvider.removed = new Set<string>();
 			podStateProvider.terminated = new Set<string>();
-			const fakeSandboxes = await makeFakePodSandboxes(tCtx, m, test.sandboxes);
-			const fakeContainers = await makeFakeContainers(tCtx, m, test.containers);
+			const fakeSandboxes = await makeFakePodSandboxes(ctx, m, test.sandboxes);
+			const fakeContainers = await makeFakeContainers(ctx, m, test.containers);
 			for (const s of test.sandboxes) {
 				if (!s.running && s.pod.metadata?.name === "deleted") {
 					podStateProvider.removed.add(s.pod.metadata.uid ?? "");
@@ -173,14 +172,14 @@ browser.describe("sandboxGC", () => {
 			fakeRuntime.setFakeSandboxes(fakeSandboxes);
 			fakeRuntime.setFakeContainers(fakeContainers);
 
-			const gcErr = await m.containerGC.evictSandboxes(tCtx, test.evictTerminatingPods);
+			const gcErr = await m.containerGC.evictSandboxes(ctx, test.evictTerminatingPods);
 			expect(gcErr).toBeUndefined();
-			const [realRemain, remainErr] = await fakeRuntime.listPodSandbox(tCtx);
+			const [realRemain, remainErr] = await fakeRuntime.listPodSandbox(ctx);
 			expect(remainErr).toBeUndefined();
 			expect(realRemain).toHaveLength(test.remain.length);
 			for (const remain of test.remain) {
 				const [resp, statusErr] = await fakeRuntime.podSandboxStatus(
-					tCtx,
+					ctx,
 					fakeSandboxes[remain]?.id ?? "",
 				);
 				expect(statusErr).toBeUndefined();
@@ -191,10 +190,10 @@ browser.describe("sandboxGC", () => {
 });
 
 // Models kubernetes/pkg/kubelet/kuberuntime/kuberuntime_gc_test.go TestContainerGC.
-browser.describe("containerGC", () => {
+browser.describe("containerGC", ({ ctx }) => {
 	it("evicts containers using upstream table cases", async () => {
-		const tCtx = context.background();
-		const [fakeRuntime, , m, err, clock] = createTestRuntimeManager(tCtx);
+		const [fakeRuntime, , m, err] = createTestRuntimeManager(ctx);
+		const clock = getClock(ctx);
 		expect(err).toBeUndefined();
 		const podStateProvider = m.containerGC.podStateProvider as FakePodStateProvider;
 		const defaultGCPolicy = { minAgeMs: 60 * 60 * 1000, maxPerPodContainer: 2, maxContainers: 6 };
@@ -371,7 +370,7 @@ browser.describe("containerGC", () => {
 		for (const test of tests) {
 			podStateProvider.removed = new Set<string>();
 			podStateProvider.terminated = new Set<string>();
-			const fakeContainers = await makeFakeContainers(tCtx, m, test.containers);
+			const fakeContainers = await makeFakeContainers(ctx, m, test.containers);
 			for (const s of test.containers) {
 				if (s.pod.metadata?.name === "deleted") {
 					podStateProvider.removed.add(s.pod.metadata.uid ?? "");
@@ -383,18 +382,18 @@ browser.describe("containerGC", () => {
 			fakeRuntime.setFakeContainers(fakeContainers);
 
 			const gcErr = await m.containerGC.evictContainers(
-				tCtx,
+				ctx,
 				test.policy ?? defaultGCPolicy,
 				test.allSourcesReady,
 				test.evictTerminatingPods,
 			);
 			expect(gcErr).toBeUndefined();
-			const [realRemain, remainErr] = await fakeRuntime.listContainers(tCtx);
+			const [realRemain, remainErr] = await fakeRuntime.listContainers(ctx);
 			expect(remainErr).toBeUndefined();
 			expect(realRemain).toHaveLength(test.remain.length);
 			for (const remain of test.remain) {
 				const [resp, statusErr] = await fakeRuntime.containerStatus(
-					tCtx,
+					ctx,
 					fakeContainers[remain]?.id ?? "",
 				);
 				expect(statusErr).toBeUndefined();
@@ -405,35 +404,33 @@ browser.describe("containerGC", () => {
 });
 
 // Models kubernetes/pkg/kubelet/kuberuntime/kuberuntime_gc_test.go TestPodLogDirectoryGC.
-browser.describe("podLogDirectoryGC", () => {
+browser.describe("podLogDirectoryGC", ({ ctx }) => {
 	it("is a no-op because the simulator does not model kubelet log files", async () => {
-		const tCtx = context.background();
-		const [, , m, err] = createTestRuntimeManager(tCtx);
+		const [, , m, err] = createTestRuntimeManager(ctx);
 		expect(err).toBeUndefined();
 
-		expect(await m.containerGC.evictPodLogsDirectories(tCtx, true)).toBeUndefined();
-		expect(await m.containerGC.evictPodLogsDirectories(tCtx, false)).toBeUndefined();
+		expect(await m.containerGC.evictPodLogsDirectories(ctx, true)).toBeUndefined();
+		expect(await m.containerGC.evictPodLogsDirectories(ctx, false)).toBeUndefined();
 	});
 });
 
 // Models kubernetes/pkg/kubelet/kuberuntime/kuberuntime_gc_test.go TestUnknownStateContainerGC.
-browser.describe("unknownStateContainerGC", () => {
+browser.describe("unknownStateContainerGC", ({ ctx }) => {
 	it("stops unknown containers before removing them", async () => {
-		const tCtx = context.background();
-		const [fakeRuntime, , m, err] = createTestRuntimeManager(tCtx);
+		const [fakeRuntime, , m, err] = createTestRuntimeManager(ctx);
 		expect(err).toBeUndefined();
 
 		const defaultGCPolicy = { minAgeMs: 60 * 60 * 1000, maxPerPodContainer: 0, maxContainers: 0 };
-		const fakeContainers = await makeFakeContainers(tCtx, m, [
+		const fakeContainers = await makeFakeContainers(ctx, m, [
 			makeGCContainer("foo", "bar", 0, 0, "Unknown"),
 		]);
 		fakeRuntime.setFakeContainers(fakeContainers);
 
-		const gcErr = await m.containerGC.evictContainers(tCtx, defaultGCPolicy, true, false);
+		const gcErr = await m.containerGC.evictContainers(ctx, defaultGCPolicy, true, false);
 		expect(gcErr).toBeUndefined();
 		expect(fakeRuntime.getCalls()).toContain("StopContainer");
 		expect(fakeRuntime.getCalls()).toContain("RemoveContainer");
-		const [remain, remainErr] = await fakeRuntime.listContainers(tCtx);
+		const [remain, remainErr] = await fakeRuntime.listContainers(ctx);
 		expect(remainErr).toBeUndefined();
 		expect(remain).toEqual([]);
 	});

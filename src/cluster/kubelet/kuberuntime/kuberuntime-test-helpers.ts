@@ -5,7 +5,7 @@
 import { expect } from "vitest";
 import type { V1Container, V1Pod } from "../../../client";
 import { newBackOff } from "../../../client-go/util/flowcontrol/backoff";
-import { Clock } from "../../../clock";
+import { getClock } from "../../../clock-context";
 import * as context from "../../../go/context";
 import type {
 	ContainerConfig,
@@ -44,11 +44,9 @@ export type TestRuntimeManagerFixture = [
 	fakeImage: TestImageService,
 	manager: KubeGenericRuntimeManager,
 	err: Error | undefined,
-	clock: Clock,
-	livenessManager: ResultsManager,
-	startupManager: ResultsManager,
-	podStateProvider: FakePodStateProvider,
 ];
+
+export type TestRuntimeManagerErrors = Map<string, Error[]>;
 
 // Models kubernetes/pkg/kubelet/kuberuntime/kuberuntime_manager_test.go makeFakePodSandbox.
 export interface TestPodSandboxRecord {
@@ -103,8 +101,16 @@ export const fakePodSandboxIPs = ["10.0.0.1"];
 
 // Models kubernetes/pkg/kubelet/kuberuntime/kuberuntime_manager_test.go createTestRuntimeManager.
 export function createTestRuntimeManager(ctx: context.Context): TestRuntimeManagerFixture {
-	const clock = new Clock();
-	const fakeRuntime = new TestRuntimeService();
+	return createTestRuntimeManagerWithErrors(ctx, undefined);
+}
+
+// Models kubernetes/pkg/kubelet/kuberuntime/kuberuntime_manager_test.go createTestRuntimeManagerWithErrors.
+export function createTestRuntimeManagerWithErrors(
+	ctx: context.Context,
+	errors: TestRuntimeManagerErrors | undefined,
+): TestRuntimeManagerFixture {
+	const clock = getClock(ctx);
+	const fakeRuntime = new TestRuntimeService(errors);
 	const fakeImage = new TestImageService();
 	const livenessManager = new ResultsManager();
 	const startupManager = new ResultsManager();
@@ -125,18 +131,8 @@ export function createTestRuntimeManager(ctx: context.Context): TestRuntimeManag
 		imageBackOff: newBackOff(10 * 1000, 300 * 1000, clock),
 		network: new ClusterNetwork(),
 		startupManager,
-		clock,
 	});
-	return [
-		fakeRuntime,
-		fakeImage,
-		manager,
-		undefined,
-		clock,
-		livenessManager,
-		startupManager,
-		podStateProvider,
-	];
+	return [fakeRuntime, fakeImage, manager, undefined];
 }
 
 // Models kubernetes/pkg/kubelet/kuberuntime/fake_kuberuntime_manager.go fakePodStateProvider.
@@ -204,7 +200,11 @@ export class TestRuntimeService implements RuntimeService {
 	sandboxes: TestPodSandboxRecord[] = [];
 	containers: TestContainerRecord[] = [];
 	calls: string[] = [];
-	private readonly injectedErrors = new Map<string, Error>();
+	private readonly errors: TestRuntimeManagerErrors;
+
+	constructor(errors: TestRuntimeManagerErrors | undefined = undefined) {
+		this.errors = errors ?? new Map<string, Error[]>();
+	}
 
 	setFakeSandboxes(sandboxes: TestPodSandboxRecord[]): void {
 		this.sandboxes = sandboxes;
@@ -217,7 +217,7 @@ export class TestRuntimeService implements RuntimeService {
 	}
 
 	injectError(operation: string, err: Error): void {
-		this.injectedErrors.set(operation, err);
+		this.errors.set(operation, [...(this.errors.get(operation) ?? []), err]);
 	}
 
 	getCalls(): string[] {
@@ -316,7 +316,7 @@ export class TestRuntimeService implements RuntimeService {
 
 	async stopContainer(_ctx: context.Context, containerId: string): Promise<Error | undefined> {
 		this.calls.push("StopContainer");
-		const injected = this.injectedErrors.get("StopContainer");
+		const injected = this.nextInjectedError("StopContainer");
 		if (injected) {
 			return injected;
 		}
@@ -358,7 +358,7 @@ export class TestRuntimeService implements RuntimeService {
 		_ctx: context.Context,
 		containerId: string,
 	): Promise<[ContainerStatusResponse | undefined, Error | undefined]> {
-		const injected = this.injectedErrors.get("ContainerStatus");
+		const injected = this.nextInjectedError("ContainerStatus");
 		if (injected) {
 			return [undefined, injected];
 		}
@@ -384,6 +384,16 @@ export class TestRuntimeService implements RuntimeService {
 			},
 			undefined,
 		];
+	}
+
+	private nextInjectedError(operation: string): Error | undefined {
+		const errors = this.errors.get(operation);
+		if (errors === undefined || errors.length === 0) {
+			return undefined;
+		}
+		const [err, ...remaining] = errors;
+		this.errors.set(operation, remaining);
+		return err;
 	}
 
 	async execSync(): Promise<[ExecSyncResponse | undefined, undefined]> {

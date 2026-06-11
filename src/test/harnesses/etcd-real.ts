@@ -8,7 +8,7 @@ import type { EtcdSuiteFactory, EtcdTestContext } from "./etcd";
 
 let containerPromise: Promise<StartedTestContainer> | undefined;
 
-const context: EtcdTestContext = {
+const testContext: Omit<EtcdTestContext, "ctx"> = {
 	target: "real",
 	name: "real etcd",
 	createEtcd: createRealEtcd,
@@ -31,11 +31,11 @@ export function defineSuite(
 		throw new Error(`Missing real etcd suite callback for ${name}`);
 	}
 
-	const suite = () => {
+	const suite = ({ ctx }: Pick<EtcdTestContext, "ctx">) => {
 		beforeAll(async () => {
 			await getEtcdContainer();
 		});
-		factory(context);
+		factory({ ...testContext, ctx });
 	};
 
 	if (typeof maybeOptions === "function") {

@@ -5,7 +5,8 @@
 import type { V1Node, V1Pod, V1PodSpec } from "../../client";
 import { KubeConfig } from "../../client";
 import { Set as LabelSet } from "../../apimachinery/pkg/labels/labels";
-import { Clock } from "../../clock";
+import type { Clock } from "../../clock";
+import { getClock } from "../../clock-context";
 import { Channel } from "../../go/channel";
 import * as context from "../../go/context";
 import { Mutex } from "../../go/sync/mutex";
@@ -360,7 +361,10 @@ export interface TestKubelet {
 // so kubelet test files can share them without importing each other's suites.
 
 // Models kubernetes/pkg/kubelet/kubelet_test.go newTestKubelet.
-export function newTestKubelet(controllerAttachDetachEnabled: boolean): TestKubelet {
+export function newTestKubelet(
+	ctx: context.Context,
+	controllerAttachDetachEnabled: boolean,
+): TestKubelet {
 	const imageList: Image[] = [
 		{
 			id: "abc",
@@ -380,6 +384,7 @@ export function newTestKubelet(controllerAttachDetachEnabled: boolean): TestKube
 		},
 	];
 	return newTestKubeletWithImageList(
+		ctx,
 		imageList,
 		controllerAttachDetachEnabled,
 		true,
@@ -391,6 +396,7 @@ export function newTestKubelet(controllerAttachDetachEnabled: boolean): TestKube
 
 // Models kubernetes/pkg/kubelet/kubelet_test.go newTestKubeletWithImageList.
 export function newTestKubeletWithImageList(
+	ctx: context.Context,
 	imageList: Image[],
 	controllerAttachDetachEnabled: boolean,
 	_initFakeVolumePlugin: boolean,
@@ -401,11 +407,10 @@ export function newTestKubeletWithImageList(
 	if (controllerAttachDetachEnabled) {
 		throw new Error("controller attach/detach volume behavior is not implemented");
 	}
-	const tCtx = context.background();
-	const fakeClock = new Clock();
-	const etcd = new Etcd(fakeClock);
+	const fakeClock = getClock(ctx);
+	const etcd = new Etcd(ctx);
 	const kubeConfig = new KubeConfig({
-		clock: fakeClock,
+		ctx,
 		etcd,
 		serviceCIDR: testServiceCIDR,
 		nodePortRange: testNodePortRange,
@@ -424,8 +429,8 @@ export function newTestKubeletWithImageList(
 	const commandRunner = new FakeContainerCommandRunner();
 	const podStartupLatencyTracker = new NoopPodStartupSLIObserver();
 	const recorder = new EventRecorderImpl({
+		ctx,
 		api: fakeKubeClient.corev1,
-		clock: fakeClock,
 		component: "kubelet",
 		host: testKubeletHostname,
 	});
@@ -442,13 +447,13 @@ export function newTestKubeletWithImageList(
 			],
 		},
 	};
-	const [kubeletCtx, cancelContext] = context.withCancel(tCtx);
-	const podConfig = newPodConfig(recorder, podStartupLatencyTracker, fakeClock);
+	const [kubeletCtx, cancelContext] = context.withCancel(ctx);
+	const podConfig = newPodConfig(recorder, podStartupLatencyTracker);
 	const podManager = new PodManager();
 	const livenessManager = new ResultsManager();
 	const readinessManager = new ResultsManager();
 	const startupManager = new ResultsManager();
-	const runtimeState = newRuntimeState(30 * 1000, fakeClock);
+	const runtimeState = newRuntimeState(ctx, 30 * 1000);
 	runtimeState.setNetworkState(undefined);
 	const podCache = new PodStatusCache();
 	const workQueue = new BasicWorkQueue(fakeClock);
@@ -502,12 +507,11 @@ export function newTestKubeletWithImageList(
 		recorder,
 		workQueue,
 		crashLoopBackOff: newBackOff(10 * 1000, 300 * 1000, fakeClock),
-		clock: fakeClock,
 		nodeIPs: ["127.0.0.1", "::1"],
 		nodeStatusMaxImages: 50,
 	});
 	kubelet.statusManager = new StatusManagerImpl({
-		clock: fakeClock,
+		ctx: kubeletCtx,
 		kubeClient: fakeKubeClient,
 		podManager,
 		podDeletionSafety: kubelet,
@@ -520,6 +524,7 @@ export function newTestKubeletWithImageList(
 	);
 	kubelet.podWorkers = fakePodWorkers;
 	kubelet.pleg = new GenericPLEG(
+		kubeletCtx,
 		fakeRuntime,
 		new Channel<PodLifecycleEvent>(100),
 		{
@@ -527,13 +532,11 @@ export function newTestKubeletWithImageList(
 			relistThresholdMs: 3 * 60 * 1000,
 		},
 		podCache,
-		fakeClock,
-		kubeletCtx,
 	);
 	const [activeDeadlineHandler, activeDeadlineHandlerErr] = newActiveDeadlineHandler(
+		kubeletCtx,
 		kubelet.statusManager,
 		kubelet.recorder,
-		kubelet.clock,
 	);
 	if (activeDeadlineHandlerErr) {
 		throw activeDeadlineHandlerErr;

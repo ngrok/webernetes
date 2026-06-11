@@ -9,6 +9,7 @@ import type { V1Container, V1ObjectReference, V1Pod } from "../../../client";
 import { newFakeRecorder } from "../../../client-go/tools/record/fake";
 import { newBackOff } from "../../../client-go/util/flowcontrol/backoff";
 import { Clock } from "../../../clock";
+import { withClock } from "../../../clock-context";
 import { background } from "../../../go/context";
 import { browser } from "../../../test/describe";
 import { FakeRuntime } from "../container/testing";
@@ -155,6 +156,7 @@ function pullerTestEnv(c: PullerTestCase, _serialized: boolean, maxParallelImage
 	} satisfies V1Container;
 
 	const clock = newTestClock();
+	const ctx = withClock(background(), clock);
 	const fakeRuntime = new FakeRuntime();
 	fakeRuntime.imageList = [
 		{
@@ -175,10 +177,10 @@ function pullerTestEnv(c: PullerTestCase, _serialized: boolean, maxParallelImage
 		pullManager.config = { allowAll: true };
 	}
 	const imageManager = new KubeletImageManager({
+		ctx,
 		recorder: fakeRecorder,
 		imageService: fakeRuntime,
 		imagePullManager: pullManager,
-		clock,
 		imageBackOff: newBackOff(1000, 60_000, clock),
 		podPullingTimeRecorder: fakePodPullingTimeRecorder,
 		maxParallelImagePulls,
@@ -188,6 +190,7 @@ function pullerTestEnv(c: PullerTestCase, _serialized: boolean, maxParallelImage
 	return [
 		imageManager,
 		clock,
+		ctx,
 		fakeRuntime,
 		container,
 		fakePodPullingTimeRecorder,
@@ -609,12 +612,8 @@ browser.describe("TestParallelPuller", () => {
 	const useSerializedEnv = false;
 	for (const c of cases) {
 		it(c.testName, async () => {
-			const ctx = background();
-			const [puller, clock, fakeRuntime, container, fakePodPullingTimeRecorder] = pullerTestEnv(
-				c,
-				useSerializedEnv,
-				undefined,
-			);
+			const [puller, clock, ctx, fakeRuntime, container, fakePodPullingTimeRecorder] =
+				pullerTestEnv(c, useSerializedEnv, undefined);
 
 			const pod = {
 				metadata: {
@@ -737,7 +736,7 @@ browser.describe("TestPullAndListImageWithPodAnnotations", () => {
 		};
 
 		const useSerializedEnv = true;
-		const [puller, clock, fakeRuntime, container, fakePodPullingTimeRecorder] = pullerTestEnv(
+		const [puller, clock, ctx, fakeRuntime, container, fakePodPullingTimeRecorder] = pullerTestEnv(
 			c,
 			useSerializedEnv,
 			undefined,
@@ -747,7 +746,7 @@ browser.describe("TestPullAndListImageWithPodAnnotations", () => {
 		clock.step(1000);
 
 		const [, , err] = await puller.ensureImageExists(
-			background(),
+			ctx,
 			undefined,
 			pod,
 			container.image,
@@ -782,7 +781,6 @@ browser.describe("TestPullAndListImageWithPodAnnotations", () => {
 // Models kubernetes/pkg/kubelet/images/image_manager_test.go TestMaxParallelImagePullsLimit.
 browser.describe("TestMaxParallelImagePullsLimit", () => {
 	it("limits concurrent pulls", async () => {
-		const ctx = background();
 		const pod = {
 			metadata: {
 				name: "test_pod",
@@ -817,7 +815,7 @@ browser.describe("TestMaxParallelImagePullsLimit", () => {
 		const maxParallelImagePulls = 5;
 		const pulls: Array<Promise<unknown>> = [];
 
-		const [puller, clock, fakeRuntime, container] = pullerTestEnv(
+		const [puller, clock, ctx, fakeRuntime, container] = pullerTestEnv(
 			testCase,
 			useSerializedEnv,
 			maxParallelImagePulls,
@@ -877,7 +875,6 @@ browser.describe("TestMaxParallelImagePullsLimit", () => {
 // Models kubernetes/pkg/kubelet/images/image_manager_test.go TestParallelPodPullingTimeRecorderWithErr.
 browser.describe("TestParallelPodPullingTimeRecorderWithErr", () => {
 	it("finishes recorder state when a parallel pod pull errors after another pod succeeds", async () => {
-		const ctx = background();
 		const pod1 = {
 			metadata: {
 				name: "test_pod1",
@@ -930,11 +927,8 @@ browser.describe("TestParallelPodPullingTimeRecorderWithErr", () => {
 
 		const useSerializedEnv = false;
 		const maxParallelImagePulls = 2;
-		const [imageManager, clock, fakeRuntime, container, fakePodPullingTimeRecorder] = pullerTestEnv(
-			testCase,
-			useSerializedEnv,
-			maxParallelImagePulls,
-		);
+		const [imageManager, clock, ctx, fakeRuntime, container, fakePodPullingTimeRecorder] =
+			pullerTestEnv(testCase, useSerializedEnv, maxParallelImagePulls);
 		fakeRuntime.blockImagePulls = true;
 		fakeRuntime.calledFunctions = [];
 		clock.step(1000);
@@ -1081,8 +1075,7 @@ browser.describe("TestImagePullPrecheck", () => {
 	const useSerializedEnv = true;
 	for (const c of cases) {
 		it(c.testName, async () => {
-			const ctx = background();
-			const [puller, clock, fakeRuntime, container, , fakeRecorder] = pullerTestEnv(
+			const [puller, clock, ctx, fakeRuntime, container, , fakeRecorder] = pullerTestEnv(
 				c,
 				useSerializedEnv,
 				undefined,

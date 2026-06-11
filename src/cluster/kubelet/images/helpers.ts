@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: Apache-2.0
  * Derived from Kubernetes, translated and modified for Webernetes.
  */
-import type { Clock } from "../../../clock";
+import { getClock } from "../../../clock-context";
 import type * as context from "../../../go/context";
 import {
 	newTokenBucketRateLimiterWithClock,
@@ -13,17 +13,17 @@ import type { Image, ImageService, ImageSpec, ImageStats } from "../container";
 
 // Models kubernetes/pkg/kubelet/images/helpers.go throttleImagePulling.
 export function throttleImagePulling(
+	ctx: context.Context,
 	imageService: ImageService,
 	qps: number | undefined,
 	burst: number | undefined,
-	clock: Clock,
 ): ImageService {
 	if (qps === undefined || qps === 0.0) {
 		return imageService;
 	}
 	return new ThrottledImageService(
 		imageService,
-		newTokenBucketRateLimiterWithClock(qps, burst ?? 0, clock),
+		newTokenBucketRateLimiterWithClock(qps, burst ?? 0, getClock(ctx)),
 	);
 }
 

@@ -3,6 +3,7 @@
  * Derived from Kubernetes, translated and modified for Webernetes.
  */
 import type { V1Container, V1Pod, V1Probe } from "../../../client";
+import { getClock } from "../../../clock-context";
 import { Channel, select } from "../../../go/channel";
 import type { Context } from "../../../go/context";
 import * as time from "../../../go/time";
@@ -56,10 +57,11 @@ export class ProbeWorker {
 
 	// Models kubernetes/pkg/kubelet/prober/worker.go run.
 	async run(ctx: Context): Promise<void> {
+		const clock = getClock(ctx);
 		const probeTickerPeriod = this.intervalMs;
-		const sinceStart = this.probeManager.clock.nowMs() - this.probeManager.startedAt.getTime();
+		const sinceStart = clock.nowMs() - this.probeManager.startedAt.getTime();
 		if (probeTickerPeriod > sinceStart) {
-			const delay = time.after(this.probeManager.clock, Math.random() * probeTickerPeriod);
+			const delay = time.after(ctx, Math.random() * probeTickerPeriod);
 			const selected = await select()
 				.case(ctx.done(), () => "stop")
 				.case(this.stopCh, () => "stop")
@@ -74,7 +76,7 @@ export class ProbeWorker {
 			}
 		}
 
-		const probeTicker = new time.Ticker(this.probeManager.clock, probeTickerPeriod);
+		const probeTicker = new time.Ticker(ctx, probeTickerPeriod);
 		try {
 			for (; await this.doProbe(ctx); ) {
 				const selected = await select()
@@ -162,8 +164,7 @@ export class ProbeWorker {
 		const startedAt = c.state.running.startedAt?.getTime();
 		if (
 			startedAt !== undefined &&
-			Math.trunc((this.probeManager.clock.nowMs() - startedAt) / 1000) <
-				(this.spec.initialDelaySeconds ?? 0)
+			Math.trunc((getClock(ctx).nowMs() - startedAt) / 1000) < (this.spec.initialDelaySeconds ?? 0)
 		) {
 			return true;
 		}

@@ -10,7 +10,8 @@ import type {
 	V1PodSpec,
 	V1PodStatus,
 } from "../../../../client";
-import type { Clock } from "../../../../clock";
+import { getClock } from "../../../../clock-context";
+import type * as context from "../../../../go/context";
 
 // Models kubernetes/pkg/api/v1/pod/util.go GetContainerStatus.
 export function getContainerStatus(
@@ -102,10 +103,11 @@ export function isRestartableInitContainer(initContainer: V1Container | undefine
 
 // Models kubernetes/pkg/api/v1/pod/util.go UpdatePodCondition.
 export function updatePodCondition(
-	clock: Clock,
+	ctx: context.Context,
 	status: V1PodStatus,
 	condition: V1PodCondition,
 ): boolean {
+	const clock = getClock(ctx);
 	condition.lastTransitionTime = clock.now();
 	const oldCondition = getPodCondition(status, condition.type);
 	if (!oldCondition) {
