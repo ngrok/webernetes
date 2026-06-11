@@ -11,7 +11,15 @@ export {
 	withLatencyProvider,
 } from "./latency";
 export * from "./client";
-export type { ClusterOptions } from "./cluster/cluster";
+export type {
+	ClusterOptions,
+	ClusterInformerCallback,
+	ClusterInformerEventType,
+	ClusterInformerOptions,
+	ClusterInformerResource,
+	ClusterInformerResources,
+} from "./cluster/cluster";
+export type { NetworkRequestEvent, NetworkResponseEvent } from "./cluster/cni/network";
 export type { NodePortRange } from "./cluster/storage";
 export type { ImageConstructor, ImageDefinition } from "./cluster/cri";
 export type { ProcessContext } from "./cluster/cri";

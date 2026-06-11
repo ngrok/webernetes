@@ -40,7 +40,9 @@ export function makeInformer<T extends KubernetesObject>(
 	path: string,
 	listPromiseFn: ListPromise<T>,
 	labelSelector?: string,
+	// Intentional local extension: upstream makeInformer does not expose fieldSelector.
+	fieldSelector?: string,
 ): Informer<T> & ObjectCache<T> {
 	const watch = new Watch(kubeconfig);
-	return new ListWatch(path, watch, listPromiseFn, false, labelSelector);
+	return new ListWatch(path, watch, listPromiseFn, false, labelSelector, fieldSelector);
 }

@@ -47,6 +47,42 @@ kubernetes.describe("Nodes", ({ core, k8s }) => {
 		]);
 	});
 
+	it("should support label selectors when listing nodes", async () => {
+		const selected = await core.createNode({
+			body: {
+				metadata: {
+					generateName: "label-selected-node-",
+					labels: { app: "node-label-selected" },
+				},
+			},
+		});
+		const selectedName = selected.metadata?.name;
+		const ignored = await core.createNode({
+			body: {
+				metadata: {
+					generateName: "label-ignored-node-",
+					labels: { app: "node-label-ignored" },
+				},
+			},
+		});
+		const ignoredName = ignored.metadata?.name;
+		if (!selectedName || !ignoredName) {
+			throw new Error("Expected node names");
+		}
+
+		try {
+			const nodes = await core.listNode({
+				labelSelector: "app=node-label-selected",
+			});
+
+			expect(nodes.items.map((node) => node.metadata?.name)).toContain(selectedName);
+			expect(nodes.items.map((node) => node.metadata?.name)).not.toContain(ignoredName);
+		} finally {
+			await core.deleteNode({ name: selectedName });
+			await core.deleteNode({ name: ignoredName });
+		}
+	});
+
 	it("should list nodes from an exact resourceVersion snapshot", async () => {
 		const before = await core.createNode({
 			body: {

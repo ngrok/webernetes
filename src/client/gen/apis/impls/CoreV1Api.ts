@@ -185,6 +185,7 @@ export class CoreV1Api implements CoreV1ApiInterface {
 	): Promise<CoreV1EventList> {
 		return await rethrowApiErrors(async () => {
 			const selector = parseLabelSelector(request.labelSelector);
+			const fieldSelector = parseFieldSelector(request.fieldSelector);
 			const list = await this.events.listWithResourceVersion(
 				request.namespace,
 				listResourceVersionOptions(request),
@@ -193,7 +194,7 @@ export class CoreV1Api implements CoreV1ApiInterface {
 				metadata: {
 					resourceVersion: list.resourceVersion,
 				},
-				items: filterByLabels(list.items, selector),
+				items: filterByFields(filterByLabels(list.items, selector), fieldSelector),
 			};
 		});
 	}
@@ -203,6 +204,7 @@ export class CoreV1Api implements CoreV1ApiInterface {
 	): Promise<V1ServiceList> {
 		return await rethrowApiErrors(async () => {
 			const selector = parseLabelSelector(request.labelSelector);
+			const fieldSelector = parseFieldSelector(request.fieldSelector);
 			const list = await this.services.listWithResourceVersion(
 				request.namespace,
 				listResourceVersionOptions(request),
@@ -211,7 +213,7 @@ export class CoreV1Api implements CoreV1ApiInterface {
 				metadata: {
 					resourceVersion: list.resourceVersion,
 				},
-				items: filterByLabels(list.items, selector),
+				items: filterByFields(filterByLabels(list.items, selector), fieldSelector),
 			};
 		});
 	}
@@ -240,6 +242,7 @@ export class CoreV1Api implements CoreV1ApiInterface {
 	): Promise<CoreV1EventList> {
 		return await rethrowApiErrors(async () => {
 			const selector = parseLabelSelector(request.labelSelector);
+			const fieldSelector = parseFieldSelector(request.fieldSelector);
 			const list = await this.events.listWithResourceVersion(
 				undefined,
 				listResourceVersionOptions(request),
@@ -248,7 +251,7 @@ export class CoreV1Api implements CoreV1ApiInterface {
 				metadata: {
 					resourceVersion: list.resourceVersion,
 				},
-				items: filterByLabels(list.items, selector),
+				items: filterByFields(filterByLabels(list.items, selector), fieldSelector),
 			};
 		});
 	}
@@ -258,6 +261,7 @@ export class CoreV1Api implements CoreV1ApiInterface {
 	): Promise<V1ServiceList> {
 		return await rethrowApiErrors(async () => {
 			const selector = parseLabelSelector(request.labelSelector);
+			const fieldSelector = parseFieldSelector(request.fieldSelector);
 			const list = await this.services.listWithResourceVersion(
 				undefined,
 				listResourceVersionOptions(request),
@@ -266,7 +270,7 @@ export class CoreV1Api implements CoreV1ApiInterface {
 				metadata: {
 					resourceVersion: list.resourceVersion,
 				},
-				items: filterByLabels(list.items, selector),
+				items: filterByFields(filterByLabels(list.items, selector), fieldSelector),
 			};
 		});
 	}

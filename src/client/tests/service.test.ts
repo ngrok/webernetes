@@ -218,6 +218,56 @@ kubernetes.describe("Services", ({ core, discovery, k8s, helpers, target }) => {
 		).toBeTruthy();
 	});
 
+	it("should support field selectors when listing services", async () => {
+		const namespace = await getSuiteNamespace();
+		const selectedName = `field-selected-service-${namespace}`;
+		const ignoredName = `field-ignored-service-${namespace}`;
+
+		await createService({
+			metadata: {
+				name: selectedName,
+			},
+			spec: {
+				type: "ClusterIP",
+				ports: [{ port: 80 }],
+			},
+		});
+		await createService({
+			metadata: {
+				name: ignoredName,
+			},
+			spec: {
+				type: "ClusterIP",
+				ports: [{ port: 80 }],
+			},
+		});
+
+		const namespaced = await core.listNamespacedService({
+			namespace,
+			fieldSelector: `metadata.name=${selectedName}`,
+		});
+		expect(namespaced.items).toEqual([
+			expect.objectContaining({
+				metadata: expect.objectContaining({
+					name: selectedName,
+					namespace,
+				}),
+			}),
+		]);
+
+		const all = await core.listServiceForAllNamespaces({
+			fieldSelector: `metadata.name=${selectedName}`,
+		});
+		expect(all.items).toEqual([
+			expect.objectContaining({
+				metadata: expect.objectContaining({
+					name: selectedName,
+					namespace,
+				}),
+			}),
+		]);
+	});
+
 	it("should list services from an exact resourceVersion snapshot", async () => {
 		const namespace = await getSuiteNamespace();
 		await createService({

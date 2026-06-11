@@ -134,6 +134,83 @@ kubernetes.describe("Namespaces", ({ core, discovery, k8s, helpers }) => {
 		}
 	});
 
+	it("should support label selectors when listing namespaces", async () => {
+		const selected = await core.createNamespace({
+			body: {
+				metadata: {
+					generateName: "label-selected-namespace-",
+					labels: { app: "namespace-label-selected" },
+				},
+			},
+		});
+		const selectedName = selected.metadata?.name;
+		const ignored = await core.createNamespace({
+			body: {
+				metadata: {
+					generateName: "label-ignored-namespace-",
+					labels: { app: "namespace-label-ignored" },
+				},
+			},
+		});
+		const ignoredName = ignored.metadata?.name;
+		if (!selectedName || !ignoredName) {
+			throw new Error("Expected namespace names");
+		}
+
+		try {
+			const namespaces = await core.listNamespace({
+				labelSelector: "app=namespace-label-selected",
+			});
+
+			expect(namespaces.items.map((namespace) => namespace.metadata?.name)).toContain(selectedName);
+			expect(namespaces.items.map((namespace) => namespace.metadata?.name)).not.toContain(
+				ignoredName,
+			);
+		} finally {
+			await core.deleteNamespace({ name: selectedName });
+			await core.deleteNamespace({ name: ignoredName });
+		}
+	});
+
+	it("should support field selectors when listing namespaces", async () => {
+		const selected = await core.createNamespace({
+			body: {
+				metadata: {
+					generateName: "field-selected-namespace-",
+				},
+			},
+		});
+		const selectedName = selected.metadata?.name;
+		const ignored = await core.createNamespace({
+			body: {
+				metadata: {
+					generateName: "field-ignored-namespace-",
+				},
+			},
+		});
+		const ignoredName = ignored.metadata?.name;
+		if (!selectedName || !ignoredName) {
+			throw new Error("Expected namespace names");
+		}
+
+		try {
+			const namespaces = await core.listNamespace({
+				fieldSelector: `metadata.name=${selectedName}`,
+			});
+
+			expect(namespaces.items).toEqual([
+				expect.objectContaining({
+					metadata: expect.objectContaining({
+						name: selectedName,
+					}),
+				}),
+			]);
+		} finally {
+			await core.deleteNamespace({ name: selectedName });
+			await core.deleteNamespace({ name: ignoredName });
+		}
+	});
+
 	it("should reject replacing a namespace with a stale resourceVersion", async () => {
 		const namespace = await core.createNamespace({
 			body: {

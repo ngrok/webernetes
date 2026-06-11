@@ -2,6 +2,7 @@ import { Clock } from "../clock";
 import * as context from "../go/context";
 import { Etcd } from "./etcd";
 import * as k8s from "../client";
+import type { KubeList } from "../client/types";
 import { Server } from "./server";
 import * as http from "./cni/http";
 import { ClusterNetwork } from "./cni";
@@ -22,11 +23,34 @@ import type { KubeletConfiguration } from "./kubelet/apis/config";
 import { buildPodFullName } from "./kubelet/container";
 import { withClock } from "../clock-context";
 import { type LatencyProvider, withLatencyProvider } from "../latency";
+import type { NetworkRequestEvent, NetworkResponseEvent } from "./cni/network";
 
 const DEFAULT_NODE_PORT_RANGE: NodePortRange = {
 	from: 30000,
 	to: 32767,
 };
+
+export type ClusterInformerEventType = "add" | "update" | "delete";
+
+export interface ClusterInformerOptions {
+	namespace?: string;
+	labelSelector?: string;
+	fieldSelector?: string;
+	onError?: (error: unknown) => void;
+}
+
+export type ClusterInformerCallback<T> = (type: ClusterInformerEventType, object: T) => void;
+
+export interface ClusterInformerResources {
+	pods: k8s.V1Pod;
+	services: k8s.V1Service;
+	namespaces: k8s.V1Namespace;
+	nodes: k8s.V1Node;
+	events: k8s.CoreV1Event;
+	endpointslices: k8s.V1EndpointSlice;
+}
+
+export type ClusterInformerResource = keyof ClusterInformerResources;
 
 export interface ClusterOptions {
 	serviceCIDR?: string;
@@ -208,8 +232,61 @@ export class Cluster {
 		return await this.network.fetch(this.ctx, this.servers[0].node, target, init);
 	}
 
+	public on(event: "request", handler: (event: NetworkRequestEvent) => void): this;
+	public on(event: "response", handler: (event: NetworkResponseEvent) => void): this;
+	public on(
+		event: "request" | "response",
+		handler: ((event: NetworkRequestEvent) => void) | ((event: NetworkResponseEvent) => void),
+	): this {
+		if (event === "request") {
+			this.network.on(event, handler as (event: NetworkRequestEvent) => void);
+			return this;
+		}
+		this.network.on(event, handler as (event: NetworkResponseEvent) => void);
+		return this;
+	}
+
 	public registerImage(image: ImageConstructor): void {
 		this.imageRegistry.register(image);
+	}
+
+	/**
+	 * Creates an informer for a resource collection by listing current objects and
+	 * then watching future changes.
+	 *
+	 * Existing objects are delivered as `"add"` events, then later updates and
+	 * deletes are delivered as `"update"` and `"delete"`. This is the convenient
+	 * API for UI state and local caches because callers do not need to combine an
+	 * initial list with a lower-level watch stream themselves.
+	 *
+	 * @example
+	 * const informer = cluster.informer("nodes", (type, node) => {
+	 *   console.log(type, node.metadata?.name);
+	 * });
+	 *
+	 * await informer.stop();
+	 */
+	public informer<TResource extends ClusterInformerResource>(
+		resource: TResource,
+		callback: ClusterInformerCallback<ClusterInformerResources[TResource]>,
+		options: ClusterInformerOptions = {},
+	): k8s.Informer<ClusterInformerResources[TResource]> {
+		const informer = k8s.makeInformer<ClusterInformerResources[TResource]>(
+			this.kubeConfig,
+			clusterResourcePath(resource, options.namespace),
+			() => clusterListResource(this, resource, options),
+			options.labelSelector,
+			options.fieldSelector,
+		);
+		const typedCallback = callback as ClusterInformerCallback<ClusterInformerResources[TResource]>;
+		informer.on("add", (object) => typedCallback("add", object));
+		informer.on("update", (object) => typedCallback("update", object));
+		informer.on("delete", (object) => typedCallback("delete", object));
+		informer.on("error", (error) => options.onError?.(error));
+		void informer.start().catch((error: unknown) => {
+			options.onError?.(error);
+		});
+		return informer;
 	}
 
 	public async exec(
@@ -311,4 +388,75 @@ export class Cluster {
 			},
 		});
 	}
+}
+
+// TODO(samwho): this is gross, find a better way
+function clusterResourcePath(resource: ClusterInformerResource, namespace?: string): string {
+	const encodedNamespace = namespace ? encodeURIComponent(namespace) : undefined;
+	if (resource === "endpointslices") {
+		return encodedNamespace
+			? `/apis/discovery.k8s.io/v1/namespaces/${encodedNamespace}/endpointslices`
+			: "/apis/discovery.k8s.io/v1/endpointslices";
+	}
+	if (
+		encodedNamespace &&
+		(resource === "pods" || resource === "services" || resource === "events")
+	) {
+		return `/api/v1/namespaces/${encodedNamespace}/${resource}`;
+	}
+	return `/api/v1/${resource}`;
+}
+
+// TODO(samwho): this is gross, find a better way
+async function clusterListResource<TResource extends ClusterInformerResource>(
+	cluster: Cluster,
+	resource: TResource,
+	options: ClusterInformerOptions,
+): Promise<KubeList<ClusterInformerResources[TResource]>> {
+	const listOptions = {
+		labelSelector: options.labelSelector,
+		fieldSelector: options.fieldSelector,
+	};
+	let list: KubeList<k8s.KubernetesObject>;
+	switch (resource) {
+		case "pods":
+			list = options.namespace
+				? await cluster.api.corev1.listNamespacedPod({
+						namespace: options.namespace,
+						...listOptions,
+					})
+				: await cluster.api.corev1.listPodForAllNamespaces(listOptions);
+			break;
+		case "services":
+			list = options.namespace
+				? await cluster.api.corev1.listNamespacedService({
+						namespace: options.namespace,
+						...listOptions,
+					})
+				: await cluster.api.corev1.listServiceForAllNamespaces(listOptions);
+			break;
+		case "namespaces":
+			list = await cluster.api.corev1.listNamespace(listOptions);
+			break;
+		case "nodes":
+			list = await cluster.api.corev1.listNode(listOptions);
+			break;
+		case "events":
+			list = options.namespace
+				? await cluster.api.corev1.listNamespacedEvent({
+						namespace: options.namespace,
+						...listOptions,
+					})
+				: await cluster.api.corev1.listEventForAllNamespaces(listOptions);
+			break;
+		case "endpointslices":
+			list = options.namespace
+				? await cluster.api.discoveryv1.listNamespacedEndpointSlice({
+						namespace: options.namespace,
+						...listOptions,
+					})
+				: await cluster.api.discoveryv1.listEndpointSliceForAllNamespaces(listOptions);
+			break;
+	}
+	return list as KubeList<ClusterInformerResources[TResource]>;
 }

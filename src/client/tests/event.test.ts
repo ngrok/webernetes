@@ -99,6 +99,48 @@ kubernetes.describe("Events", ({ core, helpers }) => {
 		).rejects.toThrow(/NotFound|not found/);
 	});
 
+	it("should support field selectors when listing events", async () => {
+		const namespace = await getSuiteNamespace();
+		const selectedName = `field-selected-event-${namespace}`;
+		const ignoredName = `field-ignored-event-${namespace}`;
+
+		await createEvent({
+			metadata: {
+				name: selectedName,
+			},
+		});
+		await createEvent({
+			metadata: {
+				name: ignoredName,
+			},
+		});
+
+		const namespaced = await core.listNamespacedEvent({
+			namespace,
+			fieldSelector: `metadata.name=${selectedName}`,
+		});
+		expect(namespaced.items).toEqual([
+			expect.objectContaining({
+				metadata: expect.objectContaining({
+					name: selectedName,
+					namespace,
+				}),
+			}),
+		]);
+
+		const all = await core.listEventForAllNamespaces({
+			fieldSelector: `metadata.name=${selectedName}`,
+		});
+		expect(all.items).toEqual([
+			expect.objectContaining({
+				metadata: expect.objectContaining({
+					name: selectedName,
+					namespace,
+				}),
+			}),
+		]);
+	});
+
 	it("should list events from an exact resourceVersion snapshot", async () => {
 		const namespace = await getSuiteNamespace();
 		await createEvent({

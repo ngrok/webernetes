@@ -3,11 +3,14 @@ import { expect, it } from "vitest";
 import { select } from "../go/channel";
 import { browser } from "../test/describe";
 import { waitFor } from "../test/wait";
-import { Cluster } from "./cluster";
+import { Cluster, type ClusterInformerEventType, type ClusterInformerResource } from "./cluster";
+import type { NetworkRequestEvent, NetworkResponseEvent } from "./cni/network";
 import { BaseImage } from "./images/base";
 import type { Kubelet } from "./kubelet";
 import { ProbeManagerImpl } from "./kubelet/prober";
 import { getLatencyProvider, newLatencyProvider } from "../latency";
+
+type InformerObject = { metadata?: { name?: string } };
 
 class TestImage extends BaseImage {
 	static readonly imageName = "example/test";
@@ -32,6 +35,89 @@ async function probeResultChannelsAreOpen(kubelet: Kubelet): Promise<boolean> {
 		}
 	}
 	return true;
+}
+
+function startClusterInformer(
+	cluster: Cluster,
+	resource: ClusterInformerResource,
+	fieldSelector: string,
+	events: Array<{ type: string; name: string | undefined }>,
+): { stop(): Promise<void> } {
+	const callback = (type: ClusterInformerEventType, object: InformerObject) => {
+		events.push({ type, name: object.metadata?.name });
+	};
+	const options = { fieldSelector };
+	return cluster.informer(resource, callback, options);
+}
+
+async function createInformerFieldSelectorFixture(
+	cluster: Cluster,
+	resource: ClusterInformerResource,
+	namespace: string,
+	name: string,
+	fieldValue: string,
+): Promise<void> {
+	const metadata = {
+		name,
+		labels: { clusterInformerField: fieldValue },
+	};
+	switch (resource) {
+		case "pods":
+			await cluster.api.corev1.createNamespacedPod({
+				namespace,
+				body: {
+					metadata,
+					spec: {
+						nodeName: "node-1",
+						containers: [{ name: "pause", image: "registry.k8s.io/pause:3.10" }],
+					},
+				},
+			});
+			return;
+		case "services":
+			await cluster.api.corev1.createNamespacedService({
+				namespace,
+				body: {
+					metadata,
+					spec: { ports: [{ port: 80 }] },
+				},
+			});
+			return;
+		case "namespaces":
+			await cluster.api.corev1.createNamespace({
+				body: { metadata },
+			});
+			return;
+		case "nodes":
+			await cluster.api.corev1.createNode({
+				body: {
+					metadata,
+					status: {
+						addresses: [{ type: "Hostname", address: name }],
+					},
+				},
+			});
+			return;
+		case "events":
+			await cluster.api.corev1.createNamespacedEvent({
+				namespace,
+				body: {
+					metadata,
+					involvedObject: { kind: "Pod", namespace, name: "field-selector-subject" },
+				},
+			});
+			return;
+		case "endpointslices":
+			await cluster.api.discoveryv1.createNamespacedEndpointSlice({
+				namespace,
+				body: {
+					addressType: "IPv4",
+					endpoints: [],
+					metadata,
+				},
+			});
+			return;
+	}
 }
 
 browser.describe("Cluster nodes", () => {
@@ -79,6 +165,82 @@ browser.describe("Cluster nodes", () => {
 			await cluster.close();
 		}
 	});
+
+	it("creates informers for all resource kinds with field selectors", async () => {
+		const cluster = new Cluster();
+		await cluster.init();
+		try {
+			const namespace = "cluster-informer-field-selector";
+			await cluster.api.corev1.createNamespace({
+				body: { metadata: { name: namespace } },
+			});
+
+			for (const resource of [
+				"pods",
+				"services",
+				"namespaces",
+				"nodes",
+				"events",
+				"endpointslices",
+			] satisfies ClusterInformerResource[]) {
+				const matchingName = `matching-${resource}`;
+				const nonMatchingName = `other-${resource}`;
+				const futureMatchingName = `future-${resource}`;
+				const futureNonMatchingName = `future-other-${resource}`;
+				await createInformerFieldSelectorFixture(
+					cluster,
+					resource,
+					namespace,
+					matchingName,
+					"match",
+				);
+				await createInformerFieldSelectorFixture(
+					cluster,
+					resource,
+					namespace,
+					nonMatchingName,
+					"other",
+				);
+
+				const events: Array<{ type: string; name: string | undefined }> = [];
+				const informer = startClusterInformer(
+					cluster,
+					resource,
+					"metadata.labels.clusterInformerField=match",
+					events,
+				);
+				try {
+					await waitFor(() => {
+						expect(events).toContainEqual({ type: "add", name: matchingName });
+					});
+					expect(events).not.toContainEqual({ type: "add", name: nonMatchingName });
+
+					await createInformerFieldSelectorFixture(
+						cluster,
+						resource,
+						namespace,
+						futureMatchingName,
+						"match",
+					);
+					await createInformerFieldSelectorFixture(
+						cluster,
+						resource,
+						namespace,
+						futureNonMatchingName,
+						"other",
+					);
+					await waitFor(() => {
+						expect(events).toContainEqual({ type: "add", name: futureMatchingName });
+					});
+					expect(events).not.toContainEqual({ type: "add", name: futureNonMatchingName });
+				} finally {
+					await informer.stop();
+				}
+			}
+		} finally {
+			await cluster.close();
+		}
+	});
 });
 
 browser.describe("Cluster images", () => {
@@ -93,6 +255,43 @@ browser.describe("Cluster images", () => {
 			expect(first).toBeInstanceOf(TestImage);
 			expect(second).toBeInstanceOf(TestImage);
 			expect(first).not.toBe(second);
+		} finally {
+			await cluster.close();
+		}
+	});
+});
+
+browser.describe("Cluster network events", () => {
+	it("delegates request and response listeners to the cluster network", async () => {
+		const cluster = new Cluster();
+		try {
+			const requestEvents: NetworkRequestEvent[] = [];
+			const responseEvents: NetworkResponseEvent[] = [];
+			const requestEvent: NetworkRequestEvent = {
+				request: {
+					method: "GET",
+					url: new URL("http://example.com/"),
+					header: {},
+					host: "example.com",
+				},
+				chain: [],
+				latencyMs: 0,
+			};
+			const responseEvent: NetworkResponseEvent = {
+				request: requestEvent.request,
+				response: { status: 200, body: "ok" },
+				chain: [],
+				latencyMs: 0,
+			};
+
+			expect(cluster.on("request", (event) => requestEvents.push(event))).toBe(cluster);
+			expect(cluster.on("response", (event) => responseEvents.push(event))).toBe(cluster);
+
+			cluster.network.emit("request", requestEvent);
+			cluster.network.emit("response", responseEvent);
+
+			expect(requestEvents).toEqual([requestEvent]);
+			expect(responseEvents).toEqual([responseEvent]);
 		} finally {
 			await cluster.close();
 		}

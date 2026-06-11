@@ -1305,6 +1305,42 @@ kubernetes.describe("Pods", (context) => {
 		}
 	});
 
+	it("should support label selectors when listing namespaced pods", async () => {
+		const namespace = await getTestNamespace();
+		const selectedName = "namespaced-label-selected";
+		const ignoredName = "namespaced-label-ignored";
+
+		await createPod({
+			metadata: {
+				name: selectedName,
+				labels: { app: "namespaced-label-selected" },
+			},
+		});
+		await createPod({
+			metadata: {
+				name: ignoredName,
+				labels: { app: "namespaced-label-ignored" },
+			},
+		});
+
+		const pods = await core.listNamespacedPod({
+			namespace,
+			labelSelector: "app=namespaced-label-selected",
+		});
+
+		expect(pods.items).toEqual([
+			expect.objectContaining({
+				metadata: expect.objectContaining({
+					name: selectedName,
+					namespace,
+					labels: expect.objectContaining({
+						app: "namespaced-label-selected",
+					}),
+				}),
+			}),
+		]);
+	});
+
 	it("should support field selectors when listing namespaced pods", async () => {
 		const namespace = await getTestNamespace();
 		const selectedName = "field-selected";

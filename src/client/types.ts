@@ -98,5 +98,7 @@ export interface K8s {
 		path: string,
 		listPromiseFn: () => Promise<KubeList<T>>,
 		labelSelector?: string,
+		// Intentional local extension: upstream makeInformer does not expose fieldSelector.
+		fieldSelector?: string,
 	): Informer<T>;
 }

@@ -1,6 +1,7 @@
 import { EndpointSliceStore } from "../../../../cluster/storage";
 import type { Etcd } from "../../../../cluster/etcd";
 import { NotFound } from "../../../errors";
+import { filterByFields, parseFieldSelector } from "../../../fields";
 import { filterByLabels, parseLabelSelector } from "../../../labels";
 import { V1EndpointSlice, V1EndpointSliceList, V1Status } from "../../models";
 import type {
@@ -60,6 +61,7 @@ export class DiscoveryV1Api implements DiscoveryV1ApiInterface {
 	): Promise<V1EndpointSliceList> {
 		return await rethrowApiErrors(async () => {
 			const selector = parseLabelSelector(request.labelSelector);
+			const fieldSelector = parseFieldSelector(request.fieldSelector);
 			const list = await this.endpointSlices.listWithResourceVersion(
 				undefined,
 				listResourceVersionOptions(request),
@@ -68,7 +70,7 @@ export class DiscoveryV1Api implements DiscoveryV1ApiInterface {
 				apiVersion: "discovery.k8s.io/v1",
 				kind: "EndpointSliceList",
 				metadata: { resourceVersion: list.resourceVersion },
-				items: filterByLabels(list.items, selector),
+				items: filterByFields(filterByLabels(list.items, selector), fieldSelector),
 			};
 		});
 	}
@@ -78,6 +80,7 @@ export class DiscoveryV1Api implements DiscoveryV1ApiInterface {
 	): Promise<V1EndpointSliceList> {
 		return await rethrowApiErrors(async () => {
 			const selector = parseLabelSelector(request.labelSelector);
+			const fieldSelector = parseFieldSelector(request.fieldSelector);
 			const list = await this.endpointSlices.listWithResourceVersion(
 				request.namespace,
 				listResourceVersionOptions(request),
@@ -86,7 +89,7 @@ export class DiscoveryV1Api implements DiscoveryV1ApiInterface {
 				apiVersion: "discovery.k8s.io/v1",
 				kind: "EndpointSliceList",
 				metadata: { resourceVersion: list.resourceVersion },
-				items: filterByLabels(list.items, selector),
+				items: filterByFields(filterByLabels(list.items, selector), fieldSelector),
 			};
 		});
 	}

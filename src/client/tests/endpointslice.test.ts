@@ -73,6 +73,54 @@ kubernetes.describe("EndpointSlices", ({ core, discovery, helpers }) => {
 		return slices.items.find((slice) => endpointAddresses(slice).includes(address));
 	}
 
+	it("should support field selectors when listing endpoint slices", async () => {
+		const namespace = await getSuiteNamespace();
+		const selectedName = `field-selected-endpoint-slice-${namespace}`;
+		const ignoredName = `field-ignored-endpoint-slice-${namespace}`;
+
+		await discovery.createNamespacedEndpointSlice({
+			namespace,
+			body: endpointSlice(namespace, {
+				metadata: {
+					name: selectedName,
+				},
+			}),
+		});
+		await discovery.createNamespacedEndpointSlice({
+			namespace,
+			body: endpointSlice(namespace, {
+				metadata: {
+					name: ignoredName,
+				},
+			}),
+		});
+
+		const namespaced = await discovery.listNamespacedEndpointSlice({
+			namespace,
+			fieldSelector: `metadata.name=${selectedName}`,
+		});
+		expect(namespaced.items).toEqual([
+			expect.objectContaining({
+				metadata: expect.objectContaining({
+					name: selectedName,
+					namespace,
+				}),
+			}),
+		]);
+
+		const all = await discovery.listEndpointSliceForAllNamespaces({
+			fieldSelector: `metadata.name=${selectedName}`,
+		});
+		expect(all.items).toEqual([
+			expect.objectContaining({
+				metadata: expect.objectContaining({
+					name: selectedName,
+					namespace,
+				}),
+			}),
+		]);
+	});
+
 	function readyEndpointAddresses(slice: V1EndpointSlice | undefined): string[] {
 		return (slice?.endpoints ?? [])
 			.filter((endpoint) => endpoint.conditions?.ready !== false)
