@@ -39,31 +39,24 @@
   },
   "devDependencies": {
     "@kubernetes/client-node": "^1.4.0",
-    "@testcontainers/k3s": "^11.14.0",
+    "@testcontainers/k3s": "^12.0.1",
     "@types/cli-progress": "^3.11.6",
-    "@types/node": "^24.0.0",
-    "@vitest/browser": "^3.2.4",
+    "@types/node": "25.9.2",
+    "@vitest/browser-playwright": "^4.1.8",
     "cli-progress": "^3.12.0",
-    "esbuild": "^0.25.11",
     "etcd3": "^1.1.2",
     "husky": "9.1.7",
-    "lint-staged": "16.4.0",
+    "lint-staged": "17.0.7",
     "marked": "^18.0.5",
     "mermaid": "^11.15.0",
-    "oxfmt": "0.45.0",
-    "oxlint": "1.60.0",
+    "oxfmt": "0.54.0",
+    "oxlint": "1.69.0",
     "oxlint-tsgolint": "^0.23.0",
-    "playwright": "^1.55.0",
-    "testcontainers": "^11.14.0",
+    "playwright": "^1.60.0",
+    "testcontainers": "^12.0.1",
     "tsx": "^4.22.4",
     "typescript": "^6.0.3",
-    "vitest": "^3.0.0"
+    "vitest": "^4.1.8"
   },
-  "packageManager": "pnpm@10.0.0",
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "esbuild",
-      "protobufjs"
-    ]
-  }
+  "packageManager": "pnpm@11.5.0"
 }

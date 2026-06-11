@@ -10,8 +10,12 @@
   },
   "rules": {
     "curly": "error",
+    "no-underscore-dangle": "off",
     "eslint/no-shadow": "off",
     "jest/valid-title": "off",
+    "jest/no-standalone-expect": "off",
+    "vitest/expect-expect": "off",
+    "vitest/valid-title": "off",
     "no-useless-switch-case": "off",
     "no-explicit-any": "warn",
     "typescript/no-array-delete": "off",

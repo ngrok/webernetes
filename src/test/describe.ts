@@ -71,7 +71,11 @@ function createDescribeFn(
 			describeFn(name, factory);
 			return;
 		}
-		describeFn(name, factory, options);
+		if (typeof options === "number") {
+			describeFn(name, factory, options);
+			return;
+		}
+		describeFn(name, options, factory);
 	};
 }
 
