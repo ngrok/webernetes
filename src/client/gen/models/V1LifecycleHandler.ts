@@ -1,3 +1,7 @@
+/*!
+ * SPDX-License-Identifier: Apache-2.0
+ * Derived from Kubernetes, translated and modified for Webernetes.
+ */
 import { V1ExecAction } from "./V1ExecAction";
 import { V1HTTPGetAction } from "./V1HTTPGetAction";
 import { V1SleepAction } from "./V1SleepAction";

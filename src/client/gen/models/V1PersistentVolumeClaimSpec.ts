@@ -1,3 +1,7 @@
+/*!
+ * SPDX-License-Identifier: Apache-2.0
+ * Derived from Kubernetes, translated and modified for Webernetes.
+ */
 import { V1LabelSelector } from "./V1LabelSelector";
 import { V1TypedLocalObjectReference } from "./V1TypedLocalObjectReference";
 import { V1TypedObjectReference } from "./V1TypedObjectReference";

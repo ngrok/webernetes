@@ -1,3 +1,7 @@
+/*!
+ * SPDX-License-Identifier: Apache-2.0
+ * Derived from Kubernetes, translated and modified for Webernetes.
+ */
 import { V1ContainerStatus } from "./V1ContainerStatus";
 import { V1HostIP } from "./V1HostIP";
 import { V1NodeAllocatableResourceClaimStatus } from "./V1NodeAllocatableResourceClaimStatus";

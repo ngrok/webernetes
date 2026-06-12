@@ -1,3 +1,7 @@
+/*!
+ * SPDX-License-Identifier: Apache-2.0
+ * Derived from Kubernetes, translated and modified for Webernetes.
+ */
 import { V1ManagedFieldsEntry } from "./V1ManagedFieldsEntry";
 import { V1OwnerReference } from "./V1OwnerReference";
 export interface V1ObjectMeta {

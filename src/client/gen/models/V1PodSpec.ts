@@ -1,3 +1,7 @@
+/*!
+ * SPDX-License-Identifier: Apache-2.0
+ * Derived from Kubernetes, translated and modified for Webernetes.
+ */
 import { V1Affinity } from "./V1Affinity";
 import { V1Container } from "./V1Container";
 import { V1EphemeralContainer } from "./V1EphemeralContainer";

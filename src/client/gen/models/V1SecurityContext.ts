@@ -1,3 +1,7 @@
+/*!
+ * SPDX-License-Identifier: Apache-2.0
+ * Derived from Kubernetes, translated and modified for Webernetes.
+ */
 import { V1AppArmorProfile } from "./V1AppArmorProfile";
 import { V1Capabilities } from "./V1Capabilities";
 import { V1SELinuxOptions } from "./V1SELinuxOptions";

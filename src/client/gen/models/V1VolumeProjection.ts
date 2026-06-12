@@ -1,3 +1,7 @@
+/*!
+ * SPDX-License-Identifier: Apache-2.0
+ * Derived from Kubernetes, translated and modified for Webernetes.
+ */
 import { V1ClusterTrustBundleProjection } from "./V1ClusterTrustBundleProjection";
 import { V1ConfigMapProjection } from "./V1ConfigMapProjection";
 import { V1DownwardAPIProjection } from "./V1DownwardAPIProjection";

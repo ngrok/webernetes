@@ -1,3 +1,7 @@
+/*!
+ * SPDX-License-Identifier: Apache-2.0
+ * Derived from Kubernetes, translated and modified for Webernetes.
+ */
 import { V1ContainerPort } from "./V1ContainerPort";
 import { V1ContainerResizePolicy } from "./V1ContainerResizePolicy";
 import { V1ContainerRestartRule } from "./V1ContainerRestartRule";

@@ -1,3 +1,7 @@
+/*!
+ * SPDX-License-Identifier: Apache-2.0
+ * Derived from Kubernetes, translated and modified for Webernetes.
+ */
 import { V1AttachedVolume } from "./V1AttachedVolume";
 import { V1ContainerImage } from "./V1ContainerImage";
 import { V1NodeAddress } from "./V1NodeAddress";

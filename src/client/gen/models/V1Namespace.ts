@@ -1,3 +1,7 @@
+/*!
+ * SPDX-License-Identifier: Apache-2.0
+ * Derived from Kubernetes, translated and modified for Webernetes.
+ */
 import { V1NamespaceSpec } from "./V1NamespaceSpec";
 import { V1NamespaceStatus } from "./V1NamespaceStatus";
 import { V1ObjectMeta } from "./V1ObjectMeta";

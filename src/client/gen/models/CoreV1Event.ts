@@ -1,3 +1,7 @@
+/*!
+ * SPDX-License-Identifier: Apache-2.0
+ * Derived from Kubernetes, translated and modified for Webernetes.
+ */
 import { CoreV1EventSeries } from "./CoreV1EventSeries";
 import { V1EventSource } from "./V1EventSource";
 import type { V1MicroTime } from "../../types";

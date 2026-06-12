@@ -1,3 +1,7 @@
+/*!
+ * SPDX-License-Identifier: Apache-2.0
+ * Derived from Kubernetes, translated and modified for Webernetes.
+ */
 import { V1AWSElasticBlockStoreVolumeSource } from "./V1AWSElasticBlockStoreVolumeSource";
 import { V1AzureDiskVolumeSource } from "./V1AzureDiskVolumeSource";
 import { V1AzureFileVolumeSource } from "./V1AzureFileVolumeSource";

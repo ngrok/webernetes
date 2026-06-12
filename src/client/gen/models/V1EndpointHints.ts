@@ -1,3 +1,7 @@
+/*!
+ * SPDX-License-Identifier: Apache-2.0
+ * Derived from Kubernetes, translated and modified for Webernetes.
+ */
 import { V1ForNode } from "./V1ForNode";
 import { V1ForZone } from "./V1ForZone";
 

@@ -1,3 +1,7 @@
+/*!
+ * SPDX-License-Identifier: Apache-2.0
+ * Derived from Kubernetes, translated and modified for Webernetes.
+ */
 import { DiscoveryV1EndpointPort } from "./DiscoveryV1EndpointPort";
 import { V1Endpoint } from "./V1Endpoint";
 import { V1ObjectMeta } from "./V1ObjectMeta";
