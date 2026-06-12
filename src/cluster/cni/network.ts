@@ -47,9 +47,9 @@ export type FetchOrigin = V1Pod | V1Node;
 export const networkRequestIDHeader = "X-Webernetes-Request-Id";
 
 export type NetworkHop =
-	| { type: "pod"; pod: V1Pod }
-	| { type: "node"; node: V1Node }
-	| { type: "service"; service: V1Service }
+	| { type: "pod"; resource: V1Pod }
+	| { type: "node"; resource: V1Node }
+	| { type: "service"; resource: V1Service }
 	| { type: "external"; host: string };
 
 export interface NetworkRequestEvent {
@@ -634,7 +634,7 @@ export class ClusterNetwork extends EventEmitter {
 	}
 
 	private serviceHop(service: V1Service): NetworkHop {
-		return { type: "service", service };
+		return { type: "service", resource: service };
 	}
 
 	private podHopForIP(ip: string): NetworkHop | undefined {
@@ -642,7 +642,7 @@ export class ClusterNetwork extends EventEmitter {
 		if (!pod) {
 			return undefined;
 		}
-		return { type: "pod", pod: pod.config.pod };
+		return { type: "pod", resource: pod.config.pod };
 	}
 
 	private nodeHopForIP(ip: string): NetworkHop | undefined {
@@ -651,14 +651,14 @@ export class ClusterNetwork extends EventEmitter {
 		if (!node) {
 			return undefined;
 		}
-		return { type: "node", node };
+		return { type: "node", resource: node };
 	}
 
 	private originHop(origin: FetchOrigin): NetworkHop {
 		if (isPodOrigin(origin)) {
-			return { type: "pod", pod: origin };
+			return { type: "pod", resource: origin };
 		}
-		return { type: "node", node: origin };
+		return { type: "node", resource: origin };
 	}
 
 	private async resolveHostname(origin: FetchOrigin, name: string): Promise<string | undefined> {

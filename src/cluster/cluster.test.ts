@@ -267,6 +267,10 @@ browser.describe("Cluster network events", () => {
 		try {
 			const requestEvents: NetworkRequestEvent[] = [];
 			const responseEvents: NetworkResponseEvent[] = [];
+			const addedRequestEvents: NetworkRequestEvent[] = [];
+			const addedResponseEvents: NetworkResponseEvent[] = [];
+			const onceRequestEvents: NetworkRequestEvent[] = [];
+			const onceResponseEvents: NetworkResponseEvent[] = [];
 			const requestEvent: NetworkRequestEvent = {
 				request: {
 					method: "GET",
@@ -284,14 +288,44 @@ browser.describe("Cluster network events", () => {
 				latencyMs: 0,
 			};
 
-			expect(cluster.on("request", (event) => requestEvents.push(event))).toBe(cluster);
-			expect(cluster.on("response", (event) => responseEvents.push(event))).toBe(cluster);
+			const onRequest = (event: NetworkRequestEvent) => requestEvents.push(event);
+			const onResponse = (event: NetworkResponseEvent) => responseEvents.push(event);
+			const addRequest = (event: NetworkRequestEvent) => addedRequestEvents.push(event);
+			const addResponse = (event: NetworkResponseEvent) => addedResponseEvents.push(event);
+			const onceRequest = (event: NetworkRequestEvent) => onceRequestEvents.push(event);
+			const onceResponse = (event: NetworkResponseEvent) => onceResponseEvents.push(event);
+
+			expect(cluster.on("request", onRequest)).toBe(cluster);
+			expect(cluster.on("response", onResponse)).toBe(cluster);
+			expect(cluster.addListener("request", addRequest)).toBe(cluster);
+			expect(cluster.addListener("response", addResponse)).toBe(cluster);
+			expect(cluster.once("request", onceRequest)).toBe(cluster);
+			expect(cluster.once("response", onceResponse)).toBe(cluster);
 
 			cluster.network.emit("request", requestEvent);
 			cluster.network.emit("response", responseEvent);
 
 			expect(requestEvents).toEqual([requestEvent]);
 			expect(responseEvents).toEqual([responseEvent]);
+			expect(addedRequestEvents).toEqual([requestEvent]);
+			expect(addedResponseEvents).toEqual([responseEvent]);
+			expect(onceRequestEvents).toEqual([requestEvent]);
+			expect(onceResponseEvents).toEqual([responseEvent]);
+
+			expect(cluster.off("request", onRequest)).toBe(cluster);
+			expect(cluster.off("response", onResponse)).toBe(cluster);
+			expect(cluster.removeListener("request", addRequest)).toBe(cluster);
+			expect(cluster.removeListener("response", addResponse)).toBe(cluster);
+
+			cluster.network.emit("request", requestEvent);
+			cluster.network.emit("response", responseEvent);
+
+			expect(requestEvents).toEqual([requestEvent]);
+			expect(responseEvents).toEqual([responseEvent]);
+			expect(addedRequestEvents).toEqual([requestEvent]);
+			expect(addedResponseEvents).toEqual([responseEvent]);
+			expect(onceRequestEvents).toEqual([requestEvent]);
+			expect(onceResponseEvents).toEqual([responseEvent]);
 		} finally {
 			await cluster.close();
 		}

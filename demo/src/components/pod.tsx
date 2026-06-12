@@ -2,7 +2,14 @@ import { Badge } from "@ngrok/mantle/badge";
 import { Tooltip } from "@ngrok/mantle/tooltip";
 import { forwardRef, type ComponentPropsWithoutRef } from "react";
 import * as w8s from "webernetes";
-import { getName, getNamespace, getReadyContainers, getRestartCount } from "../helpers";
+import {
+	getName,
+	getNamespace,
+	getReadyContainers,
+	getRestartCount,
+	hasReadiness,
+	idFor,
+} from "../helpers";
 
 export function Pod({ pod }: { pod: w8s.V1Pod }) {
 	return (
@@ -27,17 +34,21 @@ const PodContent = forwardRef<HTMLDivElement, PodContentProps>(function PodConte
 ) {
 	const name = getName(pod);
 	const ready = isPodReady(pod);
+	const showReadiness = hasReadiness(pod);
 
 	return (
 		<div
+			id={idFor(pod)}
 			ref={ref}
 			{...props}
 			className="border-card bg-card flex min-h-20 min-w-0 flex-col items-center justify-center gap-2 rounded-md border p-3 text-center transition-transform hover:-translate-y-0.5"
 		>
 			<div className="w-full min-w-0 truncate font-mono text-xs font-semibold">{name}</div>
-			<Badge appearance="muted" color={ready ? "success" : "warning"}>
-				{ready ? "Ready" : "Not ready"}
-			</Badge>
+			{showReadiness && (
+				<Badge appearance="muted" color={ready ? "success" : "warning"}>
+					{ready ? "Ready" : "Not ready"}
+				</Badge>
+			)}
 		</div>
 	);
 });
@@ -50,9 +61,11 @@ function TooltipContent({ pod }: { pod: w8s.V1Pod }) {
 			<div className="font-mono font-semibold">{getName(pod)}</div>
 			<div>Namespace: {getNamespace(pod)}</div>
 			<div>Phase: {pod.status?.phase ?? "Unknown"}</div>
-			<div>
-				Ready: {getReadyContainers(pod)}/{containers.length}
-			</div>
+			{hasReadiness(pod) && (
+				<div>
+					Ready: {getReadyContainers(pod)}/{containers.length}
+				</div>
+			)}
 			<div>Restarts: {getRestartCount(pod)}</div>
 			<div>Node: {pod.spec?.nodeName ?? ""}</div>
 		</div>

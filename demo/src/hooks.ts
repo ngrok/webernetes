@@ -3,7 +3,10 @@ import * as w8s from "webernetes";
 
 import { idFor } from "./helpers";
 
-export function useCluster(setup: (cluster: w8s.Cluster) => Promise<void> | void) {
+export function useCluster(
+	setup: (cluster: w8s.Cluster) => Promise<void> | void,
+	options?: w8s.ClusterOptions,
+) {
 	const [cluster, setCluster] = useState<w8s.Cluster>();
 	const [version, setVersion] = useState(0);
 
@@ -12,7 +15,7 @@ export function useCluster(setup: (cluster: w8s.Cluster) => Promise<void> | void
 		let cluster: w8s.Cluster | undefined;
 
 		async function startCluster() {
-			cluster = new w8s.Cluster();
+			cluster = new w8s.Cluster(options);
 			await cluster.init();
 			await setup(cluster);
 
@@ -37,7 +40,7 @@ export function useCluster(setup: (cluster: w8s.Cluster) => Promise<void> | void
 			cancelled = true;
 			void cluster?.close();
 		};
-	}, [setup, version]);
+	}, [options, setup, version]);
 
 	return {
 		cluster,

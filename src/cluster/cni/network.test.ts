@@ -416,15 +416,15 @@ browser.describe("ClusterNetwork", ({ ctx }) => {
 		expect(response.chain.map((hop) => hop.type)).toEqual(["pod", "service", "pod"]);
 		expect(request.chain[0]).toMatchObject({
 			type: "pod",
-			pod: { metadata: { uid: "client-uid" } },
+			resource: { metadata: { uid: "client-uid" } },
 		});
 		expect(request.chain[1]).toMatchObject({
 			type: "service",
-			service: { metadata: { name: "web", namespace: "default", uid: "service-uid" } },
+			resource: { metadata: { name: "web", namespace: "default", uid: "service-uid" } },
 		});
 		expect(request.chain[2]).toMatchObject({
 			type: "pod",
-			pod: { metadata: { uid: "pod-uid" } },
+			resource: { metadata: { uid: "pod-uid" } },
 		});
 		expect(response.chain[0]).toEqual(request.chain[2]);
 		expect(response.chain[1]).toEqual(request.chain[1]);
@@ -517,8 +517,8 @@ browser.describe("ClusterNetwork", ({ ctx }) => {
 				type: "request",
 				latencyMs: 20,
 				chain: [
-					{ type: "pod", pod: { metadata: { uid: "client-uid" } } },
-					{ type: "pod", pod: { metadata: { uid: "pod-uid" } } },
+					{ type: "pod", resource: { metadata: { uid: "client-uid" } } },
+					{ type: "pod", resource: { metadata: { uid: "pod-uid" } } },
 				],
 			},
 		]);
@@ -531,8 +531,8 @@ browser.describe("ClusterNetwork", ({ ctx }) => {
 			type: "response",
 			latencyMs: 40,
 			chain: [
-				{ type: "pod", pod: { metadata: { uid: "pod-uid" } } },
-				{ type: "pod", pod: { metadata: { uid: "client-uid" } } },
+				{ type: "pod", resource: { metadata: { uid: "pod-uid" } } },
+				{ type: "pod", resource: { metadata: { uid: "client-uid" } } },
 			],
 		});
 		expect(resolved).toBe(false);

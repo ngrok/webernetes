@@ -1,5 +1,12 @@
 import * as w8s from "webernetes";
 
+import {
+	demoRequestIdHeader,
+	demoRequestTypeHeader,
+	demoRequestTypeScheduledJob,
+	getHeader,
+} from "./helpers";
+
 export class DemoApiImage extends w8s.BaseImage {
 	static readonly imageName = "demo/api";
 	static readonly imageVersion = "1.0";
@@ -12,22 +19,36 @@ export class DemoApiImage extends w8s.BaseImage {
 		}
 
 		ctx.listenHttp(8080, async (_ctx, request) => {
-			if (request.url.pathname === "/readyz") {
+			if (request.url.pathname === "/readyz" || request.url.pathname === "/healthz") {
 				return jsonResponse(200, { status: "ok" });
 			}
 
 			const [databaseResponse, redisResponse] = await Promise.all([
-				ctx.fetch("http://database.default.svc.cluster.local:5432/query", {
+				ctx.fetch("http://database/query", {
 					method: "POST",
-					headers: { "Content-Type": "application/json" },
+					headers: demoRequestHeaders(request),
 					body: JSON.stringify({ operation: "select-user", requestPath: request.url.pathname }),
 				}),
-				ctx.fetch("http://redis.default.svc.cluster.local:6379/get", {
+				ctx.fetch("http://redis/get", {
 					method: "POST",
-					headers: { "Content-Type": "application/json" },
+					headers: demoRequestHeaders(request),
 					body: JSON.stringify({ key: "feature-flags" }),
 				}),
 			]);
+			const upstreamFailure = [databaseResponse, redisResponse].find(
+				(response) => response.status >= 400,
+			);
+			if (upstreamFailure) {
+				return jsonResponse(502, {
+					status: "error",
+					service: "api",
+					message: "upstream request failed",
+					upstream: {
+						database: parseJsonBody(databaseResponse.body),
+						redis: parseJsonBody(redisResponse.body),
+					},
+				});
+			}
 
 			return jsonResponse(200, {
 				status: "ok",
@@ -58,6 +79,13 @@ export class DemoDatabaseImage extends w8s.BaseImage {
 			if (request.url.pathname === "/readyz") {
 				return jsonResponse(200, { status: "ok" });
 			}
+			if (randomFailure()) {
+				return jsonResponse(500, {
+					status: "error",
+					service: "database",
+					message: "query failed",
+				});
+			}
 
 			return jsonResponse(200, {
 				status: "ok",
@@ -85,6 +113,13 @@ export class DemoRedisImage extends w8s.BaseImage {
 			if (request.url.pathname === "/readyz") {
 				return jsonResponse(200, { status: "ok" });
 			}
+			if (randomFailure()) {
+				return jsonResponse(500, {
+					status: "error",
+					service: "redis",
+					message: "cache read failed",
+				});
+			}
 
 			return jsonResponse(200, {
 				status: "ok",
@@ -98,12 +133,61 @@ export class DemoRedisImage extends w8s.BaseImage {
 	}
 }
 
+export class DemoScheduledJobImage extends w8s.BaseImage {
+	static readonly imageName = "demo/scheduled-job";
+	static readonly imageVersion = "1.0";
+
+	readonly defaultCommand = ["scheduled-job"];
+
+	override async exec(ctx: w8s.ProcessContext, argv: readonly string[]): Promise<number> {
+		if (argv[0] !== "scheduled-job") {
+			return await super.exec(ctx, argv);
+		}
+
+		for (;;) {
+			try {
+				await ctx.fetch("http://api/checkout", {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						[demoRequestIdHeader]: demoRequestId(),
+						[demoRequestTypeHeader]: demoRequestTypeScheduledJob,
+					},
+					body: JSON.stringify({ source: "scheduled-job" }),
+				});
+			} catch (error) {
+				ctx.writeStderr(`${error instanceof Error ? error.message : String(error)}\n`);
+			}
+			await ctx.sleep(5000);
+		}
+	}
+}
+
+function demoRequestHeaders(request: w8s.HttpRequest): w8s.HttpHeader {
+	const headers: w8s.HttpHeader = { "Content-Type": ["application/json"] };
+	for (const name of [demoRequestIdHeader, demoRequestTypeHeader]) {
+		const value = getHeader(request.header, name);
+		if (value !== undefined) {
+			headers[name] = [value];
+		}
+	}
+	return headers;
+}
+
+function demoRequestId(): string {
+	return crypto.randomUUID();
+}
+
 function jsonResponse(status: number, body: unknown): w8s.HttpResponse {
 	return {
 		status,
 		header: { "Content-Type": ["application/json"] },
 		body: `${JSON.stringify(body)}\n`,
 	};
+}
+
+function randomFailure(): boolean {
+	return Math.random() < 0.5;
 }
 
 function parseJsonBody(body: string): unknown {

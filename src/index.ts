@@ -19,8 +19,10 @@ export type {
 	ClusterInformerOptions,
 	ClusterInformerResource,
 	ClusterInformerResources,
+	NetworkHop,
+	NetworkRequestEvent,
+	NetworkResponseEvent,
 } from "./cluster/cluster";
-export type { NetworkRequestEvent, NetworkResponseEvent } from "./cluster/cni/network";
 export type { NodePortRange } from "./cluster/storage";
 export type { ImageConstructor, ImageDefinition } from "./cluster/cri";
 export type { ProcessContext } from "./cluster/cri";

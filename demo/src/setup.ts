@@ -1,13 +1,31 @@
 import * as w8s from "webernetes";
 
-import { DemoApiImage, DemoDatabaseImage, DemoRedisImage } from "./images";
+import { DemoApiImage, DemoDatabaseImage, DemoRedisImage, DemoScheduledJobImage } from "./images";
 
 export async function setup(cluster: w8s.Cluster): Promise<void> {
 	cluster.registerImage(DemoApiImage);
 	cluster.registerImage(DemoDatabaseImage);
 	cluster.registerImage(DemoRedisImage);
+	cluster.registerImage(DemoScheduledJobImage);
 
 	await cluster.apply([
+		{
+			apiVersion: "v1",
+			kind: "Pod",
+			metadata: {
+				name: "scheduled-job",
+				namespace: "default",
+				labels: { app: "scheduled-job", tier: "jobs" },
+			},
+			spec: {
+				containers: [
+					{
+						name: "scheduled-job",
+						image: "demo/scheduled-job:1.0",
+					},
+				],
+			},
+		},
 		{
 			apiVersion: "v1",
 			kind: "Pod",
@@ -26,11 +44,13 @@ export async function setup(cluster: w8s.Cluster): Promise<void> {
 							httpGet: { path: "/readyz", port: "http" },
 							periodSeconds: 2,
 							failureThreshold: 1,
+							timeoutSeconds: 3,
 						},
 						livenessProbe: {
 							httpGet: { path: "/healthz", port: "http" },
 							periodSeconds: 3,
 							failureThreshold: 2,
+							timeoutSeconds: 3,
 						},
 					},
 				],
@@ -54,6 +74,7 @@ export async function setup(cluster: w8s.Cluster): Promise<void> {
 							httpGet: { path: "/readyz", port: "http" },
 							periodSeconds: 2,
 							failureThreshold: 1,
+							timeoutSeconds: 3,
 						},
 					},
 				],
@@ -77,6 +98,7 @@ export async function setup(cluster: w8s.Cluster): Promise<void> {
 							httpGet: { path: "/readyz", port: "http" },
 							periodSeconds: 2,
 							failureThreshold: 1,
+							timeoutSeconds: 3,
 						},
 					},
 				],

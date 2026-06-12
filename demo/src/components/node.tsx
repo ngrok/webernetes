@@ -27,7 +27,7 @@ export function Node({
 	});
 
 	return (
-		<Card.Root>
+		<Card.Root id={idFor(node)}>
 			<Card.Header>
 				<div className="flex items-center justify-between gap-3">
 					<Card.Title className="flex items-baseline gap-2 font-mono text-sm">

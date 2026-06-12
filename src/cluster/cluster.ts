@@ -1,3 +1,5 @@
+import { EventEmitter } from "events";
+
 import { Clock } from "../clock";
 import * as context from "../go/context";
 import { Etcd } from "./etcd";
@@ -23,7 +25,7 @@ import type { KubeletConfiguration } from "./kubelet/apis/config";
 import { buildPodFullName } from "./kubelet/container";
 import { withClock } from "../clock-context";
 import { type LatencyProvider, withLatencyProvider } from "../latency";
-import type { NetworkRequestEvent, NetworkResponseEvent } from "./cni/network";
+import type { NetworkHop, NetworkRequestEvent, NetworkResponseEvent } from "./cni/network";
 
 const DEFAULT_NODE_PORT_RANGE: NodePortRange = {
 	from: 30000,
@@ -58,6 +60,10 @@ export interface ClusterOptions {
 	latencyProvider?: LatencyProvider;
 }
 
+export type { NetworkHop, NetworkRequestEvent, NetworkResponseEvent };
+
+type EventEmitterListener = Parameters<EventEmitter["on"]>[1];
+
 export class KubeClient implements k8s.KubeClient {
 	readonly corev1: k8s.KubeClient["corev1"];
 	readonly discoveryv1: k8s.KubeClient["discoveryv1"];
@@ -67,7 +73,7 @@ export class KubeClient implements k8s.KubeClient {
 	}
 }
 
-export class Cluster {
+export class Cluster extends EventEmitter {
 	readonly clock: Clock;
 	readonly etcd: Etcd;
 	readonly kubeConfig: k8s.KubeConfig;
@@ -83,6 +89,7 @@ export class Cluster {
 	private closePromise: Promise<void> | undefined;
 
 	public constructor(options: ClusterOptions = {}) {
+		super();
 		this.clock = new Clock();
 		const [ctx, cancelContext] = context.withCancel(context.background());
 		this.ctx = withLatencyProvider(withClock(ctx, this.clock), options.latencyProvider);
@@ -100,6 +107,8 @@ export class Cluster {
 		});
 		this.api = new KubeClient(this.kubeConfig);
 		this.network = new ClusterNetwork({ clusterDNS: [this.dnsServiceIp] });
+		this.network.on("request", (event) => this.emit("request", event));
+		this.network.on("response", (event) => this.emit("response", event));
 
 		this.imageRegistry = new ImageRegistry();
 		this.imageRegistry.register(PauseImage);
@@ -232,18 +241,51 @@ export class Cluster {
 		return await this.network.fetch(this.ctx, this.servers[0].node, target, init);
 	}
 
-	public on(event: "request", handler: (event: NetworkRequestEvent) => void): this;
-	public on(event: "response", handler: (event: NetworkResponseEvent) => void): this;
-	public on(
-		event: "request" | "response",
-		handler: ((event: NetworkRequestEvent) => void) | ((event: NetworkResponseEvent) => void),
-	): this {
-		if (event === "request") {
-			this.network.on(event, handler as (event: NetworkRequestEvent) => void);
-			return this;
-		}
-		this.network.on(event, handler as (event: NetworkResponseEvent) => void);
-		return this;
+	public override addListener(
+		event: "request",
+		handler: (event: NetworkRequestEvent) => void,
+	): this;
+	public override addListener(
+		event: "response",
+		handler: (event: NetworkResponseEvent) => void,
+	): this;
+	public override addListener(eventName: string | symbol, listener: EventEmitterListener): this;
+	public override addListener(eventName: string | symbol, listener: EventEmitterListener): this {
+		return super.addListener(eventName, listener);
+	}
+
+	public override on(event: "request", handler: (event: NetworkRequestEvent) => void): this;
+	public override on(event: "response", handler: (event: NetworkResponseEvent) => void): this;
+	public override on(eventName: string | symbol, listener: EventEmitterListener): this;
+	public override on(eventName: string | symbol, listener: EventEmitterListener): this {
+		return super.on(eventName, listener);
+	}
+
+	public override once(event: "request", handler: (event: NetworkRequestEvent) => void): this;
+	public override once(event: "response", handler: (event: NetworkResponseEvent) => void): this;
+	public override once(eventName: string | symbol, listener: EventEmitterListener): this;
+	public override once(eventName: string | symbol, listener: EventEmitterListener): this {
+		return super.once(eventName, listener);
+	}
+
+	public override off(event: "request", handler: (event: NetworkRequestEvent) => void): this;
+	public override off(event: "response", handler: (event: NetworkResponseEvent) => void): this;
+	public override off(eventName: string | symbol, listener: EventEmitterListener): this;
+	public override off(eventName: string | symbol, listener: EventEmitterListener): this {
+		return super.off(eventName, listener);
+	}
+
+	public override removeListener(
+		event: "request",
+		handler: (event: NetworkRequestEvent) => void,
+	): this;
+	public override removeListener(
+		event: "response",
+		handler: (event: NetworkResponseEvent) => void,
+	): this;
+	public override removeListener(eventName: string | symbol, listener: EventEmitterListener): this;
+	public override removeListener(eventName: string | symbol, listener: EventEmitterListener): this {
+		return super.removeListener(eventName, listener);
 	}
 
 	public registerImage(image: ImageConstructor): void {
