@@ -53,6 +53,7 @@ export function ResourcesTabs({
 		limit: 50,
 		namespace,
 		resource: "events",
+		sort: sortEventsByTimestampDescending,
 	});
 
 	const counts = useMemo(
@@ -292,9 +293,28 @@ function formatSelector(selector: Record<string, string> | undefined): string {
 }
 
 function formatEventTime(event: w8s.CoreV1Event): string {
-	const value = event.eventTime ?? event.lastTimestamp ?? event.firstTimestamp;
+	const value = eventTimestamp(event);
 	if (!value) {
 		return "-";
 	}
 	return new Date(value).toLocaleTimeString();
+}
+
+function sortEventsByTimestampDescending(events: w8s.CoreV1Event[]): w8s.CoreV1Event[] {
+	return [...events].toSorted((a, b) => {
+		const time = eventTimeMs(b) - eventTimeMs(a);
+		if (time !== 0) {
+			return time;
+		}
+		return idFor(b).localeCompare(idFor(a));
+	});
+}
+
+function eventTimeMs(event: w8s.CoreV1Event): number {
+	const value = eventTimestamp(event);
+	return value ? new Date(value).getTime() : 0;
+}
+
+function eventTimestamp(event: w8s.CoreV1Event): string | Date | undefined {
+	return event.eventTime ?? event.lastTimestamp ?? event.firstTimestamp;
 }

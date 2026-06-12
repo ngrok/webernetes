@@ -1,6 +1,6 @@
 import { Button } from "@ngrok/mantle/button";
 import { PaperPlaneTiltIcon } from "@phosphor-icons/react";
-import { useRef, useState } from "react";
+import { useRef, useState, type MouseEvent } from "react";
 import * as w8s from "webernetes";
 
 import { Cluster } from "./components/cluster";
@@ -14,6 +14,7 @@ import {
 	distance,
 	getNodePort,
 	idFor,
+	type Point,
 	sendRequestButtonId,
 } from "./helpers";
 import { useCluster } from "./hooks";
@@ -30,21 +31,25 @@ export function App() {
 	const { cluster, reset } = useCluster(setup, demoClusterOptions);
 	const [namespace, setNamespace] = useState<string | undefined>("default");
 	const requestLayerRef = useRef<HTMLDivElement>(null);
+	const clickOriginsRef = useRef(new Map<string, Point>());
 
 	if (!cluster) {
 		return <div className="text-muted text-sm">Booting simulated Kubernetes cluster...</div>;
 	}
 
-	async function sendRequest() {
+	async function sendRequest(event: MouseEvent<HTMLButtonElement>) {
 		if (!cluster) {
 			return;
 		}
+		const requestId = crypto.randomUUID();
+		const clickOrigin = { x: event.clientX, y: event.clientY };
 		const nodePort = await getNodePort(cluster, "default", "api");
+		clickOriginsRef.current.set(requestId, clickOrigin);
 		await cluster.fetch(`http://node-1:${nodePort}/checkout`, {
 			method: "POST",
 			headers: {
 				"Content-Type": "application/json",
-				[demoRequestIdHeader]: crypto.randomUUID(),
+				[demoRequestIdHeader]: requestId,
 				[demoRequestTypeHeader]: demoRequestTypeButtonClick,
 			},
 			body: JSON.stringify({ cartId: "demo-cart" }),
@@ -68,7 +73,11 @@ export function App() {
 							Send request
 						</Button>
 					</div>
-					<RequestOverlay cluster={cluster} containerRef={requestLayerRef} />
+					<RequestOverlay
+						cluster={cluster}
+						containerRef={requestLayerRef}
+						clickOriginsRef={clickOriginsRef}
+					/>
 				</div>
 				<ResourcesTabs cluster={cluster} namespace={namespace} />
 			</main>
