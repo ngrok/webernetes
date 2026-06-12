@@ -1,22 +1,12 @@
-import { Button } from "@ngrok/mantle/button";
-import { PaperPlaneTiltIcon } from "@phosphor-icons/react";
-import { useRef, useState, type MouseEvent } from "react";
+import { useRef, useState } from "react";
 import * as w8s from "webernetes";
 
 import { Cluster } from "./components/cluster";
 import { Header } from "./components/header";
 import { RequestOverlay } from "./components/request-overlay";
 import { ResourcesTabs } from "./components/resources-tabs";
-import {
-	demoRequestIdHeader,
-	demoRequestTypeButtonClick,
-	demoRequestTypeHeader,
-	distance,
-	getNodePort,
-	idFor,
-	type Point,
-	sendRequestButtonId,
-} from "./helpers";
+import { SendRequestButton } from "./components/send-request-button";
+import { distance, idFor, sendRequestButtonId } from "./helpers";
 import { useCluster } from "./hooks";
 import { setup } from "./setup";
 
@@ -31,29 +21,9 @@ export function App() {
 	const { cluster, reset } = useCluster(setup, demoClusterOptions);
 	const [namespace, setNamespace] = useState<string | undefined>("default");
 	const requestLayerRef = useRef<HTMLDivElement>(null);
-	const clickOriginsRef = useRef(new Map<string, Point>());
 
 	if (!cluster) {
 		return <div className="text-muted text-sm">Booting simulated Kubernetes cluster...</div>;
-	}
-
-	async function sendRequest(event: MouseEvent<HTMLButtonElement>) {
-		if (!cluster) {
-			return;
-		}
-		const requestId = crypto.randomUUID();
-		const clickOrigin = { x: event.clientX, y: event.clientY };
-		const nodePort = await getNodePort(cluster, "default", "api");
-		clickOriginsRef.current.set(requestId, clickOrigin);
-		await cluster.fetch(`http://node-1:${nodePort}/checkout`, {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-				[demoRequestIdHeader]: requestId,
-				[demoRequestTypeHeader]: demoRequestTypeButtonClick,
-			},
-			body: JSON.stringify({ cartId: "demo-cart" }),
-		});
 	}
 
 	return (
@@ -68,16 +38,9 @@ export function App() {
 				<div ref={requestLayerRef} className="relative space-y-6">
 					<Cluster cluster={cluster} namespace={namespace} />
 					<div className="flex items-center justify-end">
-						<Button id={sendRequestButtonId} type="button" onClick={sendRequest}>
-							<PaperPlaneTiltIcon aria-hidden weight="bold" />
-							Send request
-						</Button>
+						<SendRequestButton cluster={cluster} />
 					</div>
-					<RequestOverlay
-						cluster={cluster}
-						containerRef={requestLayerRef}
-						clickOriginsRef={clickOriginsRef}
-					/>
+					<RequestOverlay cluster={cluster} containerRef={requestLayerRef} />
 				</div>
 				<ResourcesTabs cluster={cluster} namespace={namespace} />
 			</main>

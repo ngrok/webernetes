@@ -4,6 +4,7 @@ import * as w8s from "webernetes";
 import {
 	center,
 	demoRequestIdHeader,
+	demoRequestOriginHeader,
 	demoRequestTypeButtonClick,
 	demoRequestTypeHeader,
 	getHeader,
@@ -11,14 +12,14 @@ import {
 	type Point,
 	sendRequestButtonId,
 } from "../helpers";
+import { useClusterPaused } from "./cluster-pause-button";
 
 type FlightKind = "request" | "success" | "error";
-type FlightEndpoint = { id: string } | { point: Point };
 
 interface Flight {
 	id: number;
-	from: FlightEndpoint;
-	to: FlightEndpoint;
+	from: Point;
+	to: Point;
 	durationMs: number;
 	kind: FlightKind;
 }
@@ -32,22 +33,19 @@ interface Warning {
 export function RequestOverlay({
 	cluster,
 	containerRef,
-	clickOriginsRef,
 }: {
 	cluster: w8s.Cluster;
 	containerRef: RefObject<HTMLElement | null>;
-	clickOriginsRef: RefObject<Map<string, Point>>;
 }) {
+	const paused = useClusterPaused(cluster);
 	const [flights, setFlights] = useState<Flight[]>([]);
-	const [warnings, setWarnings] = useState<Warning[]>([]);
+	const [warning, setWarning] = useState<Warning>();
 	const nextFlightId = useRef(1);
 	const nextWarningId = useRef(1);
 	const removeFlight = useCallback((id: number) => {
 		setFlights((current) => current.filter((item) => item.id !== id));
 	}, []);
-	const removeWarning = useCallback((id: number) => {
-		setWarnings((current) => current.filter((item) => item.id !== id));
-	}, []);
+	const removeWarning = useCallback(() => setWarning(undefined), []);
 
 	useEffect(() => {
 		function addFlight(flight: Omit<Flight, "id">): void {
@@ -58,35 +56,35 @@ export function RequestOverlay({
 		}
 
 		function addWarning(warning: Omit<Warning, "id">): void {
-			setWarnings((current) => [...current, { ...warning, id: nextWarningId.current++ }]);
+			setWarning({ ...warning, id: nextWarningId.current++ });
 		}
 
 		function onRequest(event: w8s.NetworkRequestEvent): void {
-			const requestId = getRequestId(event);
+			const container = containerRef.current;
+			if (!container) {
+				return;
+			}
 			if (isButtonRequestWithNoPodTarget(event)) {
 				addWarning({
 					anchorId: sendRequestButtonId,
 					message: event.error?.message ?? "No ready pods are available for this request.",
 				});
-				if (requestId) {
-					clickOriginsRef.current.delete(requestId);
-				}
 				return;
 			}
-			const flight = getFlight(event, clickOriginsRef.current);
+			const flight = getFlight(event, container);
 			if (flight) {
 				addFlight(flight);
 			}
 		}
 
 		function onResponse(event: w8s.NetworkResponseEvent): void {
-			const requestId = getRequestId(event);
-			const flight = getFlight(event, clickOriginsRef.current);
+			const container = containerRef.current;
+			if (!container) {
+				return;
+			}
+			const flight = getFlight(event, container);
 			if (flight) {
 				addFlight(flight);
-			}
-			if (requestId && isButtonResponseToNode(event)) {
-				clickOriginsRef.current.delete(requestId);
 			}
 		}
 
@@ -97,72 +95,77 @@ export function RequestOverlay({
 			cluster.off("request", onRequest);
 			cluster.off("response", onResponse);
 		};
-	}, [clickOriginsRef, cluster]);
+	}, [cluster, containerRef]);
 
 	return (
 		<div className="pointer-events-none absolute inset-0 z-10 overflow-visible">
 			{flights.map((flight) => (
-				<FlightDot
-					key={flight.id}
-					containerRef={containerRef}
-					flight={flight}
-					onDone={removeFlight}
-				/>
+				<FlightDot key={flight.id} flight={flight} onDone={removeFlight} paused={paused} />
 			))}
-			{warnings.map((warning) => (
+			{warning ? (
 				<RequestWarning
 					key={warning.id}
 					containerRef={containerRef}
 					warning={warning}
 					onDone={removeWarning}
 				/>
-			))}
+			) : undefined}
 		</div>
 	);
 }
 
 function FlightDot({
-	containerRef,
 	flight,
 	onDone,
+	paused,
 }: {
-	containerRef: RefObject<HTMLElement | null>;
 	flight: Flight;
 	onDone: (id: number) => void;
+	paused: boolean;
 }) {
 	const dotRef = useRef<HTMLDivElement>(null);
+	const animationRef = useRef<Animation | null>(null);
 
 	useLayoutEffect(() => {
 		const dot = dotRef.current;
-		const container = containerRef.current;
-		if (!dot || !container) {
+		if (!dot) {
 			onDone(flight.id);
 			return;
 		}
 
-		const fromPoint = endpointPoint(flight.from, container);
-		const toPoint = endpointPoint(flight.to, container);
-		if (!fromPoint || !toPoint) {
-			onDone(flight.id);
-			return;
-		}
-		dot.style.transform = dotTransform(fromPoint);
+		dot.style.transform = dotTransform(flight.from);
 		dot.style.visibility = "visible";
 		const animation = dot.animate(
-			[{ transform: dotTransform(fromPoint) }, { transform: dotTransform(toPoint) }],
+			[{ transform: dotTransform(flight.from) }, { transform: dotTransform(flight.to) }],
 			{
 				duration: flight.durationMs,
 				easing: "linear",
 				fill: "forwards",
 			},
 		);
+		animationRef.current = animation;
 
 		void animation.finished.then(
 			() => onDone(flight.id),
 			() => undefined,
 		);
-		return () => animation.cancel();
-	}, [containerRef, flight, onDone]);
+		return () => {
+			animationRef.current = null;
+			animation.cancel();
+		};
+	}, [flight, onDone]);
+
+	useLayoutEffect(() => {
+		const animation = animationRef.current;
+		if (!animation) {
+			return;
+		}
+		if (paused) {
+			animation.pause();
+		} else {
+			animation.play();
+		}
+	}, [paused]);
 
 	return (
 		<div
@@ -180,7 +183,7 @@ function RequestWarning({
 }: {
 	containerRef: RefObject<HTMLElement | null>;
 	warning: Warning;
-	onDone: (id: number) => void;
+	onDone: () => void;
 }) {
 	const warningRef = useRef<HTMLDivElement>(null);
 
@@ -189,7 +192,7 @@ function RequestWarning({
 		const container = containerRef.current;
 		const anchor = document.getElementById(warning.anchorId);
 		if (!warningElement || !container || !anchor) {
-			onDone(warning.id);
+			onDone();
 			return;
 		}
 
@@ -203,9 +206,9 @@ function RequestWarning({
 	}, [containerRef, onDone, warning]);
 
 	useEffect(() => {
-		const timeout = window.setTimeout(() => onDone(warning.id), 2500);
+		const timeout = window.setTimeout(onDone, 2500);
 		return () => window.clearTimeout(timeout);
-	}, [onDone, warning.id]);
+	}, [onDone]);
 
 	return (
 		<div
@@ -220,36 +223,79 @@ function RequestWarning({
 
 function getFlight(
 	event: w8s.NetworkRequestEvent | w8s.NetworkResponseEvent,
-	clickOrigins: ReadonlyMap<string, Point>,
+	container: HTMLElement,
 ): Omit<Flight, "id"> | undefined {
 	const requestId = getRequestId(event);
 	if (!requestId) {
 		return undefined;
 	}
-	const ids = visibleChainIds(event.chain);
-	if (ids.length === 0) {
+	const points = visibleChainPoints(event.chain, container);
+	if (points.length === 0) {
 		return undefined;
 	}
-	const response = isResponseEvent(event);
-	const clickOrigin = isButtonRequest(event) ? clickOrigins.get(requestId) : undefined;
-	const from = response
-		? endpointForId(ids[0])
-		: isButtonRequestFromNode(event)
-			? endpointForClickOrigin(clickOrigin)
-			: endpointForId(ids[0] ?? sendRequestButtonId);
-	const to = response
-		? isButtonResponseToNode(event)
-			? endpointForClickOrigin(clickOrigin)
-			: endpointForId(ids.at(-1))
-		: endpointForId(ids.at(-1));
-	if (!from || !to || sameEndpoint(from, to)) {
+
+	if (isResponseEvent(event)) {
+		return responseFlight(event, points, container);
+	}
+	return requestFlight(event, points, container);
+}
+
+function requestFlight(
+	event: w8s.NetworkRequestEvent,
+	points: readonly Point[],
+	container: HTMLElement,
+): Omit<Flight, "id"> | undefined {
+	const from = requestFlightStart(event, points, container);
+	const to = points.at(-1);
+	return buildFlight(from, to, event.latencyMs, "request");
+}
+
+function responseFlight(
+	event: w8s.NetworkResponseEvent,
+	points: readonly Point[],
+	container: HTMLElement,
+): Omit<Flight, "id"> | undefined {
+	const from = points[0];
+	const to = responseFlightEnd(event, points, container);
+	return buildFlight(from, to, event.latencyMs, responseKind(event));
+}
+
+function requestFlightStart(
+	event: w8s.NetworkRequestEvent,
+	points: readonly Point[],
+	container: HTMLElement,
+): Point | undefined {
+	if (isButtonRequestFromNode(event)) {
+		return getRequestOrigin(event, container) ?? pointForId(sendRequestButtonId, container);
+	}
+	return points[0] ?? pointForId(sendRequestButtonId, container);
+}
+
+function responseFlightEnd(
+	event: w8s.NetworkResponseEvent,
+	points: readonly Point[],
+	container: HTMLElement,
+): Point | undefined {
+	if (isButtonResponseToNode(event)) {
+		return pointForId(sendRequestButtonId, container);
+	}
+	return points.at(-1);
+}
+
+function buildFlight(
+	from: Point | undefined,
+	to: Point | undefined,
+	durationMs: number,
+	kind: FlightKind,
+): Omit<Flight, "id"> | undefined {
+	if (!from || !to || samePoint(from, to)) {
 		return undefined;
 	}
 	return {
 		from,
 		to,
-		durationMs: event.latencyMs,
-		kind: response ? responseKind(event) : "request",
+		durationMs,
+		kind,
 	};
 }
 
@@ -257,31 +303,42 @@ function getRequestId(event: { request: w8s.HttpRequest }): string | undefined {
 	return getHeader(event.request.header, demoRequestIdHeader);
 }
 
-function endpointForId(id: string | undefined): FlightEndpoint | undefined {
-	return id ? { id } : undefined;
-}
-
-function endpointForClickOrigin(point: Point | undefined): FlightEndpoint {
-	return point ? { point } : { id: sendRequestButtonId };
-}
-
-function sameEndpoint(left: FlightEndpoint, right: FlightEndpoint): boolean {
-	if ("id" in left && "id" in right) {
-		return left.id === right.id;
+function getRequestOrigin(
+	event: { request: w8s.HttpRequest },
+	container: HTMLElement,
+): Point | undefined {
+	const header = getHeader(event.request.header, demoRequestOriginHeader);
+	if (!header) {
+		return undefined;
 	}
-	if ("point" in left && "point" in right) {
-		return left.point.x === right.point.x && left.point.y === right.point.y;
+	const [x, y] = header.split(",", 2).map(Number);
+	if (!Number.isFinite(x) || !Number.isFinite(y)) {
+		return undefined;
 	}
-	return false;
+	const containerRect = container.getBoundingClientRect();
+	return {
+		x: x - containerRect.left,
+		y: y - containerRect.top,
+	};
 }
 
-function visibleChainIds(chain: readonly w8s.NetworkHop[]): string[] {
+function pointForId(id: string, container: HTMLElement): Point | undefined {
+	const element = document.getElementById(id);
+	return element ? center(element, container) : undefined;
+}
+
+function samePoint(left: Point, right: Point): boolean {
+	return left.x === right.x && left.y === right.y;
+}
+
+function visibleChainPoints(chain: readonly w8s.NetworkHop[], container: HTMLElement): Point[] {
 	return chain.flatMap((hop) => {
 		if (hop.type === "external") {
 			return [];
 		}
 		const id = idFor(hop.resource);
-		return document.getElementById(id) ? [id] : [];
+		const point = pointForId(id, container);
+		return point ? [point] : [];
 	});
 }
 
@@ -320,18 +377,6 @@ function responseKind(event: w8s.NetworkResponseEvent): FlightKind {
 		return "error";
 	}
 	return "success";
-}
-
-function endpointPoint(endpoint: FlightEndpoint, container: HTMLElement): Point | undefined {
-	if ("id" in endpoint) {
-		const element = document.getElementById(endpoint.id);
-		return element ? center(element, container) : undefined;
-	}
-	const containerRect = container.getBoundingClientRect();
-	return {
-		x: endpoint.point.x - containerRect.left,
-		y: endpoint.point.y - containerRect.top,
-	};
 }
 
 function dotTransform(point: { x: number; y: number }): string {

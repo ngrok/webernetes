@@ -1,6 +1,7 @@
 import * as w8s from "webernetes";
 
 export const demoRequestIdHeader = "X-Demo-Request-Id";
+export const demoRequestOriginHeader = "X-Demo-Request-Origin";
 export const demoRequestTypeHeader = "X-Demo-Request-Type";
 export const demoRequestTypeButtonClick = "button-click";
 export const demoRequestTypeScheduledJob = "scheduled-job";

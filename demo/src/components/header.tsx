@@ -4,6 +4,7 @@ import * as w8s from "webernetes";
 
 import { getName, idFor, sortByName } from "../helpers";
 import { useInformer } from "../hooks";
+import { ClusterPauseButton } from "./cluster-pause-button";
 import { ThemeToggle } from "./theme-toggle";
 
 export function Header({
@@ -49,6 +50,7 @@ export function Header({
 				</Select.Root>
 			</div>
 			<ThemeToggle />
+			<ClusterPauseButton cluster={cluster} />
 			<Button type="button" priority="danger" onClick={onReset}>
 				Reset
 			</Button>
