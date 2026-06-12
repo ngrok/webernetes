@@ -30,6 +30,22 @@ export function getRestartCount(pod: w8s.V1Pod): number {
 	);
 }
 
+export async function getNodePort(
+	cluster: w8s.Cluster,
+	namespace: string,
+	serviceName: string,
+): Promise<number> {
+	const service = await cluster.api.corev1.readNamespacedService({
+		namespace,
+		name: serviceName,
+	});
+	const nodePort = service.spec?.ports?.[0]?.nodePort;
+	if (nodePort === undefined) {
+		throw new Error(`Service ${namespace}/${serviceName} does not have a node port`);
+	}
+	return nodePort;
+}
+
 export function sortByName<T extends w8s.KubernetesObject>(items: T[]): T[] {
 	return [...items].toSorted((a, b) => resourceSortName(a).localeCompare(resourceSortName(b)));
 }
