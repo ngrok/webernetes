@@ -1,0 +1,65 @@
+import { Badge } from "@ngrok/mantle/badge";
+import { Card } from "@ngrok/mantle/card";
+import * as w8s from "webernetes";
+
+import { getName, idFor, sortByName } from "../helpers";
+import { useInformer } from "../hooks";
+import { Pod } from "./pod";
+
+export function Node({
+	cluster,
+	namespace,
+	node,
+}: {
+	cluster: w8s.Cluster;
+	namespace: string | undefined;
+	node: w8s.V1Node;
+}) {
+	const name = getName(node, "unknown-node");
+	const ip = getNodeIP(node);
+	const ready = getNodeReady(node);
+	const pods = useInformer({
+		cluster,
+		fieldSelector: `spec.nodeName=${name}`,
+		namespace,
+		resource: "pods",
+		sort: sortByName,
+	});
+
+	return (
+		<Card.Root>
+			<Card.Header>
+				<div className="flex items-center justify-between gap-3">
+					<Card.Title className="flex items-baseline gap-2 font-mono text-sm">
+						<span className="font-semibold">{name}</span>
+						<span className="text-muted text-xs">{ip}</span>
+					</Card.Title>
+					<Badge appearance="muted" color={ready ? "success" : "warning"}>
+						{ready ? "Ready" : "Not ready"}
+					</Badge>
+				</div>
+			</Card.Header>
+
+			<Card.Body>
+				<div className="grid grid-cols-[repeat(auto-fill,minmax(7rem,1fr))] gap-2">
+					{pods.map((pod) => (
+						<Pod key={idFor(pod)} pod={pod} />
+					))}
+				</div>
+			</Card.Body>
+		</Card.Root>
+	);
+}
+
+function getNodeIP(node: w8s.V1Node): string {
+	return (
+		node.status?.addresses?.find((address) => address.type === "InternalIP")?.address ??
+		node.status?.addresses?.find((address) => address.type === "ExternalIP")?.address ??
+		node.spec?.podCIDR ??
+		"no address"
+	);
+}
+
+function getNodeReady(node: w8s.V1Node): boolean {
+	return node.status?.phase !== "NotReady";
+}
