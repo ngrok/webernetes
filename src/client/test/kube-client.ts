@@ -1,12 +1,15 @@
 import { KubeConfig } from "../config";
 import {
+	AppsV1Api as AppsV1ApiImpl,
 	CoreV1Api as CoreV1ApiImpl,
 	DiscoveryV1Api as DiscoveryV1ApiImpl,
 } from "../gen/apis/impls";
-import type { CoreV1Api, DiscoveryV1Api } from "../gen/apis/types";
+import type { AppsV1Api, CoreV1Api, DiscoveryV1Api } from "../gen/apis/types";
 import type {
 	CoreV1Event,
 	CoreV1EventList,
+	V1Deployment,
+	V1DeploymentList,
 	V1Binding,
 	V1EndpointSlice,
 	V1EndpointSliceList,
@@ -16,6 +19,9 @@ import type {
 	V1NodeList,
 	V1Pod,
 	V1PodList,
+	V1ReplicaSet,
+	V1ReplicaSetList,
+	V1Scale,
 	V1Service,
 	V1ServiceList,
 	V1Status,
@@ -43,48 +49,60 @@ export type ClientReactor<TObj = unknown, TErr = Error | undefined> = (
 type ClientReactionObjects = {
 	create: {
 		events: CoreV1Event;
+		deployments: V1Deployment;
 		namespaces: V1Namespace;
 		nodes: V1Node;
 		pods: V1Pod | V1Binding;
 		services: V1Service;
+		replicasets: V1ReplicaSet;
 		endpointslices: V1EndpointSlice;
 	};
 	delete: {
 		events: V1Status;
+		deployments: V1Status;
 		namespaces: V1Status;
 		nodes: V1Status;
 		pods: V1Pod;
 		services: V1Service;
+		replicasets: V1Status;
 		endpointslices: V1Status;
 	};
 	get: {
 		events: CoreV1Event;
+		deployments: V1Deployment | V1Scale;
 		namespaces: V1Namespace;
 		nodes: V1Node;
 		pods: V1Pod;
 		services: V1Service;
+		replicasets: V1ReplicaSet | V1Scale;
 		endpointslices: V1EndpointSlice;
 	};
 	list: {
 		events: CoreV1EventList;
+		deployments: V1DeploymentList;
 		namespaces: V1NamespaceList;
 		nodes: V1NodeList;
 		pods: V1PodList;
 		services: V1ServiceList;
+		replicasets: V1ReplicaSetList;
 		endpointslices: V1EndpointSliceList;
 	};
 	patch: {
 		namespaces: V1Namespace;
+		deployments: V1Deployment | V1Scale;
 		nodes: V1Node;
 		pods: V1Pod;
 		services: V1Service;
+		replicasets: V1ReplicaSet | V1Scale;
 	};
 	update: {
 		events: CoreV1Event;
+		deployments: V1Deployment | V1Scale;
 		namespaces: V1Namespace;
 		nodes: V1Node;
 		pods: V1Pod;
 		services: V1Service;
+		replicasets: V1ReplicaSet | V1Scale;
 		endpointslices: V1EndpointSlice;
 	};
 };
@@ -107,6 +125,7 @@ type ClientActionHandler = <T>(
 ) => Promise<T>;
 
 export class TestKubeClient implements KubeClient {
+	readonly appsv1: AppsV1Api;
 	readonly corev1: CoreV1Api;
 	readonly discoveryv1: DiscoveryV1Api;
 	private readonly actionList: ClientAction[] = [];
@@ -117,6 +136,10 @@ export class TestKubeClient implements KubeClient {
 	}[] = [];
 
 	constructor(readonly kubeConfig: KubeConfig) {
+		this.appsv1 = new RecordingAppsV1Api(
+			kubeConfig.makeApiClient(AppsV1ApiImpl),
+			this.handle.bind(this),
+		);
 		this.corev1 = new RecordingCoreV1Api(
 			kubeConfig.makeApiClient(CoreV1ApiImpl),
 			this.handle.bind(this),
@@ -181,6 +204,205 @@ export function clientAction(verb: string, resource: string, subresource?: strin
 
 function matchesReactor(pattern: string, value: string): boolean {
 	return pattern === "*" || pattern === value;
+}
+
+class RecordingAppsV1Api implements AppsV1Api {
+	constructor(
+		private readonly delegate: AppsV1Api,
+		private readonly handle: ClientActionHandler,
+	) {}
+
+	createNamespacedDeployment: AppsV1Api["createNamespacedDeployment"] = async (request) => {
+		return await this.handle("create", "deployments", undefined, request, async () => {
+			return await this.delegate.createNamespacedDeployment(request);
+		});
+	};
+
+	deleteCollectionNamespacedDeployment: AppsV1Api["deleteCollectionNamespacedDeployment"] = async (
+		request,
+	) => {
+		return await this.handle("delete", "deployments", undefined, request, async () => {
+			return await this.delegate.deleteCollectionNamespacedDeployment(request);
+		});
+	};
+
+	deleteNamespacedDeployment: AppsV1Api["deleteNamespacedDeployment"] = async (request) => {
+		return await this.handle("delete", "deployments", undefined, request, async () => {
+			return await this.delegate.deleteNamespacedDeployment(request);
+		});
+	};
+
+	listDeploymentForAllNamespaces: AppsV1Api["listDeploymentForAllNamespaces"] = async (request) => {
+		return await this.handle("list", "deployments", undefined, request, async () => {
+			return await this.delegate.listDeploymentForAllNamespaces(request);
+		});
+	};
+
+	listNamespacedDeployment: AppsV1Api["listNamespacedDeployment"] = async (request) => {
+		return await this.handle("list", "deployments", undefined, request, async () => {
+			return await this.delegate.listNamespacedDeployment(request);
+		});
+	};
+
+	patchNamespacedDeployment: AppsV1Api["patchNamespacedDeployment"] = async (request, options) => {
+		return await this.handle("patch", "deployments", undefined, request, async () => {
+			return await this.delegate.patchNamespacedDeployment(request, options);
+		});
+	};
+
+	patchNamespacedDeploymentScale: AppsV1Api["patchNamespacedDeploymentScale"] = async (
+		request,
+		options,
+	) => {
+		return await this.handle("patch", "deployments", "scale", request, async () => {
+			return await this.delegate.patchNamespacedDeploymentScale(request, options);
+		});
+	};
+
+	patchNamespacedDeploymentStatus: AppsV1Api["patchNamespacedDeploymentStatus"] = async (
+		request,
+		options,
+	) => {
+		return await this.handle("patch", "deployments", "status", request, async () => {
+			return await this.delegate.patchNamespacedDeploymentStatus(request, options);
+		});
+	};
+
+	readNamespacedDeployment: AppsV1Api["readNamespacedDeployment"] = async (request) => {
+		return await this.handle("get", "deployments", undefined, request, async () => {
+			return await this.delegate.readNamespacedDeployment(request);
+		});
+	};
+
+	readNamespacedDeploymentScale: AppsV1Api["readNamespacedDeploymentScale"] = async (request) => {
+		return await this.handle("get", "deployments", "scale", request, async () => {
+			return await this.delegate.readNamespacedDeploymentScale(request);
+		});
+	};
+
+	readNamespacedDeploymentStatus: AppsV1Api["readNamespacedDeploymentStatus"] = async (request) => {
+		return await this.handle("get", "deployments", "status", request, async () => {
+			return await this.delegate.readNamespacedDeploymentStatus(request);
+		});
+	};
+
+	replaceNamespacedDeployment: AppsV1Api["replaceNamespacedDeployment"] = async (request) => {
+		return await this.handle("update", "deployments", undefined, request, async () => {
+			return await this.delegate.replaceNamespacedDeployment(request);
+		});
+	};
+
+	replaceNamespacedDeploymentScale: AppsV1Api["replaceNamespacedDeploymentScale"] = async (
+		request,
+	) => {
+		return await this.handle("update", "deployments", "scale", request, async () => {
+			return await this.delegate.replaceNamespacedDeploymentScale(request);
+		});
+	};
+
+	replaceNamespacedDeploymentStatus: AppsV1Api["replaceNamespacedDeploymentStatus"] = async (
+		request,
+	) => {
+		return await this.handle("update", "deployments", "status", request, async () => {
+			return await this.delegate.replaceNamespacedDeploymentStatus(request);
+		});
+	};
+
+	createNamespacedReplicaSet: AppsV1Api["createNamespacedReplicaSet"] = async (request) => {
+		return await this.handle("create", "replicasets", undefined, request, async () => {
+			return await this.delegate.createNamespacedReplicaSet(request);
+		});
+	};
+
+	deleteCollectionNamespacedReplicaSet: AppsV1Api["deleteCollectionNamespacedReplicaSet"] = async (
+		request,
+	) => {
+		return await this.handle("delete", "replicasets", undefined, request, async () => {
+			return await this.delegate.deleteCollectionNamespacedReplicaSet(request);
+		});
+	};
+
+	deleteNamespacedReplicaSet: AppsV1Api["deleteNamespacedReplicaSet"] = async (request) => {
+		return await this.handle("delete", "replicasets", undefined, request, async () => {
+			return await this.delegate.deleteNamespacedReplicaSet(request);
+		});
+	};
+
+	listReplicaSetForAllNamespaces: AppsV1Api["listReplicaSetForAllNamespaces"] = async (request) => {
+		return await this.handle("list", "replicasets", undefined, request, async () => {
+			return await this.delegate.listReplicaSetForAllNamespaces(request);
+		});
+	};
+
+	listNamespacedReplicaSet: AppsV1Api["listNamespacedReplicaSet"] = async (request) => {
+		return await this.handle("list", "replicasets", undefined, request, async () => {
+			return await this.delegate.listNamespacedReplicaSet(request);
+		});
+	};
+
+	patchNamespacedReplicaSet: AppsV1Api["patchNamespacedReplicaSet"] = async (request, options) => {
+		return await this.handle("patch", "replicasets", undefined, request, async () => {
+			return await this.delegate.patchNamespacedReplicaSet(request, options);
+		});
+	};
+
+	patchNamespacedReplicaSetScale: AppsV1Api["patchNamespacedReplicaSetScale"] = async (
+		request,
+		options,
+	) => {
+		return await this.handle("patch", "replicasets", "scale", request, async () => {
+			return await this.delegate.patchNamespacedReplicaSetScale(request, options);
+		});
+	};
+
+	patchNamespacedReplicaSetStatus: AppsV1Api["patchNamespacedReplicaSetStatus"] = async (
+		request,
+		options,
+	) => {
+		return await this.handle("patch", "replicasets", "status", request, async () => {
+			return await this.delegate.patchNamespacedReplicaSetStatus(request, options);
+		});
+	};
+
+	readNamespacedReplicaSet: AppsV1Api["readNamespacedReplicaSet"] = async (request) => {
+		return await this.handle("get", "replicasets", undefined, request, async () => {
+			return await this.delegate.readNamespacedReplicaSet(request);
+		});
+	};
+
+	readNamespacedReplicaSetScale: AppsV1Api["readNamespacedReplicaSetScale"] = async (request) => {
+		return await this.handle("get", "replicasets", "scale", request, async () => {
+			return await this.delegate.readNamespacedReplicaSetScale(request);
+		});
+	};
+
+	readNamespacedReplicaSetStatus: AppsV1Api["readNamespacedReplicaSetStatus"] = async (request) => {
+		return await this.handle("get", "replicasets", "status", request, async () => {
+			return await this.delegate.readNamespacedReplicaSetStatus(request);
+		});
+	};
+
+	replaceNamespacedReplicaSet: AppsV1Api["replaceNamespacedReplicaSet"] = async (request) => {
+		return await this.handle("update", "replicasets", undefined, request, async () => {
+			return await this.delegate.replaceNamespacedReplicaSet(request);
+		});
+	};
+
+	replaceNamespacedReplicaSetScale: AppsV1Api["replaceNamespacedReplicaSetScale"] = async (
+		request,
+	) => {
+		return await this.handle("update", "replicasets", "scale", request, async () => {
+			return await this.delegate.replaceNamespacedReplicaSetScale(request);
+		});
+	};
+
+	replaceNamespacedReplicaSetStatus: AppsV1Api["replaceNamespacedReplicaSetStatus"] = async (
+		request,
+	) => {
+		return await this.handle("update", "replicasets", "status", request, async () => {
+			return await this.delegate.replaceNamespacedReplicaSetStatus(request);
+		});
+	};
 }
 
 class RecordingCoreV1Api implements CoreV1Api {

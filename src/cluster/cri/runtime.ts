@@ -4,7 +4,7 @@ import { Channel, ReadOnlyChannel, select } from "../../go/channel";
 import * as context from "../../go/context";
 import * as time from "../../go/time";
 import type { KubeConfig } from "../../client/config";
-import { CoreV1Api, DiscoveryV1Api, type KubeClient } from "../../client";
+import { AppsV1Api, CoreV1Api, DiscoveryV1Api, type KubeClient } from "../../client";
 import { newCommandTimedOutError } from "../cri-client/pkg";
 import type { DnsHandler, DnsListener } from "../cni/dns";
 import * as http from "../cni/http";
@@ -1021,6 +1021,7 @@ export class ProcessContext implements context.Context {
 		this.fs = process.container.fs;
 		this.kubeConfig = runtime.kubeConfig;
 		this.api = {
+			appsv1: runtime.kubeConfig.makeApiClient(AppsV1Api),
 			corev1: runtime.kubeConfig.makeApiClient(CoreV1Api),
 			discoveryv1: runtime.kubeConfig.makeApiClient(DiscoveryV1Api),
 		};

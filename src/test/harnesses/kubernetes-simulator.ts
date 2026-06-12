@@ -12,7 +12,7 @@ import type { K8s } from "../../client/types";
 const cluster = new Cluster();
 let setupPromise: Promise<void> | undefined;
 
-const k8s = fakeK8s as unknown as K8s;
+const k8s: K8s = fakeK8s;
 
 afterAll(async () => {
 	await cluster.close();

@@ -14,10 +14,13 @@ import { BusyBoxImage } from "./images/busybox";
 import { HelloWorldImage } from "./images/hello-world";
 import { HttpEchoImage } from "./images/http-echo";
 import { AgnhostImage } from "./images/agnhost";
+import { DeploymentController } from "./images/deployment-controller";
 import { EndpointSliceController } from "./images/endpointslice-controller";
+import { GarbageCollector } from "./images/garbage-collector";
 import { NamespaceController } from "./images/namespace-controller";
 import { PauseImage } from "./images/pause";
 import { KubeProxy } from "./images/proxy";
+import { ReplicaSetController } from "./images/replicaset-controller";
 import { Scheduler } from "./images/scheduler";
 import { type NodePortRange, ServiceStore } from "./storage";
 import { applyResources, type ClusterApplyResource, type ClusterApplyResult } from "./apply";
@@ -44,7 +47,9 @@ export interface ClusterInformerOptions {
 export type ClusterInformerCallback<T> = (type: ClusterInformerEventType, object: T) => void;
 
 export interface ClusterInformerResources {
+	deployments: k8s.V1Deployment;
 	pods: k8s.V1Pod;
+	replicasets: k8s.V1ReplicaSet;
 	services: k8s.V1Service;
 	namespaces: k8s.V1Namespace;
 	nodes: k8s.V1Node;
@@ -63,11 +68,14 @@ export interface ClusterOptions {
 export type { NetworkHop, NetworkRequestEvent, NetworkResponseEvent };
 
 type EventEmitterListener = Parameters<EventEmitter["on"]>[1];
+type ClusterLifecycleEvent = "pause" | "resume";
 
 export class KubeClient implements k8s.KubeClient {
+	readonly appsv1: k8s.KubeClient["appsv1"];
 	readonly corev1: k8s.KubeClient["corev1"];
 	readonly discoveryv1: k8s.KubeClient["discoveryv1"];
 	constructor(readonly kubeConfig: k8s.KubeConfig) {
+		this.appsv1 = this.kubeConfig.makeApiClient(k8s.AppsV1Api);
 		this.corev1 = this.kubeConfig.makeApiClient(k8s.CoreV1Api);
 		this.discoveryv1 = this.kubeConfig.makeApiClient(k8s.DiscoveryV1Api);
 	}
@@ -162,8 +170,11 @@ export class Cluster extends EventEmitter {
 
 		this.imageRegistry.register(Scheduler);
 		this.imageRegistry.register(KubeProxy);
+		this.imageRegistry.register(DeploymentController);
 		this.imageRegistry.register(EndpointSliceController);
+		this.imageRegistry.register(GarbageCollector);
 		this.imageRegistry.register(NamespaceController);
+		this.imageRegistry.register(ReplicaSetController);
 		this.imageRegistry.register(CoreDNS);
 	}
 
@@ -200,6 +211,15 @@ export class Cluster extends EventEmitter {
 			"namespace-controller",
 			"webernetes/namespace-controller:latest",
 		);
+		await this.createControlPlanePod(
+			"deployment-controller",
+			"webernetes/deployment-controller:latest",
+		);
+		await this.createControlPlanePod(
+			"replicaset-controller",
+			"webernetes/replicaset-controller:latest",
+		);
+		await this.createControlPlanePod("garbage-collector", "webernetes/garbage-collector:latest");
 		await this.createControlPlanePod(
 			"endpointslice-controller",
 			"webernetes/endpointslice-controller:latest",
@@ -241,6 +261,20 @@ export class Cluster extends EventEmitter {
 		return await this.network.fetch(this.ctx, this.servers[0].node, target, init);
 	}
 
+	public pause(): void {
+		this.clock.pause();
+		this.emit("pause");
+	}
+
+	public resume(): void {
+		this.clock.resume();
+		this.emit("resume");
+	}
+
+	public isPaused(): boolean {
+		return this.clock.isPaused();
+	}
+
 	public override addListener(
 		event: "request",
 		handler: (event: NetworkRequestEvent) => void,
@@ -249,6 +283,7 @@ export class Cluster extends EventEmitter {
 		event: "response",
 		handler: (event: NetworkResponseEvent) => void,
 	): this;
+	public override addListener(event: ClusterLifecycleEvent, handler: () => void): this;
 	public override addListener(eventName: string | symbol, listener: EventEmitterListener): this;
 	public override addListener(eventName: string | symbol, listener: EventEmitterListener): this {
 		return super.addListener(eventName, listener);
@@ -256,6 +291,7 @@ export class Cluster extends EventEmitter {
 
 	public override on(event: "request", handler: (event: NetworkRequestEvent) => void): this;
 	public override on(event: "response", handler: (event: NetworkResponseEvent) => void): this;
+	public override on(event: ClusterLifecycleEvent, handler: () => void): this;
 	public override on(eventName: string | symbol, listener: EventEmitterListener): this;
 	public override on(eventName: string | symbol, listener: EventEmitterListener): this {
 		return super.on(eventName, listener);
@@ -263,6 +299,7 @@ export class Cluster extends EventEmitter {
 
 	public override once(event: "request", handler: (event: NetworkRequestEvent) => void): this;
 	public override once(event: "response", handler: (event: NetworkResponseEvent) => void): this;
+	public override once(event: ClusterLifecycleEvent, handler: () => void): this;
 	public override once(eventName: string | symbol, listener: EventEmitterListener): this;
 	public override once(eventName: string | symbol, listener: EventEmitterListener): this {
 		return super.once(eventName, listener);
@@ -270,6 +307,7 @@ export class Cluster extends EventEmitter {
 
 	public override off(event: "request", handler: (event: NetworkRequestEvent) => void): this;
 	public override off(event: "response", handler: (event: NetworkResponseEvent) => void): this;
+	public override off(event: ClusterLifecycleEvent, handler: () => void): this;
 	public override off(eventName: string | symbol, listener: EventEmitterListener): this;
 	public override off(eventName: string | symbol, listener: EventEmitterListener): this {
 		return super.off(eventName, listener);
@@ -283,6 +321,7 @@ export class Cluster extends EventEmitter {
 		event: "response",
 		handler: (event: NetworkResponseEvent) => void,
 	): this;
+	public override removeListener(event: ClusterLifecycleEvent, handler: () => void): this;
 	public override removeListener(eventName: string | symbol, listener: EventEmitterListener): this;
 	public override removeListener(eventName: string | symbol, listener: EventEmitterListener): this {
 		return super.removeListener(eventName, listener);
@@ -442,6 +481,11 @@ function clusterResourcePath(resource: ClusterInformerResource, namespace?: stri
 			? `/apis/discovery.k8s.io/v1/namespaces/${encodedNamespace}/endpointslices`
 			: "/apis/discovery.k8s.io/v1/endpointslices";
 	}
+	if (resource === "deployments" || resource === "replicasets") {
+		return encodedNamespace
+			? `/apis/apps/v1/namespaces/${encodedNamespace}/${resource}`
+			: `/apis/apps/v1/${resource}`;
+	}
 	if (
 		encodedNamespace &&
 		(resource === "pods" || resource === "services" || resource === "events")
@@ -463,6 +507,14 @@ async function clusterListResource<TResource extends ClusterInformerResource>(
 	};
 	let list: KubeList<k8s.KubernetesObject>;
 	switch (resource) {
+		case "deployments":
+			list = options.namespace
+				? await cluster.api.appsv1.listNamespacedDeployment({
+						namespace: options.namespace,
+						...listOptions,
+					})
+				: await cluster.api.appsv1.listDeploymentForAllNamespaces(listOptions);
+			break;
 		case "pods":
 			list = options.namespace
 				? await cluster.api.corev1.listNamespacedPod({
@@ -500,6 +552,14 @@ async function clusterListResource<TResource extends ClusterInformerResource>(
 						...listOptions,
 					})
 				: await cluster.api.discoveryv1.listEndpointSliceForAllNamespaces(listOptions);
+			break;
+		case "replicasets":
+			list = options.namespace
+				? await cluster.api.appsv1.listNamespacedReplicaSet({
+						namespace: options.namespace,
+						...listOptions,
+					})
+				: await cluster.api.appsv1.listReplicaSetForAllNamespaces(listOptions);
 			break;
 	}
 	return list as KubeList<ClusterInformerResources[TResource]>;

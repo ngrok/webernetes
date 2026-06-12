@@ -29,6 +29,7 @@ export function createKubernetesRuntimeContext({
 	): Promise<ClusterApplyResult<T>>;
 }): KubernetesRuntimeContext {
 	const ctx = withLatencyProvider(withClock(context.background(), new Clock()));
+	const apps = lazyApiClient(() => kubeConfig.makeApiClient(k8s.AppsV1Api));
 	const core = lazyApiClient(() => kubeConfig.makeApiClient(k8s.CoreV1Api));
 	const discovery = lazyApiClient(() => kubeConfig.makeApiClient(k8s.DiscoveryV1Api));
 	const helpers = createKubernetesHelpers({
@@ -45,6 +46,7 @@ export function createKubernetesRuntimeContext({
 		k8s,
 		kubeConfig,
 		target,
+		apps,
 		core,
 		discovery,
 		helpers,

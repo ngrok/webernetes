@@ -262,6 +262,28 @@ browser.describe("Cluster images", () => {
 });
 
 browser.describe("Cluster network events", () => {
+	it("exposes cluster pause and resume events", async () => {
+		const cluster = new Cluster();
+		try {
+			const events: string[] = [];
+
+			expect(cluster.isPaused()).toBe(false);
+			expect(cluster.on("pause", () => events.push("pause"))).toBe(cluster);
+			expect(cluster.on("resume", () => events.push("resume"))).toBe(cluster);
+
+			cluster.pause();
+			expect(cluster.isPaused()).toBe(true);
+			expect(cluster.clock.isPaused()).toBe(true);
+
+			cluster.resume();
+			expect(cluster.isPaused()).toBe(false);
+			expect(cluster.clock.isPaused()).toBe(false);
+			expect(events).toEqual(["pause", "resume"]);
+		} finally {
+			await cluster.close();
+		}
+	});
+
 	it("delegates request and response listeners to the cluster network", async () => {
 		const cluster = new Cluster();
 		try {

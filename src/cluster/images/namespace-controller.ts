@@ -55,12 +55,39 @@ export class NamespaceController extends BaseImage {
 	): Array<NamespacedResourceDeleter<k8s.KubernetesObject>> {
 		return [
 			{
+				list: async (namespace) =>
+					(await ctx.api.appsv1.listNamespacedDeployment({ namespace })).items,
+				delete: async (name, namespace) =>
+					await ctx.api.appsv1.deleteNamespacedDeployment({
+						name,
+						namespace,
+						propagationPolicy: "Background",
+						body: { propagationPolicy: "Background" },
+					}),
+			},
+			{
+				list: async (namespace) =>
+					(await ctx.api.appsv1.listNamespacedReplicaSet({ namespace })).items,
+				delete: async (name, namespace) =>
+					await ctx.api.appsv1.deleteNamespacedReplicaSet({
+						name,
+						namespace,
+						propagationPolicy: "Background",
+						body: { propagationPolicy: "Background" },
+					}),
+			},
+			{
 				list: async (namespace) => (await ctx.api.corev1.listNamespacedPod({ namespace })).items,
 				delete: async (name, namespace) =>
 					await ctx.api.corev1.deleteNamespacedPod({
 						name,
 						namespace,
 						gracePeriodSeconds: 0,
+						// Namespace cleanup is a special upstream path: namespaced content is purged with
+						// background propagation even if the namespace delete itself used foreground/orphan.
+						// Pods do not have modeled dependents here, so this is harmless but keeps the call shape.
+						propagationPolicy: "Background",
+						body: { gracePeriodSeconds: 0, propagationPolicy: "Background" },
 					}),
 			},
 			{

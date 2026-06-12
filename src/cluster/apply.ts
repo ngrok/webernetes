@@ -13,7 +13,14 @@ type CoreApplyResource<T, TKind extends string> = Omit<T, "apiVersion" | "kind">
 	kind: TKind;
 };
 
+type AppsApplyResource<T, TKind extends string> = Omit<T, "apiVersion" | "kind"> & {
+	apiVersion: "apps/v1";
+	kind: TKind;
+};
+
 export type ClusterApplyResource =
+	| AppsApplyResource<k8s.V1Deployment, "Deployment">
+	| AppsApplyResource<k8s.V1ReplicaSet, "ReplicaSet">
 	| CoreApplyResource<k8s.V1Namespace, "Namespace">
 	| CoreApplyResource<k8s.V1Node, "Node">
 	| CoreApplyResource<k8s.V1Pod, "Pod">
@@ -39,6 +46,12 @@ async function applyResource(
 ): Promise<KubernetesObject> {
 	if (isNamespace(resource)) {
 		return await applyNamespace(cluster, resource);
+	}
+	if (isDeployment(resource)) {
+		return await applyDeployment(cluster, resource);
+	}
+	if (isReplicaSet(resource)) {
+		return await applyReplicaSet(cluster, resource);
 	}
 	if (isNode(resource)) {
 		return await applyNode(cluster, resource);
@@ -66,6 +79,14 @@ function isPod(resource: KubernetesObject): resource is k8s.V1Pod {
 
 function isService(resource: KubernetesObject): resource is k8s.V1Service {
 	return resourceKey(resource) === "v1/Service";
+}
+
+function isDeployment(resource: KubernetesObject): resource is k8s.V1Deployment {
+	return resourceKey(resource) === "apps/v1/Deployment";
+}
+
+function isReplicaSet(resource: KubernetesObject): resource is k8s.V1ReplicaSet {
+	return resourceKey(resource) === "apps/v1/ReplicaSet";
 }
 
 async function applyNamespace(
@@ -163,6 +184,66 @@ async function applyService(cluster: Cluster, resource: k8s.V1Service): Promise<
 			throw error;
 		}
 		return await cluster.api.corev1.createNamespacedService({
+			namespace,
+			body: withLastApplied(desired),
+		});
+	}
+}
+
+async function applyDeployment(
+	cluster: Cluster,
+	resource: k8s.V1Deployment,
+): Promise<k8s.V1Deployment> {
+	const desired = prepareDesiredResource(resource, true);
+	const name = requiredName(desired);
+	const namespace = requiredNamespace(desired);
+	try {
+		return await retryConflicts(cluster.ctx, async () => {
+			const existing = await cluster.api.appsv1.readNamespacedDeployment({ name, namespace });
+			return await cluster.api.appsv1.patchNamespacedDeployment(
+				{
+					name,
+					namespace,
+					body: createApplyPatch(existing, desired),
+				},
+				MERGE_PATCH_OPTIONS,
+			);
+		});
+	} catch (error) {
+		if (!isNotFoundError(error)) {
+			throw error;
+		}
+		return await cluster.api.appsv1.createNamespacedDeployment({
+			namespace,
+			body: withLastApplied(desired),
+		});
+	}
+}
+
+async function applyReplicaSet(
+	cluster: Cluster,
+	resource: k8s.V1ReplicaSet,
+): Promise<k8s.V1ReplicaSet> {
+	const desired = prepareDesiredResource(resource, true);
+	const name = requiredName(desired);
+	const namespace = requiredNamespace(desired);
+	try {
+		return await retryConflicts(cluster.ctx, async () => {
+			const existing = await cluster.api.appsv1.readNamespacedReplicaSet({ name, namespace });
+			return await cluster.api.appsv1.patchNamespacedReplicaSet(
+				{
+					name,
+					namespace,
+					body: createApplyPatch(existing, desired),
+				},
+				MERGE_PATCH_OPTIONS,
+			);
+		});
+	} catch (error) {
+		if (!isNotFoundError(error)) {
+			throw error;
+		}
+		return await cluster.api.appsv1.createNamespacedReplicaSet({
 			namespace,
 			body: withLastApplied(desired),
 		});

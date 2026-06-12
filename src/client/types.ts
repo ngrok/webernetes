@@ -1,5 +1,7 @@
-import type { CoreV1Api, DiscoveryV1Api } from "./gen/apis/types";
+import type { AppsV1Api, CoreV1Api, DiscoveryV1Api } from "./gen/apis/types";
 import type { V1ListMeta, V1ObjectMeta, V1Status } from "./gen/models";
+
+export type IntOrString = number | string;
 
 export interface KubernetesObject {
 	apiVersion?: string;
@@ -13,6 +15,8 @@ export interface KubeList<T extends KubernetesObject> {
 	metadata?: V1ListMeta;
 	items: T[];
 }
+
+export interface KubernetesListObject<T extends KubernetesObject> extends KubeList<T> {}
 
 export interface ApiType {}
 // oxlint-disable-next-line typescript/no-explicit-any
@@ -63,6 +67,7 @@ export interface KubeConfig {
 }
 
 export interface KubeClient {
+	appsv1: AppsV1Api;
 	corev1: CoreV1Api;
 	discoveryv1: DiscoveryV1Api;
 }
@@ -82,6 +87,7 @@ export interface Informer<T extends KubernetesObject> extends ObjectCache<T> {
 }
 
 export interface K8s {
+	AppsV1Api: ApiConstructor<AppsV1Api>;
 	CoreV1Api: ApiConstructor<CoreV1Api>;
 	DiscoveryV1Api: ApiConstructor<DiscoveryV1Api>;
 	Exec: ApiConstructor<Exec>;

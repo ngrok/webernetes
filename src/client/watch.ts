@@ -3,10 +3,12 @@ import { fieldSelectorMatches, parseFieldSelector } from "./fields";
 import { labelsMatch, parseLabelSelector } from "./labels";
 import {
 	EndpointSliceStore,
+	DeploymentStore,
 	EventStore,
 	NamespaceStore,
 	NodeStore,
 	PodStore,
+	ReplicaSetStore,
 	ServiceStore,
 	Storable,
 	Store,
@@ -23,7 +25,8 @@ class AbortError extends Error {
 }
 
 function getNamespaceFromPath(path: string): string | undefined {
-	const match = /^\/(?:api\/v1|apis\/discovery\.k8s\.io\/v1)\/namespaces\/([^/]+)/.exec(path);
+	const match =
+		/^\/(?:api\/v1|apis\/discovery\.k8s\.io\/v1|apis\/apps\/v1)\/namespaces\/([^/]+)/.exec(path);
 	if (!match) {
 		return undefined;
 	}
@@ -34,6 +37,7 @@ function parsePath(path: string): { kind: string; namespace?: string } | undefin
 	const namespace = getNamespaceFromPath(path);
 	path = path.replace(/^\/api\/v1/, "");
 	path = path.replace(/^\/apis\/discovery\.k8s\.io\/v1/, "");
+	path = path.replace(/^\/apis\/apps\/v1/, "");
 	if (namespace) {
 		path = path.replace(`/namespaces/${namespace}`, "");
 	}
@@ -49,6 +53,10 @@ function storeFromKind(kind: string, config: KubeConfig): Store<Storable> {
 	switch (kind) {
 		case "pods":
 			return new PodStore(etcd);
+		case "deployments":
+			return new DeploymentStore(etcd);
+		case "replicasets":
+			return new ReplicaSetStore(etcd);
 		case "services":
 			return new ServiceStore(config.options.ctx, etcd, {
 				serviceCIDR: config.serviceCIDR,

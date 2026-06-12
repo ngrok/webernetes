@@ -15,9 +15,9 @@ import type { ClusterApplyResource, ClusterApplyResult } from "../../cluster/app
 
 let setupPromise: Promise<void> | undefined;
 
-const k8s = realK8s as unknown as K8s;
+const k8s: K8s = realK8s;
 const realKubeConfig = new realK8s.KubeConfig();
-const kubeConfig = realKubeConfig as unknown as KubeConfig;
+const kubeConfig: KubeConfig = realKubeConfig;
 
 export function defineSuite(name: string, factory: KubernetesSuiteFactory): void;
 export function defineSuite(

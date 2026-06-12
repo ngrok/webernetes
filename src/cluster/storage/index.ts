@@ -4,5 +4,7 @@ export * from "./node";
 export * from "./pod";
 export * from "./namespace";
 export * from "./service";
+export * from "./deployment";
 export * from "./endpointslice";
 export * from "./event";
+export * from "./replicaset";
