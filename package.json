@@ -45,6 +45,7 @@
   "scripts": {
     "clean": "rm -rf dist",
     "build": "pnpm run clean && tsc -p tsconfig.build.json",
+    "demo": "pnpm --filter webernetes-demo start",
     "fmt:check": "oxfmt --check .",
     "fmt": "oxfmt --write .",
     "k3s:setup": "tsx src/test/harnesses/kubernetes-k3s-setup-cli.ts",

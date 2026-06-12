@@ -1,6 +1,6 @@
 packages:
   - "."
-  - "examples"
+  - "demo"
 
 allowBuilds:
   cpu-features: false
