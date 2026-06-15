@@ -6,9 +6,9 @@
 import { expect, it } from "vitest";
 
 import type * as k8s from "../../../client";
+import { defaultDeploymentUniqueLabelKey } from "../../../apis/apps/v1/types";
 import { browser } from "../../../test/describe";
 import {
-	defaultDeploymentUniqueLabelKey,
 	deploymentComplete,
 	equalIgnoreHash,
 	findNewReplicaSet,
@@ -555,7 +555,12 @@ browser.describe("deployment util", () => {
 				},
 			};
 			newRC.spec!.replicas = test.newRSReplicas;
-			expect({ Name: test.Name, replicas: newRSNewReplicas(deployment, [rs5], newRC) }).toEqual({
+			const [replicas, err] = newRSNewReplicas(deployment, [rs5], newRC);
+			expect({ Name: test.Name, err }).toEqual({
+				Name: test.Name,
+				err: undefined,
+			});
+			expect({ Name: test.Name, replicas }).toEqual({
 				Name: test.Name,
 				replicas: test.expected,
 			});
