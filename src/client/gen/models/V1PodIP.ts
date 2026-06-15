@@ -3,5 +3,5 @@
  * Derived from Kubernetes, translated and modified for Webernetes.
  */
 export interface V1PodIP {
-	ip?: string;
+	ip: string;
 }

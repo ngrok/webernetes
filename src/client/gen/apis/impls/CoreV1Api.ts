@@ -69,6 +69,7 @@ import type {
 } from "../types/CoreV1Api";
 import { rethrowApiErrors } from "./errors";
 import { listResourceVersionOptions, validateDeletePreconditions } from "./resource-version";
+import { deleteResource } from "./delete";
 
 export interface CoreV1ApiOptions {
 	ctx: context.Context;
@@ -408,36 +409,22 @@ export class CoreV1Api implements CoreV1ApiInterface {
 
 	public async deleteNamespacedPod(request: CoreV1ApiDeleteNamespacedPodRequest): Promise<V1Pod> {
 		return await rethrowApiErrors(async () => {
-			return await retryConflicts(this.ctx, async () => {
-				const pod = await this.pods.get(request.name, request.namespace);
-				if (!pod) {
-					throw new NotFound(`Pod "${request.name}" not found`);
-				}
-				validateDeletePreconditions("Pod", request.name, request.body, pod);
-
-				const gracePeriodSeconds = podDeletionGracePeriodSeconds(request, pod);
-				if (gracePeriodSeconds === 0) {
-					await this.pods.delete(request.name, request.namespace);
-					return pod;
-				}
-
-				pod.metadata ??= {};
-				if (pod.metadata.deletionTimestamp) {
-					if (
-						pod.metadata.deletionGracePeriodSeconds === undefined ||
-						gracePeriodSeconds < pod.metadata.deletionGracePeriodSeconds
-					) {
-						pod.metadata.deletionGracePeriodSeconds = gracePeriodSeconds;
-						return await this.pods.update(request.name, pod);
-					}
-					return pod;
-				}
-
-				pod.metadata.deletionTimestamp = getClock(this.ctx).now();
-				pod.metadata.deletionGracePeriodSeconds = gracePeriodSeconds;
-				await this.pods.update(request.name, pod);
-				return pod;
-			});
+			const pod = await this.pods.get(request.name, request.namespace);
+			return await retryConflicts(
+				this.ctx,
+				async () =>
+					await deleteResource(
+						this.ctx,
+						this.pods,
+						"Pod",
+						request.name,
+						request.namespace,
+						request,
+						{
+							defaultGracePeriodSeconds: podDeletionGracePeriodSeconds(request, pod),
+						},
+					),
+			);
 		});
 	}
 
@@ -445,14 +432,14 @@ export class CoreV1Api implements CoreV1ApiInterface {
 		request: CoreV1ApiDeleteNamespacedServiceRequest,
 	): Promise<V1Service> {
 		return await rethrowApiErrors(async () => {
-			const service = await this.services.get(request.name, request.namespace);
-			if (!service) {
-				throw new NotFound(`Service "${request.name}" not found`);
-			}
-			validateDeletePreconditions("Service", request.name, request.body, service);
-
-			await this.services.delete(request.name, request.namespace);
-			return service;
+			return await deleteResource(
+				this.ctx,
+				this.services,
+				"Service",
+				request.name,
+				request.namespace,
+				request,
+			);
 		});
 	}
 
@@ -729,12 +716,12 @@ function isPatchObject(value: unknown): value is PatchObject {
 
 function podDeletionGracePeriodSeconds(
 	request: CoreV1ApiDeleteNamespacedPodRequest,
-	pod: V1Pod,
+	pod: V1Pod | undefined,
 ): number {
 	return (
 		request.gracePeriodSeconds ??
 		request.body?.gracePeriodSeconds ??
-		pod.spec?.terminationGracePeriodSeconds ??
+		pod?.spec?.terminationGracePeriodSeconds ??
 		30
 	);
 }

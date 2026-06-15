@@ -3,5 +3,5 @@
  * Derived from Kubernetes, translated and modified for Webernetes.
  */
 export interface V1HostIP {
-	ip?: string;
+	ip: string;
 }

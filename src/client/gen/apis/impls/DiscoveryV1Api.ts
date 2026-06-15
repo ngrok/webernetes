@@ -1,5 +1,6 @@
 import { EndpointSliceStore } from "../../../../cluster/storage";
 import type { Etcd } from "../../../../cluster/etcd";
+import type * as context from "../../../../go/context";
 import { NotFound } from "../../../errors";
 import { filterByFields, parseFieldSelector } from "../../../fields";
 import { filterByLabels, parseLabelSelector } from "../../../labels";
@@ -14,16 +15,20 @@ import type {
 	DiscoveryV1ApiReplaceNamespacedEndpointSliceRequest,
 } from "../types/DiscoveryV1Api";
 import { rethrowApiErrors } from "./errors";
-import { listResourceVersionOptions, validateDeletePreconditions } from "./resource-version";
+import { listResourceVersionOptions } from "./resource-version";
+import { deleteResource } from "./delete";
 
 export interface DiscoveryV1ApiOptions {
+	ctx: context.Context;
 	etcd: Etcd;
 }
 
 export class DiscoveryV1Api implements DiscoveryV1ApiInterface {
+	private readonly ctx: context.Context;
 	private readonly endpointSlices: EndpointSliceStore;
 
 	public constructor(options: DiscoveryV1ApiOptions) {
+		this.ctx = options.ctx;
 		this.endpointSlices = new EndpointSliceStore(options.etcd);
 	}
 
@@ -41,13 +46,14 @@ export class DiscoveryV1Api implements DiscoveryV1ApiInterface {
 		request: DiscoveryV1ApiDeleteNamespacedEndpointSliceRequest,
 	): Promise<V1Status> {
 		return await rethrowApiErrors(async () => {
-			const endpointSlice = await this.endpointSlices.get(request.name, request.namespace);
-			if (!endpointSlice) {
-				throw new NotFound(`EndpointSlice "${request.name}" not found`);
-			}
-			validateDeletePreconditions("EndpointSlice", request.name, request.body, endpointSlice);
-
-			await this.endpointSlices.delete(request.name, request.namespace);
+			await deleteResource(
+				this.ctx,
+				this.endpointSlices,
+				"EndpointSlice",
+				request.name,
+				request.namespace,
+				request,
+			);
 			return {
 				apiVersion: "v1",
 				kind: "Status",
