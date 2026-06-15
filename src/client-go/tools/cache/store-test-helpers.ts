@@ -57,7 +57,7 @@ export async function doTestIndex(indexer: Indexer<TestStoreObject>): Promise<vo
 	await indexer.add(mkObj("g", "h"));
 
 	for (const [key, expectedIds] of expected) {
-		const [indexResults, err] = await indexer.index("by_val", mkObj("", key));
+		const [indexResults, err] = indexer.index("by_val", mkObj("", key));
 		expect(err).toBeUndefined();
 		expect(new Set(indexResults.map((item) => item.id))).toEqual(expectedIds);
 	}

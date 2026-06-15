@@ -1,4 +1,12 @@
+/*!
+ * SPDX-License-Identifier: Apache-2.0
+ * Derived from Kubernetes, translated and modified for Webernetes.
+ */
 import * as k8s from "../../client";
+import {
+	finalizerDeleteDependents,
+	finalizerOrphanDependents,
+} from "../../client/gen/apis/impls/delete";
 
 export type ModeledObject =
 	| k8s.V1Deployment
@@ -147,4 +155,19 @@ export function identityFor(object: ModeledObject): ObjectReference | undefined 
 		namespace: object.metadata?.namespace ?? "default",
 		uid,
 	};
+}
+
+// Models kubernetes/pkg/controller/garbagecollector/graph_builder.go hasDeleteDependentsFinalizer.
+export function hasDeleteDependentsFinalizer(object: ModeledObject | undefined): boolean {
+	return !!object && hasFinalizer(object, finalizerDeleteDependents);
+}
+
+// Models kubernetes/pkg/controller/garbagecollector/graph_builder.go hasOrphanFinalizer.
+export function hasOrphanFinalizer(object: ModeledObject | undefined): boolean {
+	return !!object && hasFinalizer(object, finalizerOrphanDependents);
+}
+
+// Models kubernetes/pkg/controller/garbagecollector/graph_builder.go hasFinalizer.
+function hasFinalizer(object: ModeledObject, matchingFinalizer: string): boolean {
+	return (object.metadata?.finalizers ?? []).includes(matchingFinalizer);
 }

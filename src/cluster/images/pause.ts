@@ -6,3 +6,10 @@ export class PauseImage extends BaseImage {
 
 	readonly defaultCommand = ["pause"];
 }
+
+export class PauseImage39 extends BaseImage {
+	static readonly imageName = "registry.k8s.io/pause";
+	static readonly imageVersion = "3.9";
+
+	readonly defaultCommand = ["pause"];
+}

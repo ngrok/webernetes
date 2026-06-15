@@ -18,7 +18,7 @@ import { DeploymentController } from "./images/deployment-controller";
 import { EndpointSliceController } from "./images/endpointslice-controller";
 import { GarbageCollector } from "./images/garbage-collector";
 import { NamespaceController } from "./images/namespace-controller";
-import { PauseImage } from "./images/pause";
+import { PauseImage, PauseImage39 } from "./images/pause";
 import { KubeProxy } from "./images/proxy";
 import { ReplicaSetController } from "./images/replicaset-controller";
 import { Scheduler } from "./images/scheduler";
@@ -120,6 +120,7 @@ export class Cluster extends EventEmitter {
 
 		this.imageRegistry = new ImageRegistry();
 		this.imageRegistry.register(PauseImage);
+		this.imageRegistry.register(PauseImage39);
 		this.imageRegistry.register(BusyBoxImage);
 		this.imageRegistry.register(HelloWorldImage);
 		this.imageRegistry.register(HttpEchoImage);

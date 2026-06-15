@@ -78,13 +78,13 @@ browser.describe("Indexer", () => {
 		expect(bertErr).toBeUndefined();
 		expect(bertPods.map((pod) => pod.metadata?.name)).toEqual(["one"]);
 
-		[erniePods, err] = await index.index("byUser", {
+		[erniePods, err] = index.index("byUser", {
 			metadata: { name: "lookup", annotations: { users: "ernie" } },
 		});
 		expect(err).toBeUndefined();
 		expect(erniePods.map((pod) => pod.metadata?.name)).toEqual(["one"]);
 
-		[elmoPods, elmoErr] = await index.index("missing", pod1);
+		[elmoPods, elmoErr] = index.index("missing", pod1);
 		expect(elmoPods).toEqual([]);
 		expect(elmoErr?.message).toBe("Index with name missing does not exist");
 	});

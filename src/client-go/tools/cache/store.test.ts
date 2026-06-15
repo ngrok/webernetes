@@ -4,17 +4,17 @@
  */
 import { expect, it } from "vitest";
 
-import type { KubernetesObject } from "../../../client/types";
 import { browser } from "../../../test/describe";
-import { ExplicitKey, KeyError, newStore, withTransformer, type Store } from "./store";
-
-interface TestStoreObject extends KubernetesObject {
-	id: string;
-	val: string;
-	nested?: {
-		val: string;
-	};
-}
+import { newIndexer } from "./store";
+import { KeyError, newStore, withTransformer } from "./store";
+import {
+	doTestIndex,
+	doTestStore,
+	isTestStoreObject,
+	testStoreIndexers,
+	testStoreKeyFunc,
+	type TestStoreObject,
+} from "./store-test-helpers";
 
 browser.describe("Store", () => {
 	// Models staging/src/k8s.io/client-go/tools/cache/store_test.go TestCache.
@@ -79,46 +79,9 @@ browser.describe("Store", () => {
 		const [afterList] = store.getByKey("foo");
 		expect(afterList).toEqual({ id: "foo", val: "stored", nested: { val: "nested" } });
 	});
+
+	// Models staging/src/k8s.io/client-go/tools/cache/store_test.go TestIndex.
+	it("implements the public indexer interface", async () => {
+		await doTestIndex(newIndexer(testStoreKeyFunc, testStoreIndexers()));
+	});
 });
-
-// Models staging/src/k8s.io/client-go/tools/cache/store_test.go doTestStore.
-async function doTestStore(store: Store<TestStoreObject>): Promise<void> {
-	const mkObj = (id: string, val: string): TestStoreObject => ({ id, val });
-
-	await store.add(mkObj("foo", "bar"));
-	let [item, ok] = await store.get(mkObj("foo", ""));
-	expect(ok).toBe(true);
-	expect(item?.val).toBe("bar");
-
-	await store.update(mkObj("foo", "baz"));
-	[item, ok] = await store.get(mkObj("foo", ""));
-	expect(ok).toBe(true);
-	expect(item?.val).toBe("baz");
-
-	await store.delete(mkObj("foo", ""));
-	[, ok] = await store.get(mkObj("foo", ""));
-	expect(ok).toBe(false);
-
-	await store.add(mkObj("a", "b"));
-	await store.add(mkObj("c", "d"));
-	await store.add(mkObj("e", "e"));
-	let found = new Set(store.list().map((listItem) => listItem.val));
-	expect(found).toEqual(new Set(["b", "d", "e"]));
-
-	await store.replace([mkObj("foo", "foo"), mkObj("bar", "bar")], "0");
-
-	found = new Set(store.list().map((listItem) => listItem.val));
-	expect(found).toEqual(new Set(["foo", "bar"]));
-}
-
-// Models staging/src/k8s.io/client-go/tools/cache/store_test.go testStoreKeyFunc.
-function testStoreKeyFunc(obj: TestStoreObject | ExplicitKey): [string, Error | undefined] {
-	if (obj instanceof ExplicitKey) {
-		return [obj.key, undefined];
-	}
-	return [obj.id, undefined];
-}
-
-function isTestStoreObject(obj: KubernetesObject | undefined): obj is TestStoreObject {
-	return obj !== undefined && "id" in obj && "val" in obj;
-}
