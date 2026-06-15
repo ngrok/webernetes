@@ -1,7 +1,7 @@
 import { retryConflicts } from "../../../../retry";
+import { labelSelectorAsSelector } from "../../../../apimachinery/pkg/apis/meta/v1/helpers";
 import type { Etcd } from "../../../../cluster/etcd";
 import { DeploymentStore, ReplicaSetStore, Store } from "../../../../cluster/storage";
-import { labelSelectorToString } from "../../../../cluster/storage/apps-helpers";
 import type * as context from "../../../../go/context";
 import { BadRequest, NotFound, UnsupportedMediaType } from "../../../errors";
 import { filterByFields, parseFieldSelector } from "../../../fields";
@@ -10,6 +10,7 @@ import { PatchStrategy } from "../../../patch";
 import type {
 	V1Deployment,
 	V1DeploymentList,
+	V1LabelSelector,
 	V1ReplicaSet,
 	V1ReplicaSetList,
 	V1Scale,
@@ -501,6 +502,14 @@ function replicaSetScale(replicaSet: V1ReplicaSet): V1Scale {
 			selector: labelSelectorToString(replicaSet.spec?.selector),
 		},
 	};
+}
+
+function labelSelectorToString(selector: V1LabelSelector | undefined): string {
+	const [converted, err] = labelSelectorAsSelector(selector);
+	if (err || !converted) {
+		return "";
+	}
+	return converted.string();
 }
 
 function scaleMetadata(resource: V1Deployment | V1ReplicaSet): V1Scale["metadata"] {
