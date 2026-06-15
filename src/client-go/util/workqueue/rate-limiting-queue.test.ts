@@ -23,26 +23,26 @@ browser.describe("rate limiting workqueue", () => {
 		const delayingQueue = new Delaying(newQueue<string>(), fakeClock);
 		const queue = newTypedRateLimitingQueueWithConfig(limiter, { delayingQueue });
 
-		queue.addRateLimited("one");
+		await queue.addRateLimited("one");
 		let waitEntry = await receiveWaitEntry(delayingQueue);
 		expect(waitEntry.readyAt.getTime() - fakeClock.nowMs()).toBe(1);
 
-		queue.addRateLimited("one");
+		await queue.addRateLimited("one");
 		waitEntry = await receiveWaitEntry(delayingQueue);
 		expect(waitEntry.readyAt.getTime() - fakeClock.nowMs()).toBe(2);
 		expect(queue.numRequeues("one")).toBe(2);
 
-		queue.addRateLimited("two");
+		await queue.addRateLimited("two");
 		waitEntry = await receiveWaitEntry(delayingQueue);
 		expect(waitEntry.readyAt.getTime() - fakeClock.nowMs()).toBe(1);
 
-		queue.addRateLimited("two");
+		await queue.addRateLimited("two");
 		waitEntry = await receiveWaitEntry(delayingQueue);
 		expect(waitEntry.readyAt.getTime() - fakeClock.nowMs()).toBe(2);
 
 		queue.forget("one");
 		expect(queue.numRequeues("one")).toBe(0);
-		queue.addRateLimited("one");
+		await queue.addRateLimited("one");
 		waitEntry = await receiveWaitEntry(delayingQueue);
 		expect(waitEntry.readyAt.getTime() - fakeClock.nowMs()).toBe(1);
 
