@@ -268,7 +268,7 @@ browser.describe("workqueue", () => {
 		await q.get();
 
 		const finishedPromise = (async () => {
-			q.shutDown();
+			await q.shutDown();
 		})();
 
 		await finishedPromise;
@@ -292,7 +292,7 @@ browser.describe("workqueue", () => {
 		expect(shuttingDown).toBe(true);
 		expect(finished).toBe(false);
 
-		q.shutDown();
+		await q.shutDown();
 		await finishedPromise;
 		expect(finished).toBe(true);
 	});
