@@ -1,5 +1,6 @@
 import * as k8s from "../../client";
 import { isNotFoundError } from "../../client/errors";
+import { deepEqual } from "../../deep-equal";
 import { retryConflicts } from "../../retry";
 import { isPodReadyConditionTrue } from "../api/v1/pod/util";
 import type { ProcessContext } from "../cri";
@@ -10,6 +11,8 @@ const labelServiceName = "kubernetes.io/service-name";
 const labelManagedBy = "endpointslice.kubernetes.io/managed-by";
 const labelHeadlessService = "service.kubernetes.io/headless";
 
+// TODO(samwho): rewrite this to extract the endpoint slice controller out and
+// make it have parity with the upstream endpoint slice controller.
 export class EndpointSliceController extends BaseImage {
 	static readonly imageName = "webernetes/endpointslice-controller";
 	static readonly imageVersion = "1.0";
@@ -17,10 +20,12 @@ export class EndpointSliceController extends BaseImage {
 	readonly defaultCommand = ["endpointslice-controller"];
 	private serviceInformer: k8s.Informer<k8s.V1Service> | undefined;
 	private podInformer: k8s.Informer<k8s.V1Pod> | undefined;
+	private endpointSliceInformer: k8s.Informer<k8s.V1EndpointSlice> | undefined;
 	private readonly services = new Map<string, k8s.V1Service>();
 	private readonly servicesByNamespace = new Map<string, Set<string>>();
 	private readonly pods = new Map<string, k8s.V1Pod>();
 	private readonly podsByNamespace = new Map<string, Set<string>>();
+	private readonly endpointSlices = new Map<string, k8s.V1EndpointSlice>();
 	private readonly pending = new Set<string>();
 	private readonly requeued = new Set<string>();
 
@@ -39,6 +44,7 @@ export class EndpointSliceController extends BaseImage {
 	private async close(): Promise<void> {
 		await this.serviceInformer?.stop();
 		await this.podInformer?.stop();
+		await this.endpointSliceInformer?.stop();
 	}
 
 	private async startInformers(ctx: ProcessContext): Promise<void> {
@@ -52,15 +58,24 @@ export class EndpointSliceController extends BaseImage {
 			"/api/v1/pods",
 			async () => await ctx.api.corev1.listPodForAllNamespaces(),
 		);
+		this.endpointSliceInformer = k8s.makeInformer(
+			ctx.kubeConfig,
+			"/apis/discovery.k8s.io/v1/endpointslices",
+			async () => await ctx.api.discoveryv1.listEndpointSliceForAllNamespaces(),
+		);
 		this.serviceInformer.on("add", (service) => this.upsertService(ctx, service));
 		this.serviceInformer.on("update", (service) => this.upsertService(ctx, service));
 		this.serviceInformer.on("delete", (service) => this.deleteService(ctx, service));
 		this.podInformer.on("add", (pod) => this.upsertPod(ctx, pod));
 		this.podInformer.on("update", (pod) => this.upsertPod(ctx, pod));
 		this.podInformer.on("delete", (pod) => this.deletePod(ctx, pod));
+		this.endpointSliceInformer.on("add", (slice) => this.upsertEndpointSlice(ctx, slice));
+		this.endpointSliceInformer.on("update", (slice) => this.upsertEndpointSlice(ctx, slice));
+		this.endpointSliceInformer.on("delete", (slice) => this.deleteEndpointSlice(ctx, slice));
 
 		await this.serviceInformer.start();
 		await this.podInformer.start();
+		await this.endpointSliceInformer.start();
 		for (const service of this.services.values()) {
 			this.queueServiceReconcile(ctx, service);
 		}
@@ -82,6 +97,9 @@ export class EndpointSliceController extends BaseImage {
 		const stored = this.services.get(key) ?? service;
 		this.unindexService(stored);
 		this.services.delete(key);
+		if (stored.metadata?.deletionTimestamp || service.metadata?.deletionTimestamp) {
+			return;
+		}
 		void this.deleteGeneratedSlice(ctx, stored).catch(() => undefined);
 	}
 
@@ -102,6 +120,31 @@ export class EndpointSliceController extends BaseImage {
 		this.unindexPod(stored);
 		this.pods.delete(key);
 		this.queueServicesInNamespace(ctx, pod.metadata?.namespace ?? "default");
+	}
+
+	private upsertEndpointSlice(ctx: ProcessContext, slice: k8s.V1EndpointSlice): void {
+		const key = endpointSliceKey(slice);
+		if (slice.metadata?.deletionTimestamp) {
+			this.endpointSlices.delete(key);
+		} else {
+			this.endpointSlices.set(key, slice);
+		}
+		const serviceName = slice.metadata?.labels?.[labelServiceName];
+		const namespace = slice.metadata?.namespace ?? "default";
+		const service = serviceName ? this.services.get(`${namespace}/${serviceName}`) : undefined;
+		if (service) {
+			this.queueServiceReconcile(ctx, service);
+		}
+	}
+
+	private deleteEndpointSlice(ctx: ProcessContext, slice: k8s.V1EndpointSlice): void {
+		this.endpointSlices.delete(endpointSliceKey(slice));
+		const serviceName = slice.metadata?.labels?.[labelServiceName];
+		const namespace = slice.metadata?.namespace ?? "default";
+		const service = serviceName ? this.services.get(`${namespace}/${serviceName}`) : undefined;
+		if (service) {
+			this.queueServiceReconcile(ctx, service);
+		}
 	}
 
 	private queueServicesInNamespace(ctx: ProcessContext, namespace: string): void {
@@ -136,7 +179,22 @@ export class EndpointSliceController extends BaseImage {
 	private async reconcileService(ctx: ProcessContext, service: k8s.V1Service): Promise<void> {
 		const name = service.metadata?.name;
 		const namespace = service.metadata?.namespace ?? "default";
+		if (name) {
+			try {
+				service = await ctx.api.corev1.readNamespacedService({ name, namespace });
+				this.services.set(serviceKey(service), service);
+			} catch (error) {
+				if (!isNotFoundError(error)) {
+					throw error;
+				}
+				await this.deleteGeneratedSlice(ctx, service);
+				return;
+			}
+		}
 		const selector = new Map(Object.entries(service.spec?.selector ?? {}));
+		if (service.metadata?.deletionTimestamp) {
+			return;
+		}
 		if (!name || selector.size === 0 || service.spec?.type === "ExternalName") {
 			await this.deleteGeneratedSlice(ctx, service);
 			return;
@@ -214,6 +272,27 @@ export class EndpointSliceController extends BaseImage {
 	private async applyEndpointSlice(ctx: ProcessContext, slice: k8s.V1EndpointSlice): Promise<void> {
 		const name = slice.metadata?.name ?? "";
 		const namespace = slice.metadata?.namespace ?? "default";
+		const serviceName = slice.metadata?.labels?.[labelServiceName];
+		if (serviceName) {
+			try {
+				const service = await ctx.api.corev1.readNamespacedService({
+					name: serviceName,
+					namespace,
+				});
+				if (service.metadata?.deletionTimestamp) {
+					return;
+				}
+			} catch (error) {
+				if (!isNotFoundError(error)) {
+					throw error;
+				}
+				return;
+			}
+		}
+		const cached = this.endpointSlices.get(`${namespace}/${name}`);
+		if (cached?.metadata?.deletionTimestamp) {
+			return;
+		}
 		try {
 			await retryConflicts(ctx, async () => {
 				try {
@@ -221,16 +300,41 @@ export class EndpointSliceController extends BaseImage {
 						name,
 						namespace,
 					});
+					if (current.metadata?.deletionTimestamp) {
+						return;
+					}
+					const desiredOwnerReferences = slice.metadata?.ownerReferences ?? [];
+					if (
+						desiredOwnerReferences.length > 0 &&
+						!desiredOwnerReferences.some((desiredOwner) =>
+							(current.metadata?.ownerReferences ?? []).some((currentOwner) =>
+								ownerReferencesEqual(currentOwner, desiredOwner),
+							),
+						)
+					) {
+						return;
+					}
+					const desired = {
+						...slice,
+						metadata: {
+							...slice.metadata,
+							finalizers: current.metadata?.finalizers,
+							ownerReferences: current.metadata?.ownerReferences,
+							resourceVersion: current.metadata?.resourceVersion,
+						},
+					};
+					if (
+						deepEqual(current, desired, {
+							ignoredFields: ["metadata.resourceVersion"],
+							ignoreUndefined: true,
+						})
+					) {
+						return;
+					}
 					await ctx.api.discoveryv1.replaceNamespacedEndpointSlice({
 						name,
 						namespace,
-						body: {
-							...slice,
-							metadata: {
-								...slice.metadata,
-								resourceVersion: current.metadata?.resourceVersion,
-							},
-						},
+						body: desired,
 					});
 				} catch (error) {
 					if (!isNotFoundError(error)) {
@@ -251,10 +355,19 @@ export class EndpointSliceController extends BaseImage {
 		if (!name) {
 			return;
 		}
+		const namespace = service.metadata?.namespace ?? "default";
+		const sliceName = generatedSliceName(name);
 		try {
+			const slice = await ctx.api.discoveryv1.readNamespacedEndpointSlice({
+				name: sliceName,
+				namespace,
+			});
+			if (!isOwnedByService(slice, service)) {
+				return;
+			}
 			await ctx.api.discoveryv1.deleteNamespacedEndpointSlice({
-				name: generatedSliceName(name),
-				namespace: service.metadata?.namespace ?? "default",
+				name: sliceName,
+				namespace,
 			});
 		} catch (error) {
 			if (!isNotFoundError(error)) {
@@ -302,6 +415,10 @@ function serviceKey(service: k8s.V1Service): string {
 
 function podKey(pod: k8s.V1Pod): string {
 	return `${pod.metadata?.namespace ?? "default"}/${pod.metadata?.name ?? ""}`;
+}
+
+function endpointSliceKey(slice: k8s.V1EndpointSlice): string {
+	return `${slice.metadata?.namespace ?? "default"}/${slice.metadata?.name ?? ""}`;
 }
 
 function addToNamespaceIndex(
@@ -367,6 +484,29 @@ function serviceOwnerReferences(service: k8s.V1Service): k8s.V1OwnerReference[] 
 			uid,
 		},
 	];
+}
+
+function isOwnedByService(slice: k8s.V1EndpointSlice, service: k8s.V1Service): boolean {
+	const serviceUid = service.metadata?.uid;
+	if (!serviceUid) {
+		return false;
+	}
+	return (slice.metadata?.ownerReferences ?? []).some(
+		(reference) =>
+			reference.apiVersion === "v1" &&
+			reference.kind === "Service" &&
+			reference.name === service.metadata?.name &&
+			reference.uid === serviceUid,
+	);
+}
+
+function ownerReferencesEqual(left: k8s.V1OwnerReference, right: k8s.V1OwnerReference): boolean {
+	return (
+		left.apiVersion === right.apiVersion &&
+		left.kind === right.kind &&
+		left.name === right.name &&
+		left.uid === right.uid
+	);
 }
 
 function shouldPodBeInEndpointSlice(pod: k8s.V1Pod): boolean {
