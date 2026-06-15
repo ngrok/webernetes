@@ -25,19 +25,54 @@ export type SendChannel<T> = Channel<T> | WriteOnlyChannel<T>;
 export type SelectHandler<T, R = unknown> = (result: ChannelReceive<T>) => MaybePromise<R>;
 export type SelectDefault<R = unknown> = () => MaybePromise<R>;
 
+interface ChannelSourced<T> {
+	[channelSource](): Channel<T>;
+}
+
 export class SelectBuilder<T = never> implements PromiseLike<T> {
-	private readonly cases: Array<{
-		channel: Channel<unknown> | undefined;
-		handler: SelectHandler<unknown>;
-	}> = [];
+	private readonly cases: Array<
+		| {
+				type: "receive";
+				channel: Channel<unknown> | undefined;
+				handler: SelectHandler<unknown>;
+		  }
+		| {
+				type: "send";
+				channel: Channel<unknown> | undefined;
+				value: unknown;
+				handler: SelectDefault;
+		  }
+	> = [];
 
 	case<V, R>(
 		channel: ReceiveChannel<V> | undefined,
 		handler: SelectHandler<V, R>,
 	): SelectBuilder<T | Awaited<R>> {
 		this.cases.push({
+			type: "receive",
 			channel: channel?.[channelSource]() as Channel<unknown> | undefined,
 			handler: handler as unknown as SelectHandler<unknown>,
+		});
+		return this as unknown as SelectBuilder<T | Awaited<R>>;
+	}
+
+	receive<V, R>(
+		channel: ReceiveChannel<V> | undefined,
+		handler: SelectHandler<V, R>,
+	): SelectBuilder<T | Awaited<R>> {
+		return this.case(channel, handler);
+	}
+
+	send<V, R>(
+		channel: SendChannel<V> | undefined,
+		value: V,
+		handler: SelectDefault<R>,
+	): SelectBuilder<T | Awaited<R>> {
+		this.cases.push({
+			type: "send",
+			channel: (channel as ChannelSourced<unknown> | undefined)?.[channelSource](),
+			value,
+			handler: handler as SelectDefault,
 		});
 		return this as unknown as SelectBuilder<T | Awaited<R>>;
 	}
@@ -75,28 +110,33 @@ export class Channel<T> implements AsyncIterable<T> {
 	}
 
 	static select<R = never, D = never>(
-		cases: readonly SelectReceiveCase[],
+		cases: readonly SelectCase[],
 		defaultCase?: SelectDefault<D>,
 	): Promise<R | Awaited<D>>;
 	static async select<R = never, D = never>(
-		cases: readonly SelectReceiveCase[],
+		cases: readonly SelectCase[],
 		defaultCase?: SelectDefault<D>,
 	): Promise<R | Awaited<D>> {
-		const readyCases: SelectReceiveCase[] = [];
-		for (const receiveCase of cases) {
-			if (receiveCase.channel?.canReceive()) {
-				readyCases.push(receiveCase);
+		const readyCases: SelectCase[] = [];
+		for (const selectCase of cases) {
+			if (selectCase.type === "receive" && selectCase.channel?.canReceive()) {
+				readyCases.push(selectCase);
+			}
+			if (selectCase.type === "send" && selectCase.channel?.canSend()) {
+				readyCases.push(selectCase);
 			}
 		}
 		if (readyCases.length > 0) {
-			const selected = readyCases[
-				Math.floor(Math.random() * readyCases.length)
-			] as SelectReceiveCase;
-			const result = selected.channel?.tryReceive();
-			if (!result) {
-				throw new Error("selected channel was not ready");
+			const selected = readyCases[Math.floor(Math.random() * readyCases.length)] as SelectCase;
+			if (selected.type === "receive") {
+				const result = selected.channel?.tryReceive();
+				if (!result) {
+					throw new Error("selected channel was not ready");
+				}
+				return (await selected.handler(result)) as R;
 			}
-			return (await selected.handler(result)) as R;
+			selected.channel?.trySend(selected.value);
+			return (await selected.handler()) as R;
 		}
 
 		if (defaultCase) {
@@ -105,28 +145,56 @@ export class Channel<T> implements AsyncIterable<T> {
 
 		return await new Promise<R>((resolve, reject) => {
 			let selected = false;
-			const cancelReceivers: Array<() => void> = [];
+			const cancelCases: Array<() => void> = [];
 
-			const settle = (handler: SelectHandler<unknown>, result: ChannelReceive<unknown>) => {
+			const settle = (handler: SelectDefault<unknown>) => {
 				if (selected) {
 					return;
 				}
 				selected = true;
-				for (const cancel of cancelReceivers) {
+				for (const cancel of cancelCases) {
 					cancel();
 				}
-				void Promise.resolve(handler(result)).then((value) => resolve(value as R), reject);
+				void Promise.resolve(handler()).then((value) => resolve(value as R), reject);
+			};
+			const fail = (error: Error) => {
+				if (selected) {
+					return;
+				}
+				selected = true;
+				for (const cancel of cancelCases) {
+					cancel();
+				}
+				reject(error);
 			};
 
-			for (const { channel, handler } of cases) {
+			for (const selectCase of cases) {
+				const { channel } = selectCase;
 				if (!channel) {
 					continue;
 				}
-				cancelReceivers.push(
-					channel.receiveWithCancel((result) => {
-						settle(handler, result);
-					}),
-				);
+				if (selectCase.type === "receive") {
+					cancelCases.push(
+						channel.receiveWithCancel((result) => {
+							settle(() => selectCase.handler(result));
+						}),
+					);
+				} else {
+					const sender: PendingSender<unknown> = {
+						value: selectCase.value,
+						reject: fail,
+						resolve: () => {
+							settle(selectCase.handler);
+						},
+					};
+					cancelCases.push(() => {
+						const index = channel.senders.indexOf(sender);
+						if (index !== -1) {
+							channel.senders.splice(index, 1);
+						}
+					});
+					channel.senders.push(sender);
+				}
 			}
 		});
 	}
@@ -203,6 +271,10 @@ export class Channel<T> implements AsyncIterable<T> {
 
 	private canReceive(): boolean {
 		return this.values.length > 0 || this.senders.length > 0 || this.closed;
+	}
+
+	private canSend(): boolean {
+		return !this.closed && (this.receivers.length > 0 || this.values.length < this.capacity);
 	}
 
 	async receive(): Promise<ChannelReceive<T>> {
@@ -329,9 +401,19 @@ export class WriteOnlyChannel<T> {
 }
 
 interface SelectReceiveCase {
+	type: "receive";
 	channel: Channel<unknown> | undefined;
 	handler: SelectHandler<unknown>;
 }
+
+interface SelectSendCase {
+	type: "send";
+	channel: Channel<unknown> | undefined;
+	value: unknown;
+	handler: SelectDefault;
+}
+
+type SelectCase = SelectReceiveCase | SelectSendCase;
 
 export function select(): SelectBuilder<never> {
 	return new SelectBuilder();

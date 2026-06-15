@@ -467,6 +467,13 @@ browser.describe("select", () => {
 		expect(result).toBe("value");
 	});
 
+	it("can spell receive cases explicitly", async () => {
+		const channel = new Channel<string>(1);
+		expect(channel.trySend("value")).toBe(true);
+		const result = await select().receive(channel, ({ value }) => value);
+		expect(result).toBe("value");
+	});
+
 	// Go check:
 	//
 	//   package main
@@ -496,6 +503,246 @@ browser.describe("select", () => {
 				.case(channel, () => "channel")
 				.default(() => "default"),
 		).resolves.toBe("default");
+	});
+
+	// Go check:
+	//
+	//   package main
+	//
+	//   import "fmt"
+	//
+	//   func main() {
+	//   	ch := make(chan string, 1)
+	//   	select {
+	//   	case ch <- "value":
+	//   		fmt.Println("sent")
+	//   	default:
+	//   		fmt.Println("default")
+	//   	}
+	//   	fmt.Println(<-ch)
+	//   }
+	//
+	// Output:
+	//   sent
+	//   value
+	it("runs a ready send case instead of default", async () => {
+		const channel = new Channel<string>(1);
+
+		await expect(
+			select()
+				.send(channel, "value", () => "sent")
+				.default(() => "default"),
+		).resolves.toBe("sent");
+		await expect(channel.receive()).resolves.toEqual({ ok: true, value: "value" });
+	});
+
+	// Go check:
+	//
+	//   package main
+	//
+	//   import "fmt"
+	//
+	//   func main() {
+	//   	receiveCh := make(chan string, 1)
+	//   	sendCh := make(chan string)
+	//   	receiveCh <- "receive"
+	//   	select {
+	//   	case value := <-receiveCh:
+	//   		fmt.Println("received", value)
+	//   	case sendCh <- "send":
+	//   		fmt.Println("sent")
+	//   	}
+	//   	select {
+	//   	case value := <-sendCh:
+	//   		fmt.Println(value)
+	//   	default:
+	//   		fmt.Println("send not selected")
+	//   	}
+	//   }
+	//
+	// Output:
+	//   received receive
+	//   send not selected
+	it("selects the ready receive case when a mixed send case is blocked", async () => {
+		const receiveCh = new Channel<string>(1);
+		const sendCh = new Channel<string>();
+		expect(receiveCh.trySend("receive")).toBe(true);
+
+		await expect(
+			select()
+				.receive(receiveCh, ({ value }) => `received ${value}`)
+				.send(sendCh, "send", () => "sent"),
+		).resolves.toBe("received receive");
+		await expect(
+			select()
+				.receive(sendCh, ({ value }) => value)
+				.default(() => "send not selected"),
+		).resolves.toBe("send not selected");
+	});
+
+	// Go check:
+	//
+	//   package main
+	//
+	//   import "fmt"
+	//
+	//   func main() {
+	//   	receiveCh := make(chan string)
+	//   	sendCh := make(chan string, 1)
+	//   	select {
+	//   	case value := <-receiveCh:
+	//   		fmt.Println("received", value)
+	//   	case sendCh <- "send":
+	//   		fmt.Println("sent")
+	//   	}
+	//   	fmt.Println(<-sendCh)
+	//   }
+	//
+	// Output:
+	//   sent
+	//   send
+	it("selects the ready send case when a mixed receive case is blocked", async () => {
+		const receiveCh = new Channel<string>();
+		const sendCh = new Channel<string>(1);
+
+		await expect(
+			select()
+				.receive(receiveCh, ({ value }) => `received ${value}`)
+				.send(sendCh, "send", () => "sent"),
+		).resolves.toBe("sent");
+		await expect(sendCh.receive()).resolves.toEqual({ ok: true, value: "send" });
+	});
+
+	// Go check:
+	//
+	//   package main
+	//
+	//   import "fmt"
+	//
+	//   func main() {
+	//   	receiveCh := make(chan string)
+	//   	sendCh := make(chan string)
+	//   	select {
+	//   	case value := <-receiveCh:
+	//   		fmt.Println("received", value)
+	//   	case sendCh <- "send":
+	//   		fmt.Println("sent")
+	//   	default:
+	//   		fmt.Println("default")
+	//   	}
+	//   	select {
+	//   	case value := <-sendCh:
+	//   		fmt.Println(value)
+	//   	default:
+	//   		fmt.Println("send not queued")
+	//   	}
+	//   }
+	//
+	// Output:
+	//   default
+	//   send not queued
+	it("selects default when mixed receive and send cases are both blocked", async () => {
+		const receiveCh = new Channel<string>();
+		const sendCh = new Channel<string>();
+
+		await expect(
+			select()
+				.receive(receiveCh, ({ value }) => `received ${value}`)
+				.send(sendCh, "send", () => "sent")
+				.default(() => "default"),
+		).resolves.toBe("default");
+		await expect(
+			select()
+				.receive(sendCh, ({ value }) => value)
+				.default(() => "send not queued"),
+		).resolves.toBe("send not queued");
+	});
+
+	// Go check:
+	//
+	//   package main
+	//
+	//   import "fmt"
+	//
+	//   func main() {
+	//   	receiveCh := make(chan string)
+	//   	sendCh := make(chan string)
+	//   	done := make(chan string)
+	//   	go func() {
+	//   		select {
+	//   		case value := <-receiveCh:
+	//   			done <- "received " + value
+	//   		case sendCh <- "send":
+	//   			done <- "sent"
+	//   		}
+	//   	}()
+	//   	fmt.Println(<-sendCh)
+	//   	fmt.Println(<-done)
+	//   }
+	//
+	// Output:
+	//   send
+	//   sent
+	it("waits for a mixed send case to become ready", async () => {
+		const receiveCh = new Channel<string>();
+		const sendCh = new Channel<string>();
+
+		const selecting = Promise.resolve(
+			select()
+				.receive(receiveCh, ({ value }) => `received ${value}`)
+				.send(sendCh, "send", () => "sent"),
+		);
+
+		await expect(sendCh.receive()).resolves.toEqual({ ok: true, value: "send" });
+		await expect(selecting).resolves.toBe("sent");
+	});
+
+	// Go check:
+	//
+	//   package main
+	//
+	//   import "fmt"
+	//
+	//   func main() {
+	//   	receiveCh := make(chan string)
+	//   	sendCh := make(chan string)
+	//   	done := make(chan string)
+	//   	go func() {
+	//   		select {
+	//   		case value := <-receiveCh:
+	//   			done <- "received " + value
+	//   		case sendCh <- "send":
+	//   			done <- "sent"
+	//   		}
+	//   	}()
+	//   	receiveCh <- "receive"
+	//   	fmt.Println(<-done)
+	//   	select {
+	//   	case value := <-sendCh:
+	//   		fmt.Println(value)
+	//   	default:
+	//   		fmt.Println("send not selected")
+	//   	}
+	//   }
+	//
+	// Output:
+	//   received receive
+	//   send not selected
+	it("waits for a mixed receive case to become ready and cancels the send case", async () => {
+		const receiveCh = new Channel<string>();
+		const sendCh = new Channel<string>();
+
+		const selecting = select()
+			.receive(receiveCh, ({ value }) => `received ${value}`)
+			.send(sendCh, "send", () => "sent");
+
+		void receiveCh.send("receive");
+		await expect(selecting).resolves.toBe("received receive");
+		await expect(
+			select()
+				.receive(sendCh, ({ value }) => value)
+				.default(() => "send not selected"),
+		).resolves.toBe("send not selected");
 	});
 
 	// Go check:
@@ -842,5 +1089,49 @@ browser.describe("select", () => {
 		// listeners will eat a message and lose it.
 		expect(second.trySend("two")).toBe(true);
 		await expect(second.receive()).resolves.toEqual({ ok: true, value: "two" });
+	});
+
+	// Go check:
+	//
+	//   package main
+	//
+	//   import "fmt"
+	//
+	//   func main() {
+	//   	send := make(chan string)
+	//   	stop := make(chan struct{})
+	//   	close(stop)
+	//   	select {
+	//   	case send <- "value":
+	//   		fmt.Println("sent")
+	//   	case <-stop:
+	//   		fmt.Println("stopped")
+	//   	}
+	//   	select {
+	//   	case value := <-send:
+	//   		fmt.Println(value)
+	//   	default:
+	//   		fmt.Println("not sent")
+	//   	}
+	//   }
+	//
+	// Output:
+	//   stopped
+	//   not sent
+	it("cancels losing send cases", async () => {
+		const send = new Channel<string>();
+		const stop = new Channel<void>();
+		stop.close();
+
+		await expect(
+			select()
+				.send(send, "value", () => "sent")
+				.case(stop, () => "stopped"),
+		).resolves.toBe("stopped");
+		await expect(
+			select()
+				.case(send, ({ value }) => value)
+				.default(() => "not sent"),
+		).resolves.toBe("not sent");
 	});
 });
