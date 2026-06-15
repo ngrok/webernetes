@@ -17,6 +17,7 @@ export interface TypedInterface<T> {
 	done(item: T): void;
 	shutDown(): Promise<void>;
 	shutDownWithDrain(): Promise<void>;
+	shuttingDown(): boolean;
 }
 
 // Models staging/src/k8s.io/client-go/util/workqueue/queue.go Interface.
@@ -34,16 +35,20 @@ export interface Queue<T> {
 class DefaultQueue<T> implements Queue<T> {
 	private readonly items: T[] = [];
 
+	// Models staging/src/k8s.io/client-go/util/workqueue/queue.go Touch.
 	touch(_item: T): void {}
 
+	// Models staging/src/k8s.io/client-go/util/workqueue/queue.go Push.
 	push(item: T): void {
 		this.items.push(item);
 	}
 
+	// Models staging/src/k8s.io/client-go/util/workqueue/queue.go Len.
 	len(): number {
 		return this.items.length;
 	}
 
+	// Models staging/src/k8s.io/client-go/util/workqueue/queue.go Pop.
 	pop(): T {
 		return this.items.shift() as T;
 	}
@@ -67,7 +72,7 @@ export class Typed<T> implements TypedInterface<T> {
 	private readonly dirty = new Set<T>();
 	private readonly processing = new Set<T>();
 	private readonly cond = newCond(new Mutex());
-	private shuttingDown = false;
+	private shuttingDownValue = false;
 	private drain = false;
 	private readonly wg = new WaitGroup();
 	private readonly stopCh = new Channel<void>();
@@ -77,8 +82,9 @@ export class Typed<T> implements TypedInterface<T> {
 		this.queue = queue;
 	}
 
+	// Models staging/src/k8s.io/client-go/util/workqueue/queue.go Add.
 	add(item: T): void {
-		if (this.shuttingDown) {
+		if (this.shuttingDownValue) {
 			return;
 		}
 		if (this.dirty.has(item)) {
@@ -95,14 +101,16 @@ export class Typed<T> implements TypedInterface<T> {
 		this.cond.signal();
 	}
 
+	// Models staging/src/k8s.io/client-go/util/workqueue/queue.go Len.
 	len(): number {
 		return this.queue.len();
 	}
 
+	// Models staging/src/k8s.io/client-go/util/workqueue/queue.go Get.
 	async get(): Promise<[item: T | undefined, shutdown: boolean]> {
 		await this.cond.l.lock();
 		try {
-			while (this.queue.len() === 0 && !this.shuttingDown) {
+			while (this.queue.len() === 0 && !this.shuttingDownValue) {
 				await this.cond.wait();
 			}
 			if (this.queue.len() === 0) {
@@ -118,6 +126,7 @@ export class Typed<T> implements TypedInterface<T> {
 		}
 	}
 
+	// Models staging/src/k8s.io/client-go/util/workqueue/queue.go Done.
 	done(item: T): void {
 		this.processing.delete(item);
 		if (this.dirty.has(item)) {
@@ -128,14 +137,15 @@ export class Typed<T> implements TypedInterface<T> {
 		}
 	}
 
+	// Models staging/src/k8s.io/client-go/util/workqueue/queue.go ShutDown.
 	async shutDown(): Promise<void> {
-		await this.stopOnce.do(() => {
+		this.stopOnce.do(() => {
 			this.stopCh.close();
 		});
 		await this.cond.l.lock();
 		try {
 			this.drain = false;
-			this.shuttingDown = true;
+			this.shuttingDownValue = true;
 			this.cond.broadcast();
 		} finally {
 			await this.cond.l.unlock();
@@ -143,14 +153,15 @@ export class Typed<T> implements TypedInterface<T> {
 		await this.wg.wait();
 	}
 
+	// Models staging/src/k8s.io/client-go/util/workqueue/queue.go ShutDownWithDrain.
 	async shutDownWithDrain(): Promise<void> {
-		await this.stopOnce.do(() => {
+		this.stopOnce.do(() => {
 			this.stopCh.close();
 		});
 		await this.cond.l.lock();
 		try {
 			this.drain = true;
-			this.shuttingDown = true;
+			this.shuttingDownValue = true;
 			this.cond.broadcast();
 
 			while (this.processing.size !== 0 && this.drain) {
@@ -160,6 +171,11 @@ export class Typed<T> implements TypedInterface<T> {
 			await this.cond.l.unlock();
 		}
 		await this.wg.wait();
+	}
+
+	// Models staging/src/k8s.io/client-go/util/workqueue/queue.go ShuttingDown.
+	shuttingDown(): boolean {
+		return this.shuttingDownValue;
 	}
 }
 
