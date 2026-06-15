@@ -25,24 +25,23 @@ export class ReplicaSetController extends BaseImage {
 	static readonly imageVersion = "1.0";
 
 	readonly defaultCommand = ["replicaset-controller"];
-	readonly controller: Controller;
 
 	constructor(
-		controllerFeatures: ReplicaSetControllerFeatures = defaultReplicaSetControllerFeatures(),
+		private readonly controllerFeatures: ReplicaSetControllerFeatures = defaultReplicaSetControllerFeatures(),
 	) {
 		super();
-		this.controller = new Controller(controllerFeatures);
 	}
 
 	override async exec(ctx: ProcessContext, argv: readonly string[]): Promise<number> {
 		if (argv[0] !== "replicaset-controller") {
 			return await super.exec(ctx, argv);
 		}
-		await this.controller.start(ctx);
+		const controller = new Controller(ctx.api, ctx.kubeConfig, this.controllerFeatures);
+		await controller.start(ctx);
 		try {
 			return await ctx.waitUntilKilled();
 		} finally {
-			await this.controller.stop();
+			await controller.stop();
 		}
 	}
 }

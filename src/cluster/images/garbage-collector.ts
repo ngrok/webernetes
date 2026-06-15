@@ -12,7 +12,7 @@ export class GarbageCollector extends BaseImage {
 		if (argv[0] !== "garbage-collector") {
 			return await super.exec(ctx, argv);
 		}
-		const controller = new GarbageCollectorController();
+		const controller = new GarbageCollectorController(ctx.api, ctx.kubeConfig);
 		await controller.run(ctx);
 		try {
 			return await ctx.waitUntilKilled();

@@ -12,7 +12,12 @@ export class DeploymentController extends BaseImage {
 		if (argv[0] !== "deployment-controller") {
 			return await super.exec(ctx, argv);
 		}
-		await new Controller().run(ctx);
-		return 0;
+		const controller = new Controller(ctx.api, ctx.kubeConfig);
+		await controller.run(ctx);
+		try {
+			return await ctx.waitUntilKilled();
+		} finally {
+			await controller.stop();
+		}
 	}
 }
