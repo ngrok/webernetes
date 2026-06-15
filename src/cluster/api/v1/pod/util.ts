@@ -71,6 +71,16 @@ export function isPodPhaseTerminal(phase: V1PodStatus["phase"]): boolean {
 	return phase === "Failed" || phase === "Succeeded";
 }
 
+// Models kubernetes/pkg/api/v1/pod/util.go IsPodReady.
+export function isPodReady(pod: V1Pod): boolean {
+	return isPodReadyConditionTrue(pod.status ?? {});
+}
+
+// Models kubernetes/pkg/api/v1/pod/util.go IsPodTerminal.
+export function isPodTerminal(pod: V1Pod): boolean {
+	return isPodPhaseTerminal(pod.status?.phase);
+}
+
 // Models kubernetes/pkg/api/v1/pod/util.go IsPodReadyConditionTrue.
 export function isPodReadyConditionTrue(status: V1PodStatus): boolean {
 	const condition = getPodReadyCondition(status);
