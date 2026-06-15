@@ -4,6 +4,8 @@
  */
 import type { KubernetesObject } from "../../../client/types";
 import type { MaybePromise } from "../../../promise";
+import type { Indexer, Indexers } from "./index";
+import { newThreadSafeStore, type ThreadSafeStore } from "./thread-safe-store";
 
 // Models staging/src/k8s.io/client-go/tools/cache/store.go KeyFunc.
 export type KeyFunc<T extends KubernetesObject> = (
@@ -35,6 +37,15 @@ export interface Store<T extends KubernetesObject> {
 	resync(): MaybePromise<Error | undefined>;
 }
 
+// Models staging/src/k8s.io/client-go/tools/cache/store.go TransactionType.
+export type TransactionType = "add" | "update" | "delete";
+
+// Models staging/src/k8s.io/client-go/tools/cache/store.go Transaction.
+export interface Transaction<T> {
+	object: T;
+	type: TransactionType;
+}
+
 // Models staging/src/k8s.io/client-go/tools/cache/store.go KeyError.
 export class KeyError<T extends KubernetesObject> extends Error {
 	constructor(
@@ -51,12 +62,16 @@ export class ExplicitKey {
 }
 
 // Models staging/src/k8s.io/client-go/tools/cache/store.go cache.
-class Cache<T extends KubernetesObject> implements Store<T> {
-	private cacheStorage = new Map<string, T>();
-	private storeSyncResourceVersion = "";
+class Cache<T extends KubernetesObject> implements Indexer<T> {
+	private cacheStorage: ThreadSafeStore<T>;
 	transformer: TransformFunc<T> | undefined;
 
-	constructor(private readonly keyFunc: KeyFunc<T>) {}
+	constructor(
+		private readonly keyFunc: KeyFunc<T>,
+		indexers: Indexers<T> = {},
+	) {
+		this.cacheStorage = newThreadSafeStore(indexers, new Map());
+	}
 
 	// Models staging/src/k8s.io/client-go/tools/cache/store.go cache.Add.
 	async add(obj: T): Promise<Error | undefined> {
@@ -71,8 +86,7 @@ class Cache<T extends KubernetesObject> implements Store<T> {
 			}
 			obj = transformedObj;
 		}
-		this.cacheStorage.set(key, structuredClone(obj));
-		return undefined;
+		return this.cacheStorage.add(key, obj);
 	}
 
 	// Models staging/src/k8s.io/client-go/tools/cache/store.go cache.Update.
@@ -88,8 +102,7 @@ class Cache<T extends KubernetesObject> implements Store<T> {
 			}
 			obj = transformedObj;
 		}
-		this.cacheStorage.set(key, structuredClone(obj));
-		return undefined;
+		return this.cacheStorage.update(key, obj);
 	}
 
 	// Models staging/src/k8s.io/client-go/tools/cache/store.go cache.Delete.
@@ -98,28 +111,27 @@ class Cache<T extends KubernetesObject> implements Store<T> {
 		if (err) {
 			return new KeyError(obj, err);
 		}
-		this.cacheStorage.delete(key);
-		return undefined;
+		return this.cacheStorage.deleteWithObject(key, obj);
 	}
 
 	// Models staging/src/k8s.io/client-go/tools/cache/store.go cache.List.
 	list(): T[] {
-		return [...this.cacheStorage.values()].map((item) => structuredClone(item));
+		return this.cacheStorage.list();
 	}
 
 	// Models staging/src/k8s.io/client-go/tools/cache/store.go cache.ListKeys.
 	listKeys(): string[] {
-		return [...this.cacheStorage.keys()];
+		return this.cacheStorage.listKeys();
 	}
 
 	// Models staging/src/k8s.io/client-go/tools/cache/store.go cache.LastStoreSyncResourceVersion.
 	lastStoreSyncResourceVersion(): string {
-		return this.storeSyncResourceVersion;
+		return this.cacheStorage.lastStoreSyncResourceVersion();
 	}
 
 	// Models staging/src/k8s.io/client-go/tools/cache/store.go cache.Bookmark.
 	bookmark(resourceVersion: string): void {
-		this.storeSyncResourceVersion = resourceVersion;
+		this.cacheStorage.bookmark(resourceVersion);
 	}
 
 	// Models staging/src/k8s.io/client-go/tools/cache/store.go cache.Get.
@@ -135,8 +147,8 @@ class Cache<T extends KubernetesObject> implements Store<T> {
 
 	// Models staging/src/k8s.io/client-go/tools/cache/store.go cache.GetByKey.
 	getByKey(key: string): [item: T | undefined, exists: boolean, err: Error | undefined] {
-		const item = this.cacheStorage.get(key);
-		return [item === undefined ? undefined : structuredClone(item), item !== undefined, undefined];
+		const [item, exists] = this.cacheStorage.get(key);
+		return [item, exists, undefined];
 	}
 
 	// Models staging/src/k8s.io/client-go/tools/cache/store.go cache.Replace.
@@ -156,16 +168,44 @@ class Cache<T extends KubernetesObject> implements Store<T> {
 				}
 				obj = transformedItem;
 			}
-			items.set(key, structuredClone(obj));
+			items.set(key, obj);
 		}
-		this.cacheStorage = items;
-		this.storeSyncResourceVersion = resourceVersion;
-		return undefined;
+		return this.cacheStorage.replace(items, resourceVersion);
 	}
 
 	// Models staging/src/k8s.io/client-go/tools/cache/store.go cache.Resync.
 	resync(): Error | undefined {
-		return undefined;
+		return this.cacheStorage.resync();
+	}
+
+	// Models staging/src/k8s.io/client-go/tools/cache/store.go cache.Index.
+	index(indexName: string, obj: T): [items: T[], err: Error | undefined] {
+		return this.cacheStorage.index(indexName, obj);
+	}
+
+	// Models staging/src/k8s.io/client-go/tools/cache/store.go cache.IndexKeys.
+	indexKeys(indexName: string, indexedValue: string): [keys: string[], err: Error | undefined] {
+		return this.cacheStorage.indexKeys(indexName, indexedValue);
+	}
+
+	// Models staging/src/k8s.io/client-go/tools/cache/store.go cache.ListIndexFuncValues.
+	listIndexFuncValues(indexName: string): string[] {
+		return this.cacheStorage.listIndexFuncValues(indexName);
+	}
+
+	// Models staging/src/k8s.io/client-go/tools/cache/store.go cache.ByIndex.
+	byIndex(indexName: string, indexedValue: string): [items: T[], err: Error | undefined] {
+		return this.cacheStorage.byIndex(indexName, indexedValue);
+	}
+
+	// Models staging/src/k8s.io/client-go/tools/cache/store.go cache.GetIndexers.
+	getIndexers(): Indexers<T> {
+		return this.cacheStorage.getIndexers();
+	}
+
+	// Models staging/src/k8s.io/client-go/tools/cache/store.go cache.AddIndexers.
+	addIndexers(newIndexers: Indexers<T>): Error | undefined {
+		return this.cacheStorage.addIndexers(newIndexers);
 	}
 }
 
@@ -184,6 +224,19 @@ export function newStore<T extends KubernetesObject>(
 	...opts: Array<StoreOption<T>>
 ): Store<T> {
 	const cache = new Cache(keyFunc);
+	for (const opt of opts) {
+		opt(cache);
+	}
+	return cache;
+}
+
+// Models staging/src/k8s.io/client-go/tools/cache/store.go NewIndexer.
+export function newIndexer<T extends KubernetesObject>(
+	keyFunc: KeyFunc<T>,
+	indexers: Indexers<T>,
+	...opts: Array<StoreOption<T>>
+): Indexer<T> {
+	const cache = new Cache(keyFunc, indexers);
 	for (const opt of opts) {
 		opt(cache);
 	}
