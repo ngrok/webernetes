@@ -43,4 +43,33 @@ browser.describe("Once", () => {
 			throw new Error("Once.Do called twice");
 		});
 	});
+
+	// package main
+	//
+	// import "sync"
+	//
+	// func main() {
+	// 	var once sync.Once
+	// 	once.Do(func() {})
+	// }
+	//
+	// Output:
+	it("returns synchronously for synchronous functions", () => {
+		const once = new Once();
+		const result: void = once.do(() => {});
+
+		expect(result).toBeUndefined();
+	});
+
+	// TypeScript extension: async callbacks model goroutines waiting for Do to finish.
+	it("returns a promise for asynchronous functions", async () => {
+		const once = new Once();
+		let value = 0;
+		const result: Promise<void> = once.do(async () => {
+			value = 1;
+		});
+
+		await result;
+		expect(value).toBe(1);
+	});
 });

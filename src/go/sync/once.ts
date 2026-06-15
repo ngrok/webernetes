@@ -10,6 +10,9 @@ export class Once {
 	private running: Promise<void> | undefined;
 
 	// Models Go src/sync/once.go Once.Do.
+	do(f: () => Promise<void>): Promise<void>;
+	do(f: () => void): void;
+	do(f: () => MaybePromise<void>): MaybePromise<void>;
 	do(f: () => MaybePromise<void>): MaybePromise<void> {
 		if (this.done) {
 			return;
