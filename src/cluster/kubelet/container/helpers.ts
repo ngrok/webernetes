@@ -11,7 +11,7 @@ import type {
 } from "../../../client";
 import type * as context from "../../../go/context";
 import * as fnv from "../../../fnv";
-import * as hashutil from "../../../hashutil";
+import * as hashutil from "../../../util/hash/hash";
 import * as expansion from "../../../third_party/forked/golang/expansion";
 import type { ContainerPort, DnsConfig, PodSandboxState, PortMapping } from "../../cri";
 import { containerShouldRestart, findMatchingContainerRestartRule } from "../../api/v1/pod/util";
@@ -94,7 +94,7 @@ export function runtimeProtocol(
 export function hashContainer(container: V1Container): number {
 	const hash = fnv.new32a();
 	const containerJSON = hashutil.jsonMarshal(pickFieldsToHash(container));
-	hashutil.DeepHashObject(hash, containerJSON);
+	hashutil.deepHashObject(hash, containerJSON);
 	return hash.sum32();
 }
 

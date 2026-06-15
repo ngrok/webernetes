@@ -1,4 +1,4 @@
-import type { Fnv32a } from "./fnv";
+import type { Fnv32a } from "../../fnv";
 
 export type JsonValue =
 	| null
@@ -8,13 +8,16 @@ export type JsonValue =
 	| readonly JsonValue[]
 	| { readonly [key: string]: JsonValue | undefined };
 
-export function DeepHashObject(
+// Models kubernetes/pkg/util/hash/hash.go DeepHashObject.
+export function deepHashObject(
 	hasher: Fnv32a,
 	objectToWrite: string | Uint8Array | readonly number[],
-) {
+): void {
 	hasher.reset();
 	hasher.write(dumpForHash(objectToWrite));
 }
+
+export { deepHashObject as DeepHashObject };
 
 export function jsonMarshal(value: JsonValue): Uint8Array {
 	return new TextEncoder().encode(stableJsonStringify(value));

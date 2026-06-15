@@ -4,9 +4,9 @@
  */
 import { expect, it } from "vitest";
 
-import type { V1Pod } from "../client";
+import type { V1Pod, V1PodTemplateSpec } from "../client";
 import { browser } from "../test/describe";
-import { ActivePodsWithRanks } from "./controller-utils";
+import { ActivePodsWithRanks, computeHash } from "./controller-utils";
 
 browser.describe("controller utils", () => {
 	// Models kubernetes/pkg/controller/controller_utils_test.go TestSortingActivePodsWithRanks.
@@ -209,6 +209,41 @@ browser.describe("controller utils", () => {
 				rightLess: podsWithRanks.less(1, 0),
 				name: `Inequality tests ${index}`,
 			}).toEqual({ leftLess: true, rightLess: false, name: `Inequality tests ${index}` });
+		}
+	});
+
+	// Models kubernetes/pkg/controller/controller_utils_test.go TestComputeHash.
+	it("ComputeHash", () => {
+		const collisionCount = 1;
+		const otherCollisionCount = 2;
+		const maxCollisionCount = 2147483647;
+		const tests: Array<{
+			name: string;
+			template: V1PodTemplateSpec;
+			collisionCount?: number;
+			otherCollisionCount?: number;
+		}> = [
+			{
+				name: "simple",
+				template: {},
+				collisionCount,
+				otherCollisionCount,
+			},
+			{
+				name: "using math.MaxInt64",
+				template: {},
+				collisionCount: undefined,
+				otherCollisionCount: maxCollisionCount,
+			},
+		];
+
+		for (const test of tests) {
+			const hash = computeHash(test.template, test.collisionCount);
+			const otherHash = computeHash(test.template, test.otherCollisionCount);
+			expect({ name: test.name, sameHash: hash === otherHash }).toEqual({
+				name: test.name,
+				sameHash: false,
+			});
 		}
 	});
 });
