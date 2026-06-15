@@ -6,13 +6,10 @@ import { expect, it } from "vitest";
 
 import { Clock } from "../../../clock";
 import { browser } from "../../../test/describe";
-import {
-	Delaying,
-	new as newQueue,
-	newTypedItemExponentialFailureRateLimiter,
-	newTypedRateLimitingQueueWithConfig,
-	type WaitFor,
-} from "./queue";
+import { newTypedItemExponentialFailureRateLimiter } from "./default-rate-limiters";
+import { newTypedRateLimitingQueueWithConfig } from "./rate-limiting-queue";
+import { new as newQueue } from "./queue";
+import { Delaying, type WaitFor } from "./delaying-queue";
 
 browser.describe("rate limiting workqueue", () => {
 	// Models staging/src/k8s.io/client-go/util/workqueue/rate_limiting_queue_test.go TestRateLimitingQueue.

@@ -3,11 +3,11 @@
  * Derived from Kubernetes, translated and modified for Webernetes.
  */
 import * as k8s from "../../client";
+import { defaultTypedControllerRateLimiter } from "../../client-go/util/workqueue/default-rate-limiters";
 import {
-	defaultTypedControllerRateLimiter,
 	newTypedRateLimitingQueueWithConfig,
 	type TypedRateLimitingInterface,
-} from "../../client-go/util/workqueue/queue";
+} from "../../client-go/util/workqueue/rate-limiting-queue";
 import {
 	finalizerDeleteDependents,
 	finalizerOrphanDependents,
@@ -315,7 +315,7 @@ export class GraphBuilder {
 									const replacementNode = existingNode.clone();
 									replacementNode.identity = replacementIdentity;
 									this.uidToNode.set(replacementIdentity.uid, replacementNode);
-									this.attemptToDelete.addRateLimited(replacementNode);
+									void this.attemptToDelete.addRateLimited(replacementNode);
 								}
 							}
 						}
