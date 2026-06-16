@@ -286,7 +286,7 @@ browser.describe("garbagecollector GarbageCollector", ({ ctx }) => {
 
 	// Models kubernetes/pkg/controller/garbagecollector/garbagecollector.go processDeletingDependentsItem.
 	// No direct upstream garbagecollector_test.go case isolates this branch.
-	it("processDeletingDependentsItem removes finalizer without deleting object", async () => {
+	it("processDeletingDependentsItem removes finalizer and finalizes object", async () => {
 		const pod = getPod("owner", []);
 		pod.metadata = {
 			...pod.metadata,
@@ -301,8 +301,13 @@ browser.describe("garbagecollector GarbageCollector", ({ ctx }) => {
 
 			await gc.processDeletingDependentsItem(ctx, item);
 
-			const got = await client.corev1.readNamespacedPod({ namespace: "ns1", name: "owner" });
-			expect(got.metadata?.finalizers).toBeUndefined();
+			let readError: unknown;
+			try {
+				await client.corev1.readNamespacedPod({ namespace: "ns1", name: "owner" });
+			} catch (error) {
+				readError = error;
+			}
+			expect(isNotFoundError(readError)).toBe(true);
 			expect(takeActions(client)).not.toContain("delete /v1, Resource=pods ns=ns1 name=owner");
 		} finally {
 			await gc.stop();
