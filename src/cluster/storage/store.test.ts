@@ -8,7 +8,11 @@ import type { Watcher } from "./watch";
 
 interface TestObject extends Storable {
 	metadata: {
-		name: string;
+		name?: string;
+		generateName?: string;
+		deletionGracePeriodSeconds?: number;
+		deletionTimestamp?: Date | string;
+		finalizers?: string[];
 		resourceVersion?: string;
 		uid?: string;
 	};
@@ -126,6 +130,36 @@ fakeEtcd.describe("Store resourceVersion", ({ createEtcd }) => {
 		expect(fulfilled).toHaveLength(1);
 		expect(rejected).toHaveLength(1);
 		expect((await contendedStore.get("singleton"))?.value).toBe(fulfilled[0]?.value.value);
+	});
+
+	it("appends generated name suffixes directly to the supplied prefix", async () => {
+		const created = await store.create({
+			metadata: {
+				generateName: "worker-",
+			},
+		});
+
+		expect(created.metadata.name).toMatch(/^worker-[a-z0-9]+$/);
+		expect(created.metadata.name).not.toContain("--");
+	});
+
+	it("deletes a pending-deletion object when its finalizers are cleared", async () => {
+		await store.create({
+			metadata: {
+				name: "finalized",
+				deletionTimestamp: new Date(1_000),
+				finalizers: ["example.com/hold"],
+			},
+		});
+
+		await store.update("finalized", {
+			metadata: {
+				name: "finalized",
+				deletionTimestamp: new Date(1_000),
+			},
+		});
+
+		await expect(store.get("finalized")).resolves.toBeUndefined();
 	});
 
 	it("does not delete an object that changes after delete preparation", async () => {

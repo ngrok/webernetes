@@ -12,7 +12,7 @@ export interface StoreOpts {
 }
 
 function generateName(prefix: string): string {
-	return `${prefix}-${Math.random().toString(36).substring(2, 8)}`;
+	return `${prefix}${Math.random().toString(36).substring(2, 7)}`;
 }
 
 function generateUid(): string {
@@ -257,6 +257,10 @@ export class Store<T extends Storable> {
 			finishUpdate = finishNothing;
 			await finish(true);
 
+			if (finalizedPendingDeletion(obj)) {
+				await this.delete(obj.metadata.name, obj.metadata.namespace);
+			}
+
 			return this.withResourceVersion(obj, response.header.revision);
 		} finally {
 			await finishUpdate(false);
@@ -329,5 +333,15 @@ function hasDeletionTimestamp(value: unknown): boolean {
 		metadata !== null &&
 		"deletionTimestamp" in metadata &&
 		metadata.deletionTimestamp !== undefined
+	);
+}
+
+function finalizedPendingDeletion(value: Storable): boolean {
+	const metadata = value.metadata;
+	return (
+		value.kind !== "Namespace" &&
+		metadata?.deletionTimestamp !== undefined &&
+		(metadata.finalizers ?? []).length === 0 &&
+		(metadata.deletionGracePeriodSeconds ?? 0) <= 0
 	);
 }
