@@ -8,12 +8,15 @@ import {
 	newTypedRateLimitingQueueWithConfig,
 	type TypedRateLimitingInterface,
 } from "../../client-go/util/workqueue/rate-limiting-queue";
+import type { EventRecorder } from "../../client-go/tools/record/event";
 import {
 	finalizerDeleteDependents,
 	finalizerOrphanDependents,
 } from "../../client/gen/apis/impls/delete";
+import { EventRecorderImpl } from "../../cluster/events";
 import { getClock } from "../../clock-context";
 import type * as context from "../../go/context";
+import { Channel, select } from "../../go/channel";
 import { deepEqual } from "../../deep-equal";
 import {
 	hasDeleteDependentsFinalizer,
@@ -26,8 +29,10 @@ import {
 } from "./graph";
 import { newReferenceCache, type ReferenceCache } from "./uid-cache";
 
+// Models kubernetes/pkg/controller/garbagecollector/graph_builder.go eventType.
 export type EventType = "add" | "update" | "delete";
 
+// Models kubernetes/pkg/controller/garbagecollector/graph_builder.go event.
 export interface GraphEvent {
 	eventType: EventType;
 	obj: ModeledObject;
@@ -35,6 +40,13 @@ export interface GraphEvent {
 	virtual?: boolean;
 }
 
+export interface GraphBuilderQueues {
+	graphChanges: TypedRateLimitingInterface<GraphEvent>;
+	attemptToDelete: TypedRateLimitingInterface<Node>;
+	attemptToOrphan: TypedRateLimitingInterface<Node>;
+}
+
+// Models kubernetes/pkg/controller/garbagecollector/graph_builder.go ownerRefPair.
 interface OwnerRefPair {
 	oldRef: k8s.V1OwnerReference;
 	newRef: k8s.V1OwnerReference;
@@ -50,49 +62,88 @@ export class GraphBuilder {
 
 	private deploymentInformer: k8s.Informer<k8s.V1Deployment> | undefined;
 	private replicaSetInformer: k8s.Informer<k8s.V1ReplicaSet> | undefined;
+	private nodeInformer: k8s.Informer<k8s.V1Node> | undefined;
 	private podInformer: k8s.Informer<k8s.V1Pod> | undefined;
 	private serviceInformer: k8s.Informer<k8s.V1Service> | undefined;
 	private endpointSliceInformer: k8s.Informer<k8s.V1EndpointSlice> | undefined;
 	private readonly deployments = new Map<string, k8s.V1Deployment>();
 	private readonly replicaSets = new Map<string, k8s.V1ReplicaSet>();
+	private readonly nodes = new Map<string, k8s.V1Node>();
 	private readonly pods = new Map<string, k8s.V1Pod>();
 	private readonly services = new Map<string, k8s.V1Service>();
 	private readonly endpointSlices = new Map<string, k8s.V1EndpointSlice>();
+	private readonly stopCh = new Channel<void>();
+	private stopped = false;
+	private processGraphChangesPromise: Promise<void> | undefined;
+	private stopPromise: Promise<void> | undefined;
 
 	constructor(
 		private readonly api: k8s.KubeClient,
 		private readonly kubeConfig: k8s.KubeConfig,
+		readonly eventRecorder: EventRecorder = new EventRecorderImpl({
+			ctx: kubeConfig.options.ctx,
+			api: api.corev1,
+			component: "garbage-collector-controller",
+		}),
+		queues?: GraphBuilderQueues,
 	) {
 		const clock = getClock(kubeConfig.options.ctx);
-		this.graphChanges = newTypedRateLimitingQueueWithConfig(
-			defaultTypedControllerRateLimiter<GraphEvent>(),
-			{ clock },
-		);
-		this.attemptToDelete = newTypedRateLimitingQueueWithConfig(
-			defaultTypedControllerRateLimiter<Node>(),
-			{ clock },
-		);
-		this.attemptToOrphan = newTypedRateLimitingQueueWithConfig(
-			defaultTypedControllerRateLimiter<Node>(),
-			{ clock },
-		);
+		this.graphChanges =
+			queues?.graphChanges ??
+			newTypedRateLimitingQueueWithConfig(defaultTypedControllerRateLimiter<GraphEvent>(), {
+				clock,
+			});
+		this.attemptToDelete =
+			queues?.attemptToDelete ??
+			newTypedRateLimitingQueueWithConfig(defaultTypedControllerRateLimiter<Node>(), {
+				clock,
+			});
+		this.attemptToOrphan =
+			queues?.attemptToOrphan ??
+			newTypedRateLimitingQueueWithConfig(defaultTypedControllerRateLimiter<Node>(), {
+				clock,
+			});
 	}
 
 	// Models kubernetes/pkg/controller/garbagecollector/graph_builder.go Run.
 	async run(ctx: context.Context): Promise<void> {
 		await this.startMonitors(ctx);
-		void this.runProcessGraphChanges();
+		this.processGraphChangesPromise = this.runProcessGraphChanges();
+		void this.stopWhenDone(ctx.done());
 	}
 
 	async stop(): Promise<void> {
-		await this.deploymentInformer?.stop();
-		await this.replicaSetInformer?.stop();
-		await this.podInformer?.stop();
-		await this.serviceInformer?.stop();
-		await this.endpointSliceInformer?.stop();
-		await this.graphChanges.shutDown();
-		await this.attemptToDelete.shutDown();
-		await this.attemptToOrphan.shutDown();
+		this.stopPromise ??= (async () => {
+			this.closeStopCh();
+			await this.deploymentInformer?.stop();
+			await this.replicaSetInformer?.stop();
+			await this.nodeInformer?.stop();
+			await this.podInformer?.stop();
+			await this.serviceInformer?.stop();
+			await this.endpointSliceInformer?.stop();
+			await this.graphChanges.shutDown();
+			await this.attemptToDelete.shutDown();
+			await this.attemptToOrphan.shutDown();
+			await this.processGraphChangesPromise;
+		})();
+		await this.stopPromise;
+	}
+
+	private async stopWhenDone(ctxDone: ReturnType<context.Context["done"]>): Promise<void> {
+		const selected = await select()
+			.receive(ctxDone, () => "ctx" as const)
+			.receive(this.stopCh, () => "stop" as const);
+		if (selected === "ctx") {
+			await this.stop();
+		}
+	}
+
+	private closeStopCh(): void {
+		if (this.stopped) {
+			return;
+		}
+		this.stopped = true;
+		this.stopCh.close();
 	}
 
 	// Models kubernetes/pkg/controller/garbagecollector/graph_builder.go startMonitors.
@@ -106,6 +157,11 @@ export class GraphBuilder {
 			this.kubeConfig,
 			"/apis/apps/v1/replicasets",
 			async () => await this.api.appsv1.listReplicaSetForAllNamespaces(),
+		);
+		this.nodeInformer = k8s.makeInformer(
+			this.kubeConfig,
+			"/api/v1/nodes",
+			async () => await this.api.corev1.listNode(),
 		);
 		this.podInformer = k8s.makeInformer(
 			this.kubeConfig,
@@ -125,12 +181,14 @@ export class GraphBuilder {
 
 		this.watch(this.deploymentInformer, this.deployments);
 		this.watch(this.replicaSetInformer, this.replicaSets);
+		this.watch(this.nodeInformer, this.nodes);
 		this.watch(this.podInformer, this.pods);
 		this.watch(this.serviceInformer, this.services);
 		this.watch(this.endpointSliceInformer, this.endpointSlices);
 
 		await this.deploymentInformer.start();
 		await this.replicaSetInformer.start();
+		await this.nodeInformer.start();
 		await this.podInformer.start();
 		await this.serviceInformer.start();
 		await this.endpointSliceInformer.start();
@@ -162,6 +220,7 @@ export class GraphBuilder {
 		return [
 			...this.deployments.values(),
 			...this.replicaSets.values(),
+			...this.nodes.values(),
 			...this.pods.values(),
 			...this.services.values(),
 			...this.endpointSlices.values(),
@@ -181,6 +240,9 @@ export class GraphBuilder {
 		if (apiVersion === "apps/v1" && kind === "ReplicaSet") {
 			return this.replicaSets.get(key);
 		}
+		if (apiVersion === "v1" && kind === "Node") {
+			return this.nodes.get(key);
+		}
 		if (apiVersion === "v1" && kind === "Pod") {
 			return this.pods.get(key);
 		}
@@ -190,7 +252,7 @@ export class GraphBuilder {
 		if (apiVersion === "discovery.k8s.io/v1" && kind === "EndpointSlice") {
 			return this.endpointSlices.get(key);
 		}
-		return undefined;
+		throw unsupportedResourceError(apiVersion, kind);
 	}
 
 	cacheObject(object: ModeledObject): void {
@@ -201,19 +263,29 @@ export class GraphBuilder {
 		const key = objectKey(object);
 		if (identity.apiVersion === "apps/v1" && identity.kind === "Deployment") {
 			this.deployments.set(key, object as k8s.V1Deployment);
+			return;
 		}
 		if (identity.apiVersion === "apps/v1" && identity.kind === "ReplicaSet") {
 			this.replicaSets.set(key, object as k8s.V1ReplicaSet);
+			return;
+		}
+		if (identity.apiVersion === "v1" && identity.kind === "Node") {
+			this.nodes.set(key, object as k8s.V1Node);
+			return;
 		}
 		if (identity.apiVersion === "v1" && identity.kind === "Pod") {
 			this.pods.set(key, object as k8s.V1Pod);
+			return;
 		}
 		if (identity.apiVersion === "v1" && identity.kind === "Service") {
 			this.services.set(key, object as k8s.V1Service);
+			return;
 		}
 		if (identity.apiVersion === "discovery.k8s.io/v1" && identity.kind === "EndpointSlice") {
 			this.endpointSlices.set(key, object as k8s.V1EndpointSlice);
+			return;
 		}
+		throw unsupportedResourceError(identity.apiVersion, identity.kind);
 	}
 
 	// Models kubernetes/pkg/controller/garbagecollector/graph_builder.go runProcessGraphChanges.
@@ -247,6 +319,12 @@ export class GraphBuilder {
 						observedIdentity,
 					);
 					for (const dep of potentiallyInvalidDependents) {
+						if (
+							observedIdentity.namespace.length > 0 &&
+							dep.identity.namespace !== observedIdentity.namespace
+						) {
+							await this.reportInvalidNamespaceOwnerRef(dep, observedIdentity.uid);
+						}
 						this.attemptToDelete.add(dep);
 					}
 					existingNode = existingNode.clone();
@@ -257,10 +335,13 @@ export class GraphBuilder {
 			}
 
 			if ((event.eventType === "add" || event.eventType === "update") && !found) {
-				const newNode = new Node(observedIdentity, obj);
-				newNode.beingDeleted = beingDeleted(obj);
-				newNode.deletingDependents = beingDeleted(obj) && hasDeleteDependentsFinalizer(obj);
-				this.insertNode(newNode);
+				const newNode = new Node({
+					identity: observedIdentity,
+					owners: obj.metadata?.ownerReferences ?? [],
+					deletingDependents: beingDeleted(obj) && hasDeleteDependentsFinalizer(obj),
+					beingDeleted: beingDeleted(obj),
+				});
+				await this.insertNode(newNode);
 				this.processTransitions(event.oldObj, obj, newNode);
 				return true;
 			}
@@ -273,7 +354,7 @@ export class GraphBuilder {
 				if (added.length > 0 || removed.length > 0 || changed.length > 0) {
 					this.addUnblockedOwnersToDeleteQueue(removed, changed);
 					existingNode.setOwners(obj.metadata?.ownerReferences ?? []);
-					this.addDependentToOwners(existingNode, added);
+					await this.addDependentToOwners(existingNode, added);
 					this.removeDependentFromOwners(existingNode, removed);
 				}
 
@@ -357,15 +438,18 @@ export class GraphBuilder {
 	}
 
 	// Models kubernetes/pkg/controller/garbagecollector/graph_builder.go addDependentToOwners.
-	private addDependentToOwners(node: Node, owners: k8s.V1OwnerReference[]): void {
+	private async addDependentToOwners(node: Node, owners: k8s.V1OwnerReference[]): Promise<void> {
 		let hasPotentiallyInvalidOwnerReference = false;
 		for (const owner of owners) {
 			let ownerNode = this.uidToNode.get(owner.uid);
 			const ok = ownerNode !== undefined;
 			if (!ownerNode) {
 				ownerNode = new Node({
-					...ownerReferenceCoordinates(owner),
-					namespace: node.identity.namespace,
+					identity: {
+						...ownerReferenceCoordinates(owner),
+						namespace: node.identity.namespace,
+					},
+					virtual: true,
 				});
 				this.uidToNode.set(owner.uid, ownerNode);
 			}
@@ -375,6 +459,9 @@ export class GraphBuilder {
 			} else if (!hasPotentiallyInvalidOwnerReference) {
 				const ownerIsNamespaced = ownerNode.identity.namespace.length > 0;
 				if (ownerIsNamespaced && ownerNode.identity.namespace !== node.identity.namespace) {
+					if (ownerNode.isObserved()) {
+						await this.reportInvalidNamespaceOwnerRef(node, owner.uid);
+					}
 					hasPotentiallyInvalidOwnerReference = true;
 				} else if (!ownerReferenceMatchesCoordinates(owner, ownerNode.identity)) {
 					hasPotentiallyInvalidOwnerReference = true;
@@ -392,10 +479,40 @@ export class GraphBuilder {
 		}
 	}
 
+	// Models kubernetes/pkg/controller/garbagecollector/graph_builder.go reportInvalidNamespaceOwnerRef.
+	private async reportInvalidNamespaceOwnerRef(node: Node, invalidOwnerUID: string): Promise<void> {
+		const invalidOwnerRef = node.getOwners().find((ownerRef) => ownerRef.uid === invalidOwnerUID);
+		if (!invalidOwnerRef) {
+			return;
+		}
+		const ref: k8s.V1ObjectReference = {
+			apiVersion: node.identity.apiVersion,
+			kind: node.identity.kind,
+			name: node.identity.name,
+			namespace: node.identity.namespace,
+			uid: node.identity.uid,
+		};
+		const invalidIdentity: ObjectReference = {
+			apiVersion: invalidOwnerRef.apiVersion,
+			kind: invalidOwnerRef.kind,
+			name: invalidOwnerRef.name,
+			namespace: node.identity.namespace,
+			uid: invalidOwnerRef.uid,
+		};
+		await this.eventRecorder.eventf(
+			ref,
+			"Warning",
+			"OwnerRefInvalidNamespace",
+			"ownerRef %s does not exist in namespace %q",
+			formatObjectReference(invalidIdentity),
+			node.identity.namespace,
+		);
+	}
+
 	// Models kubernetes/pkg/controller/garbagecollector/graph_builder.go insertNode.
-	private insertNode(node: Node): void {
+	private async insertNode(node: Node): Promise<void> {
 		this.uidToNode.set(node.identity.uid, node);
-		this.addDependentToOwners(node, node.getOwners());
+		await this.addDependentToOwners(node, node.getOwners());
 	}
 
 	// Models kubernetes/pkg/controller/garbagecollector/graph_builder.go removeDependentFromOwners.
@@ -487,8 +604,9 @@ export class GraphBuilder {
 export function newDependencyGraphBuilder(
 	api: k8s.KubeClient,
 	kubeConfig: k8s.KubeConfig,
+	eventRecorder?: EventRecorder,
 ): GraphBuilder {
-	return new GraphBuilder(api, kubeConfig);
+	return new GraphBuilder(api, kubeConfig, eventRecorder);
 }
 
 // Models kubernetes/pkg/controller/garbagecollector/graph_builder.go identityFromEvent.
@@ -504,7 +622,7 @@ function identityFromEvent(_event: GraphEvent, object: ModeledObject): ObjectRef
 		apiVersion,
 		kind,
 		name,
-		namespace: object.metadata?.namespace ?? "default",
+		namespace: object.metadata?.namespace ?? "",
 		uid,
 	};
 }
@@ -699,6 +817,7 @@ export function getAlternateOwnerIdentity(
 	return firstFollowing ?? first;
 }
 
+// Models kubernetes/pkg/controller/garbagecollector/graph_builder.go map[objectReference] keys.
 function objectReferenceKey(reference: ObjectReference): string {
 	return [
 		reference.apiVersion,
@@ -709,6 +828,12 @@ function objectReferenceKey(reference: ObjectReference): string {
 	].join("\0");
 }
 
+// Models kubernetes/pkg/controller/garbagecollector/graph.go objectReference.String.
+function formatObjectReference(reference: ObjectReference): string {
+	return `[${reference.apiVersion}/${reference.kind}, namespace: ${reference.namespace}, name: ${reference.name}, uid: ${reference.uid}]`;
+}
+
+// Models kubernetes/pkg/controller/garbagecollector/graph_builder.go objectReference equality comparisons.
 function objectReferencesEqual(left: ObjectReference, right: ObjectReference): boolean {
 	return (
 		left.apiVersion === right.apiVersion &&
@@ -720,5 +845,9 @@ function objectReferencesEqual(left: ObjectReference, right: ObjectReference): b
 }
 
 function objectKey(object: k8s.KubernetesObject): string {
-	return `${object.metadata?.namespace ?? "default"}/${object.metadata?.name ?? ""}`;
+	return `${object.metadata?.namespace ?? ""}/${object.metadata?.name ?? ""}`;
+}
+
+function unsupportedResourceError(apiVersion: string, kind: string): Error {
+	return new Error(`unsupported graph builder resource ${apiVersion}/${kind}`);
 }

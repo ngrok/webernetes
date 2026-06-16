@@ -284,6 +284,24 @@ browser.describe("garbagecollector GarbageCollector", ({ ctx }) => {
 		}
 	});
 
+	it("stops background workers when the run context is canceled", async () => {
+		const [runCtx, cancel] = context.withCancel(ctx);
+		const [, gc] = await setupGC(runCtx, []);
+		try {
+			await gc.run(runCtx);
+
+			cancel();
+			await gc.stop();
+
+			expect(gc.dependencyGraphBuilder.graphChanges.shuttingDown()).toBe(true);
+			expect(gc.dependencyGraphBuilder.attemptToDelete.shuttingDown()).toBe(true);
+			expect(gc.dependencyGraphBuilder.attemptToOrphan.shuttingDown()).toBe(true);
+		} finally {
+			cancel();
+			await gc.stop();
+		}
+	});
+
 	// Models kubernetes/pkg/controller/garbagecollector/garbagecollector.go processDeletingDependentsItem.
 	// No direct upstream garbagecollector_test.go case isolates this branch.
 	it("processDeletingDependentsItem removes finalizer and finalizes object", async () => {
