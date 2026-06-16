@@ -21,6 +21,8 @@ export type {
 	ClusterInformerResource,
 	ClusterInformerResources,
 	NetworkHop,
+	PreNetworkRequestEvent,
+	PreNetworkResponseEvent,
 	NetworkRequestEvent,
 	NetworkResponseEvent,
 } from "./cluster/cluster";

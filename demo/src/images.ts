@@ -188,6 +188,7 @@ export class DemoTrafficGeneratorImage extends DemoBaseImage {
 		}
 
 		this.startHealthControl(ctx);
+		const intervalMs = trafficGeneratorIntervalMs(ctx.env.get("REQUESTS_PER_SECOND"));
 		for (;;) {
 			try {
 				await ctx.fetch("http://api/checkout", {
@@ -202,7 +203,7 @@ export class DemoTrafficGeneratorImage extends DemoBaseImage {
 			} catch (error) {
 				ctx.writeStderr(`${error instanceof Error ? error.message : String(error)}\n`);
 			}
-			await ctx.sleep(5000);
+			await ctx.sleep(intervalMs);
 		}
 	}
 }
@@ -239,6 +240,14 @@ function demoRequestHeaders(request: w8s.HttpRequest): w8s.HttpHeader {
 
 function demoRequestId(): string {
 	return crypto.randomUUID();
+}
+
+function trafficGeneratorIntervalMs(value: string | undefined): number {
+	const requestsPerSecond = Number(value ?? "1");
+	if (!Number.isFinite(requestsPerSecond) || requestsPerSecond <= 0) {
+		return 1000;
+	}
+	return 1000 / requestsPerSecond;
 }
 
 function jsonResponse(status: number, body: unknown): w8s.HttpResponse {

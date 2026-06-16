@@ -22,6 +22,7 @@ export async function setup(cluster: w8s.Cluster): Promise<void> {
 				{
 					name: "traffic-generator",
 					image: "demo/traffic-generator:1.0",
+					env: [{ name: "REQUESTS_PER_SECOND", value: "1" }],
 					ports: demoHealthPorts(),
 					readinessProbe: demoReadinessProbe(),
 					livenessProbe: demoLivenessProbe(),
@@ -158,17 +159,17 @@ function demoHealthPorts(): w8s.V1ContainerPort[] {
 function demoReadinessProbe(): w8s.V1Probe {
 	return {
 		httpGet: { path: "/health", port: "health" },
-		periodSeconds: 2,
+		periodSeconds: 5,
 		failureThreshold: 1,
-		timeoutSeconds: 3,
+		timeoutSeconds: 5,
 	};
 }
 
 function demoLivenessProbe(): w8s.V1Probe {
 	return {
 		httpGet: { path: "/live", port: "health" },
-		periodSeconds: 2,
+		periodSeconds: 5,
 		failureThreshold: 1,
-		timeoutSeconds: 3,
+		timeoutSeconds: 5,
 	};
 }
