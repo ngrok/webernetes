@@ -23,6 +23,11 @@ export class ReferenceCache {
 		const [, found] = this.cache.get(reference);
 		return found;
 	}
+
+	// Webernetes test support for mirroring upstream garbagecollector_test.go assertState.
+	keys(): ObjectReference[] {
+		return [...this.cache.keys()];
+	}
 }
 
 // Models kubernetes/pkg/controller/garbagecollector/uid_cache.go NewReferenceCache.

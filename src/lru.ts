@@ -91,6 +91,10 @@ export class Cache<K extends Key, V> {
 		return this.cache.size;
 	}
 
+	keys(): K[] {
+		return [...this.cache.keys()];
+	}
+
 	// Models k8s.io/utils/lru/lru.go Cache.Clear.
 	clear(): void {
 		if (this.onEvicted) {
