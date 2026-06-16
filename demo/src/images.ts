@@ -13,6 +13,35 @@ const readyFile = "/health/ready";
 const liveFile = "/health/live";
 
 abstract class DemoBaseImage extends w8s.BaseImage {
+	protected ready(ctx: w8s.ProcessContext): boolean {
+		return ctx.fs.has(readyFile);
+	}
+
+	protected live(ctx: w8s.ProcessContext): boolean {
+		return ctx.fs.has(liveFile);
+	}
+
+	protected unavailableResponse(
+		ctx: w8s.ProcessContext,
+		service: string,
+	): w8s.HttpResponse | undefined {
+		if (!this.live(ctx)) {
+			return jsonResponse(503, {
+				status: "unavailable",
+				service,
+				message: "pod is not live",
+			});
+		}
+		if (!this.ready(ctx)) {
+			return jsonResponse(503, {
+				status: "unavailable",
+				service,
+				message: "pod is not ready",
+			});
+		}
+		return undefined;
+	}
+
 	protected startHealthControl(ctx: w8s.ProcessContext): void {
 		ctx.fs.write(readyFile);
 		ctx.fs.write(liveFile);
@@ -70,6 +99,11 @@ export class DemoApiImage extends DemoBaseImage {
 
 		this.startHealthControl(ctx);
 		ctx.listenHttp(8080, async (_ctx, request) => {
+			const unavailable = this.unavailableResponse(ctx, "api");
+			if (unavailable) {
+				return unavailable;
+			}
+
 			const [databaseResponse, redisResponse] = await Promise.all([
 				ctx.fetch("http://database/query", {
 					method: "POST",
@@ -124,12 +158,9 @@ export class DemoDatabaseImage extends DemoBaseImage {
 
 		this.startHealthControl(ctx);
 		ctx.listenHttp(5432, async (_ctx, _request) => {
-			if (randomFailure()) {
-				return jsonResponse(500, {
-					status: "error",
-					service: "database",
-					message: "query failed",
-				});
+			const unavailable = this.unavailableResponse(ctx, "database");
+			if (unavailable) {
+				return unavailable;
 			}
 
 			return jsonResponse(200, {
@@ -156,12 +187,9 @@ export class DemoRedisImage extends DemoBaseImage {
 
 		this.startHealthControl(ctx);
 		ctx.listenHttp(6379, async (_ctx, _request) => {
-			if (randomFailure()) {
-				return jsonResponse(500, {
-					status: "error",
-					service: "redis",
-					message: "cache read failed",
-				});
+			const unavailable = this.unavailableResponse(ctx, "redis");
+			if (unavailable) {
+				return unavailable;
 			}
 
 			return jsonResponse(200, {
@@ -190,8 +218,8 @@ export class DemoTrafficGeneratorImage extends DemoBaseImage {
 		this.startHealthControl(ctx);
 		const intervalMs = trafficGeneratorIntervalMs(ctx.env.get("REQUESTS_PER_SECOND"));
 		for (;;) {
-			try {
-				await ctx.fetch("http://api/checkout", {
+			void ctx
+				.fetch("http://api/checkout", {
 					method: "POST",
 					headers: {
 						"Content-Type": "application/json",
@@ -199,10 +227,12 @@ export class DemoTrafficGeneratorImage extends DemoBaseImage {
 						[demoRequestTypeHeader]: demoRequestTypeTrafficGenerator,
 					},
 					body: JSON.stringify({ source: "traffic-generator" }),
+				})
+				.catch((error) => {
+					if (!ctx.err()) {
+						ctx.writeStderr(`${error instanceof Error ? error.message : String(error)}\n`);
+					}
 				});
-			} catch (error) {
-				ctx.writeStderr(`${error instanceof Error ? error.message : String(error)}\n`);
-			}
 			await ctx.sleep(intervalMs);
 		}
 	}
@@ -256,10 +286,6 @@ function jsonResponse(status: number, body: unknown): w8s.HttpResponse {
 		header: { "Content-Type": ["application/json"] },
 		body: `${JSON.stringify(body)}\n`,
 	};
-}
-
-function randomFailure(): boolean {
-	return Math.random() < 0.5;
 }
 
 function parseJsonBody(body: string): unknown {

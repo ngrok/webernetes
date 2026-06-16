@@ -25,7 +25,7 @@ import {
 } from "../helpers";
 import { useClusterPaused } from "./cluster-pause-button";
 
-type FlightKind = "default" | "readiness" | "liveness" | "startup";
+type FlightKind = "default" | "failed" | "readiness" | "liveness" | "startup";
 
 interface Flight {
 	id: number;
@@ -197,6 +197,16 @@ function DefaultRequestDot({ innerRef, style }: DotProps) {
 	);
 }
 
+function FailedRequestDot({ innerRef, style }: DotProps) {
+	return (
+		<div
+			ref={innerRef}
+			className="border-danger-600 bg-danger-500/80 absolute left-0 top-0 size-2.5 rounded-full border shadow-sm"
+			style={style}
+		/>
+	);
+}
+
 function ReadinessProbeDot({ innerRef, style }: DotProps) {
 	return (
 		<div
@@ -333,7 +343,7 @@ function responseFlight(
 ): Omit<Flight, "id"> | undefined {
 	const from = points[0];
 	const to = responseFlightEnd(event, points, container);
-	return buildFlight(from, to, event.latencyMs, "default");
+	return buildFlight(from, to, event.latencyMs, failedResponse(event) ? "failed" : "default");
 }
 
 function requestFlightStart(
@@ -454,6 +464,10 @@ function isResponseEvent(
 	return "response" in event;
 }
 
+function failedResponse(event: w8s.NetworkResponseEvent): boolean {
+	return (event.response?.status ?? 0) >= 400 || Boolean(event.error);
+}
+
 function isButtonRequestFromNode(event: w8s.NetworkRequestEvent): boolean {
 	return isButtonRequest(event) && event.chain[0]?.type === "node";
 }
@@ -486,6 +500,8 @@ function flightDotComponent(kind: FlightKind): ComponentType<DotProps> {
 			return LivenessProbeDot;
 		case "startup":
 			return StartupProbeDot;
+		case "failed":
+			return FailedRequestDot;
 		case "default":
 			return DefaultRequestDot;
 	}
