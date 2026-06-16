@@ -52,18 +52,24 @@ export type NetworkHop =
 	| { type: "service"; resource: V1Service }
 	| { type: "external"; host: string };
 
-export interface NetworkRequestEvent {
+export interface PreNetworkRequestEvent {
 	request: http.Request;
 	chain: NetworkHop[];
-	latencyMs: number;
 	error?: Error;
 }
 
-export interface NetworkResponseEvent {
+export interface PreNetworkResponseEvent {
 	request: http.Request;
 	response?: http.Response;
 	error?: Error;
 	chain: NetworkHop[];
+}
+
+export interface NetworkRequestEvent extends PreNetworkRequestEvent {
+	latencyMs: number;
+}
+
+export interface NetworkResponseEvent extends PreNetworkResponseEvent {
 	latencyMs: number;
 }
 
@@ -767,18 +773,18 @@ export class ClusterNetwork extends EventEmitter {
 
 	private async emitRequestEvent(
 		ctx: context.Context,
-		event: Omit<NetworkRequestEvent, "latencyMs">,
+		event: PreNetworkRequestEvent,
 	): Promise<void> {
-		const latencyMs = getLatencyProvider(ctx).clusterNetworkRequestLatency(event.chain);
+		const latencyMs = getLatencyProvider(ctx).clusterNetworkRequestLatency(event);
 		this.emit("request", { ...event, latencyMs });
 		await this.waitForLatency(ctx, latencyMs);
 	}
 
 	private async emitResponseEvent(
 		ctx: context.Context,
-		event: Omit<NetworkResponseEvent, "latencyMs">,
+		event: PreNetworkResponseEvent,
 	): Promise<void> {
-		const latencyMs = getLatencyProvider(ctx).clusterNetworkResponseLatency(event.chain);
+		const latencyMs = getLatencyProvider(ctx).clusterNetworkResponseLatency(event);
 		this.emit("response", { ...event, latencyMs });
 		await this.waitForLatency(ctx, latencyMs);
 	}

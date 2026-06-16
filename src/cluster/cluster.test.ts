@@ -125,8 +125,22 @@ browser.describe("Cluster nodes", () => {
 		const cluster = new Cluster();
 		try {
 			const l = getLatencyProvider(cluster.ctx);
-			expect(l.clusterNetworkRequestLatency([])).toBe(0);
-			expect(l.clusterNetworkResponseLatency([])).toBe(0);
+			const requestEvent = {
+				chain: [],
+				request: {
+					method: "GET",
+					url: new URL("http://example.com/"),
+					header: {},
+					host: "example.com",
+				},
+			};
+			expect(l.clusterNetworkRequestLatency(requestEvent)).toBe(0);
+			expect(
+				l.clusterNetworkResponseLatency({
+					...requestEvent,
+					response: { status: 200, body: "" },
+				}),
+			).toBe(0);
 		} finally {
 			await cluster.close();
 		}

@@ -498,8 +498,8 @@ browser.describe("ClusterNetwork", ({ ctx }) => {
 		const latencyCtx = withLatencyProvider(
 			ctx,
 			newLatencyProvider({
-				clusterNetworkRequestLatency: (chain) => chain.length * 10,
-				clusterNetworkResponseLatency: (chain) => chain.length * 20,
+				clusterNetworkRequestLatency: (event) => event.chain.length * 10,
+				clusterNetworkResponseLatency: (event) => event.chain.length * 20,
 			}),
 		);
 

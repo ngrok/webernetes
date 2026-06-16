@@ -28,7 +28,13 @@ import type { KubeletConfiguration } from "./kubelet/apis/config";
 import { buildPodFullName } from "./kubelet/container";
 import { withClock } from "../clock-context";
 import { type LatencyProvider, withLatencyProvider } from "../latency";
-import type { NetworkHop, NetworkRequestEvent, NetworkResponseEvent } from "./cni/network";
+import type {
+	NetworkHop,
+	NetworkRequestEvent,
+	NetworkResponseEvent,
+	PreNetworkRequestEvent,
+	PreNetworkResponseEvent,
+} from "./cni/network";
 
 const DEFAULT_NODE_PORT_RANGE: NodePortRange = {
 	from: 30000,
@@ -65,7 +71,13 @@ export interface ClusterOptions {
 	latencyProvider?: LatencyProvider;
 }
 
-export type { NetworkHop, NetworkRequestEvent, NetworkResponseEvent };
+export type {
+	NetworkHop,
+	NetworkRequestEvent,
+	NetworkResponseEvent,
+	PreNetworkRequestEvent,
+	PreNetworkResponseEvent,
+};
 
 type EventEmitterListener = Parameters<EventEmitter["on"]>[1];
 type ClusterLifecycleEvent = "pause" | "resume";

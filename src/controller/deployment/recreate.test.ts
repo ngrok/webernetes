@@ -42,7 +42,10 @@ browser.describe("DeploymentController recreate", ({ ctx }) => {
 
 			const [, c] = await newTestDeploymentController(ctx, expected);
 
-			await c.scaleDownOldReplicaSetsForRecreate(ctx, oldRSs, test.d);
+			const [, err] = await c.scaleDownOldReplicaSetsForRecreate(ctx, oldRSs, test.d);
+			if (err) {
+				throw err;
+			}
 			for (const replicaSet of oldRSs) {
 				expect({
 					scenario: i,
