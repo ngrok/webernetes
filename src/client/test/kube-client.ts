@@ -1,4 +1,5 @@
 import { KubeConfig } from "../config";
+import { isNotFoundError } from "../errors";
 import {
 	AppsV1Api as AppsV1ApiImpl,
 	CoreV1Api as CoreV1ApiImpl,
@@ -8,9 +9,9 @@ import type { AppsV1Api, CoreV1Api, DiscoveryV1Api } from "../gen/apis/types";
 import type {
 	CoreV1Event,
 	CoreV1EventList,
+	V1Binding,
 	V1Deployment,
 	V1DeploymentList,
-	V1Binding,
 	V1EndpointSlice,
 	V1EndpointSliceList,
 	V1Namespace,
@@ -28,6 +29,8 @@ import type {
 } from "../gen/models";
 import type { KubeClient } from "../types";
 import type { MaybePromise } from "../../promise";
+import { Etcd } from "../../cluster/etcd";
+import type * as context from "../../go/context";
 
 export type ClientAction = {
 	verb: string;
@@ -45,6 +48,16 @@ export type ClientReaction<TObj = unknown, TErr = Error | undefined> = [
 export type ClientReactor<TObj = unknown, TErr = Error | undefined> = (
 	action: ClientAction,
 ) => MaybePromise<ClientReaction<TObj, TErr>>;
+
+export type TestKubeClientObject =
+	| CoreV1Event
+	| V1Deployment
+	| V1EndpointSlice
+	| V1Namespace
+	| V1Node
+	| V1Pod
+	| V1ReplicaSet
+	| V1Service;
 
 type ClientReactionObjects = {
 	create: {
@@ -196,6 +209,149 @@ export class TestKubeClient implements KubeClient {
 
 		return await delegate();
 	}
+}
+
+export async function newTestKubeClient(
+	ctx: context.Context,
+	objects: TestKubeClientObject[] = [],
+): Promise<[TestKubeClient, KubeConfig]> {
+	const kubeConfig = new KubeConfig({
+		ctx,
+		etcd: new Etcd(ctx),
+		nodePortRange: { from: 30000, to: 32767 },
+	});
+	const client = new TestKubeClient(kubeConfig);
+	await seedTestKubeClient(client, objects);
+	client.clearActions();
+	return [client, kubeConfig];
+}
+
+export async function seedTestKubeClient(
+	client: TestKubeClient,
+	objects: TestKubeClientObject[],
+): Promise<void> {
+	for (const object of objects) {
+		if (object.kind === "Namespace") {
+			await ensureNamespaceObject(client, object as V1Namespace);
+		}
+	}
+	for (const object of objects) {
+		if (object.kind === "Namespace") {
+			continue;
+		}
+		const namespace = testObjectNamespace(object);
+		if (namespace) {
+			await ensureNamespace(client, namespace);
+		}
+		await createTestObject(client, object);
+	}
+}
+
+async function ensureNamespace(client: TestKubeClient, namespace: string): Promise<void> {
+	await ensureNamespaceObject(client, { metadata: { name: namespace } });
+}
+
+async function ensureNamespaceObject(
+	client: TestKubeClient,
+	namespace: V1Namespace,
+): Promise<void> {
+	const name = namespace.metadata?.name;
+	if (!name) {
+		throw new Error("namespace test object is missing metadata.name");
+	}
+	try {
+		await client.corev1.readNamespace({ name });
+	} catch (error) {
+		if (!isNotFoundError(error)) {
+			throw error;
+		}
+		await client.corev1.createNamespace({ body: structuredClone(namespace) });
+	}
+}
+
+async function createTestObject(
+	client: TestKubeClient,
+	object: TestKubeClientObject,
+): Promise<void> {
+	const apiVersion = testObjectApiVersion(object);
+	const kind = object.kind;
+	if (apiVersion === "apps/v1" && kind === "Deployment") {
+		await client.appsv1.createNamespacedDeployment({
+			namespace: namespacedTestObjectNamespace(object),
+			body: structuredClone(object as V1Deployment),
+		});
+		return;
+	}
+	if (apiVersion === "apps/v1" && kind === "ReplicaSet") {
+		await client.appsv1.createNamespacedReplicaSet({
+			namespace: namespacedTestObjectNamespace(object),
+			body: structuredClone(object as V1ReplicaSet),
+		});
+		return;
+	}
+	if (apiVersion === "v1" && kind === "Event") {
+		await client.corev1.createNamespacedEvent({
+			namespace: namespacedTestObjectNamespace(object),
+			body: structuredClone(object as CoreV1Event),
+		});
+		return;
+	}
+	if (apiVersion === "v1" && kind === "Node") {
+		await client.corev1.createNode({
+			body: structuredClone(object as V1Node),
+		});
+		return;
+	}
+	if (apiVersion === "v1" && kind === "Pod") {
+		await client.corev1.createNamespacedPod({
+			namespace: namespacedTestObjectNamespace(object),
+			body: structuredClone(object as V1Pod),
+		});
+		return;
+	}
+	if (apiVersion === "v1" && kind === "Service") {
+		await client.corev1.createNamespacedService({
+			namespace: namespacedTestObjectNamespace(object),
+			body: structuredClone(object as V1Service),
+		});
+		return;
+	}
+	if (apiVersion === "discovery.k8s.io/v1" && kind === "EndpointSlice") {
+		await client.discoveryv1.createNamespacedEndpointSlice({
+			namespace: namespacedTestObjectNamespace(object),
+			body: structuredClone(object as V1EndpointSlice),
+		});
+		return;
+	}
+	throw new Error(`unsupported test object ${apiVersion ?? ""}/${kind ?? ""}`);
+}
+
+function testObjectApiVersion(object: TestKubeClientObject): string {
+	if (!object.apiVersion) {
+		throw new Error(`test object ${object.kind ?? ""} is missing apiVersion`);
+	}
+	return object.apiVersion;
+}
+
+function testObjectNamespace(object: TestKubeClientObject): string | undefined {
+	switch (object.kind) {
+		case "Deployment":
+		case "EndpointSlice":
+		case "Event":
+		case "Pod":
+		case "ReplicaSet":
+		case "Service":
+			return object.metadata?.namespace ?? "default";
+		case "Namespace":
+		case "Node":
+			return undefined;
+		default:
+			throw new Error(`unsupported test object kind ${object.kind ?? ""}`);
+	}
+}
+
+function namespacedTestObjectNamespace(object: TestKubeClientObject): string {
+	return testObjectNamespace(object) ?? "default";
 }
 
 export function clientAction(verb: string, resource: string, subresource?: string): ClientAction {
