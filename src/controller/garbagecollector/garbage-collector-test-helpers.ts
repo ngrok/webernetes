@@ -29,15 +29,7 @@ type NodeTweak = (node: Node) => Node;
 
 // Models kubernetes/pkg/controller/garbagecollector/garbagecollector_test.go makeNode.
 export function makeNode(identity: ObjectReference, ...tweaks: NodeTweak[]): Node {
-	let node = new Node(identity, {
-		apiVersion: identity.apiVersion,
-		kind: identity.kind,
-		metadata: {
-			name: identity.name,
-			namespace: identity.namespace,
-			uid: identity.uid,
-		},
-	});
+	let node = new Node({ identity });
 	for (const tweak of tweaks) {
 		node = tweak(node);
 	}
