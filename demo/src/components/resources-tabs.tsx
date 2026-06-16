@@ -1,6 +1,8 @@
+import { Button } from "@ngrok/mantle/button";
 import { Card } from "@ngrok/mantle/card";
 import { Table } from "@ngrok/mantle/table";
 import { Tabs } from "@ngrok/mantle/tabs";
+import { MinusIcon, PlusIcon } from "@phosphor-icons/react";
 import type { ReactNode } from "react";
 import { useMemo, useState } from "react";
 import * as w8s from "webernetes";
@@ -139,7 +141,7 @@ export function ResourcesTabs({
 						<Pods pods={pods} />
 					</Tabs.Content>
 					<Tabs.Content value="deployments">
-						<Deployments deployments={deployments} />
+						<Deployments cluster={cluster} deployments={deployments} />
 					</Tabs.Content>
 					<Tabs.Content value="replicasets">
 						<ReplicaSets replicasets={replicasets} />
@@ -162,7 +164,13 @@ export function ResourcesTabs({
 	);
 }
 
-function Deployments({ deployments }: { deployments: w8s.V1Deployment[] }) {
+function Deployments({
+	cluster,
+	deployments,
+}: {
+	cluster: w8s.Cluster;
+	deployments: w8s.V1Deployment[];
+}) {
 	return (
 		<ResourceTable count={deployments.length} emptyLabel="No deployments match this namespace.">
 			<Table.Head>
@@ -174,20 +182,47 @@ function Deployments({ deployments }: { deployments: w8s.V1Deployment[] }) {
 					<Table.Header>Available</Table.Header>
 					<Table.Header>Updated</Table.Header>
 					<Table.Header>Selector</Table.Header>
+					<Table.Header>Actions</Table.Header>
 				</Table.Row>
 			</Table.Head>
 			<Table.Body>
-				{deployments.map((deployment) => (
-					<Table.Row key={idFor(deployment)}>
-						<Table.Cell>{getName(deployment, "-")}</Table.Cell>
-						<Table.Cell>{getNamespace(deployment) ?? "default"}</Table.Cell>
-						<Table.Cell>{deployment.spec?.replicas ?? 1}</Table.Cell>
-						<Table.Cell>{deployment.status?.readyReplicas ?? 0}</Table.Cell>
-						<Table.Cell>{deployment.status?.availableReplicas ?? 0}</Table.Cell>
-						<Table.Cell>{deployment.status?.updatedReplicas ?? 0}</Table.Cell>
-						<Table.Cell>{formatLabelSelector(deployment.spec?.selector)}</Table.Cell>
-					</Table.Row>
-				))}
+				{deployments.map((deployment) => {
+					const replicas = deployment.spec?.replicas ?? 1;
+					return (
+						<Table.Row key={idFor(deployment)}>
+							<Table.Cell>{getName(deployment, "-")}</Table.Cell>
+							<Table.Cell>{getNamespace(deployment) ?? "default"}</Table.Cell>
+							<Table.Cell>{replicas}</Table.Cell>
+							<Table.Cell>{deployment.status?.readyReplicas ?? 0}</Table.Cell>
+							<Table.Cell>{deployment.status?.availableReplicas ?? 0}</Table.Cell>
+							<Table.Cell>{deployment.status?.updatedReplicas ?? 0}</Table.Cell>
+							<Table.Cell>{formatLabelSelector(deployment.spec?.selector)}</Table.Cell>
+							<Table.Cell>
+								<div className="flex items-center gap-1">
+									<Button
+										type="button"
+										appearance="outlined"
+										priority="neutral"
+										disabled={replicas === 0}
+										aria-label={`Scale ${getName(deployment, "deployment")} down`}
+										onClick={() => void scaleDeployment(cluster, deployment, -1)}
+									>
+										<MinusIcon aria-hidden weight="bold" />
+									</Button>
+									<Button
+										type="button"
+										appearance="outlined"
+										priority="neutral"
+										aria-label={`Scale ${getName(deployment, "deployment")} up`}
+										onClick={() => void scaleDeployment(cluster, deployment, 1)}
+									>
+										<PlusIcon aria-hidden weight="bold" />
+									</Button>
+								</div>
+							</Table.Cell>
+						</Table.Row>
+					);
+				})}
 			</Table.Body>
 		</ResourceTable>
 	);
@@ -222,6 +257,36 @@ function ReplicaSets({ replicasets }: { replicasets: w8s.V1ReplicaSet[] }) {
 			</Table.Body>
 		</ResourceTable>
 	);
+}
+
+async function scaleDeployment(
+	cluster: w8s.Cluster,
+	deployment: w8s.V1Deployment,
+	delta: -1 | 1,
+): Promise<void> {
+	const name = getName(deployment);
+	const namespace = getNamespace(deployment);
+	const replicas = Math.max(0, (deployment.spec?.replicas ?? 1) + delta);
+	if (!name) {
+		return;
+	}
+	try {
+		await cluster.api.appsv1.replaceNamespacedDeploymentScale({
+			name,
+			namespace,
+			body: {
+				metadata: {
+					name,
+					namespace,
+				},
+				spec: {
+					replicas,
+				},
+			},
+		});
+	} catch (error) {
+		console.error(`failed to scale deployment ${namespace}/${name}`, error);
+	}
 }
 
 function Pods({ pods }: { pods: w8s.V1Pod[] }) {

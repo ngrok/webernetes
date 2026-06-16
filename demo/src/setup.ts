@@ -1,21 +1,26 @@
 import * as w8s from "webernetes";
 
-import { DemoApiImage, DemoDatabaseImage, DemoRedisImage, DemoScheduledJobImage } from "./images";
+import {
+	DemoApiImage,
+	DemoDatabaseImage,
+	DemoRedisImage,
+	DemoTrafficGeneratorImage,
+} from "./images";
 
 export async function setup(cluster: w8s.Cluster): Promise<void> {
 	cluster.registerImage(DemoApiImage);
 	cluster.registerImage(DemoDatabaseImage);
 	cluster.registerImage(DemoRedisImage);
-	cluster.registerImage(DemoScheduledJobImage);
+	cluster.registerImage(DemoTrafficGeneratorImage);
 
 	await cluster.apply([
 		deployment({
-			name: "scheduled-job",
-			labels: { app: "scheduled-job", tier: "jobs" },
+			name: "traffic-generator",
+			labels: { app: "traffic-generator", tier: "jobs" },
 			containers: [
 				{
-					name: "scheduled-job",
-					image: "demo/scheduled-job:1.0",
+					name: "traffic-generator",
+					image: "demo/traffic-generator:1.0",
 				},
 			],
 		}),

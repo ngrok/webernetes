@@ -3,7 +3,7 @@ import * as w8s from "webernetes";
 import {
 	demoRequestIdHeader,
 	demoRequestTypeHeader,
-	demoRequestTypeScheduledJob,
+	demoRequestTypeTrafficGenerator,
 	getHeader,
 } from "./helpers";
 
@@ -133,14 +133,14 @@ export class DemoRedisImage extends w8s.BaseImage {
 	}
 }
 
-export class DemoScheduledJobImage extends w8s.BaseImage {
-	static readonly imageName = "demo/scheduled-job";
+export class DemoTrafficGeneratorImage extends w8s.BaseImage {
+	static readonly imageName = "demo/traffic-generator";
 	static readonly imageVersion = "1.0";
 
-	readonly defaultCommand = ["scheduled-job"];
+	readonly defaultCommand = ["traffic-generator"];
 
 	override async exec(ctx: w8s.ProcessContext, argv: readonly string[]): Promise<number> {
-		if (argv[0] !== "scheduled-job") {
+		if (argv[0] !== "traffic-generator") {
 			return await super.exec(ctx, argv);
 		}
 
@@ -151,9 +151,9 @@ export class DemoScheduledJobImage extends w8s.BaseImage {
 					headers: {
 						"Content-Type": "application/json",
 						[demoRequestIdHeader]: demoRequestId(),
-						[demoRequestTypeHeader]: demoRequestTypeScheduledJob,
+						[demoRequestTypeHeader]: demoRequestTypeTrafficGenerator,
 					},
-					body: JSON.stringify({ source: "scheduled-job" }),
+					body: JSON.stringify({ source: "traffic-generator" }),
 				});
 			} catch (error) {
 				ctx.writeStderr(`${error instanceof Error ? error.message : String(error)}\n`);
