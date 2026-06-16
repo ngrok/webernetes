@@ -1,8 +1,8 @@
-import { Button } from "@ngrok/mantle/button";
+import { Button, IconButton } from "@ngrok/mantle/button";
 import { Card } from "@ngrok/mantle/card";
 import { Table } from "@ngrok/mantle/table";
 import { Tabs } from "@ngrok/mantle/tabs";
-import { MinusIcon, PlusIcon } from "@phosphor-icons/react";
+import { MinusIcon, PlusIcon, TrashIcon } from "@phosphor-icons/react";
 import type { ReactNode } from "react";
 import { useMemo, useState } from "react";
 import * as w8s from "webernetes";
@@ -138,7 +138,7 @@ export function ResourcesTabs({
 					</Tabs.List>
 
 					<Tabs.Content value="pods">
-						<Pods pods={pods} />
+						<Pods cluster={cluster} pods={pods} />
 					</Tabs.Content>
 					<Tabs.Content value="deployments">
 						<Deployments cluster={cluster} deployments={deployments} />
@@ -289,7 +289,7 @@ async function scaleDeployment(
 	}
 }
 
-function Pods({ pods }: { pods: w8s.V1Pod[] }) {
+function Pods({ cluster, pods }: { cluster: w8s.Cluster; pods: w8s.V1Pod[] }) {
 	return (
 		<ResourceTable count={pods.length} emptyLabel="No pods match this namespace.">
 			<Table.Head>
@@ -300,24 +300,56 @@ function Pods({ pods }: { pods: w8s.V1Pod[] }) {
 					<Table.Header>Node</Table.Header>
 					<Table.Header>Ready</Table.Header>
 					<Table.Header>Restarts</Table.Header>
+					<Table.Header>Actions</Table.Header>
 				</Table.Row>
 			</Table.Head>
 			<Table.Body>
-				{pods.map((pod) => (
-					<Table.Row key={idFor(pod)}>
-						<Table.Cell>{getName(pod, "-")}</Table.Cell>
-						<Table.Cell>{getNamespace(pod) ?? "default"}</Table.Cell>
-						<Table.Cell>{pod.status?.phase ?? "Pending"}</Table.Cell>
-						<Table.Cell>{pod.spec?.nodeName ?? "unscheduled"}</Table.Cell>
-						<Table.Cell>
-							{getReadyContainers(pod)}/{pod.spec?.containers?.length ?? 0}
-						</Table.Cell>
-						<Table.Cell>{getRestartCount(pod)}</Table.Cell>
-					</Table.Row>
-				))}
+				{pods.map((pod) => {
+					const name = getName(pod);
+					return (
+						<Table.Row key={idFor(pod)}>
+							<Table.Cell>{getName(pod, "-")}</Table.Cell>
+							<Table.Cell>{getNamespace(pod) ?? "default"}</Table.Cell>
+							<Table.Cell>{pod.status?.phase ?? "Pending"}</Table.Cell>
+							<Table.Cell>{pod.spec?.nodeName ?? "unscheduled"}</Table.Cell>
+							<Table.Cell>
+								{getReadyContainers(pod)}/{pod.spec?.containers?.length ?? 0}
+							</Table.Cell>
+							<Table.Cell>{getRestartCount(pod)}</Table.Cell>
+							<Table.Cell>
+								<IconButton
+									type="button"
+									appearance="outlined"
+									size="sm"
+									className="border-danger-600 text-danger-600 focus-visible:ring-focus-danger not-disabled:hover:border-danger-700 not-disabled:hover:bg-danger-500/10 not-disabled:hover:text-danger-700"
+									label={`Terminate ${name || "pod"}`}
+									icon={<TrashIcon aria-hidden weight="bold" />}
+									disabled={!name}
+									onClick={() => void terminatePod(cluster, pod)}
+								/>
+							</Table.Cell>
+						</Table.Row>
+					);
+				})}
 			</Table.Body>
 		</ResourceTable>
 	);
+}
+
+async function terminatePod(cluster: w8s.Cluster, pod: w8s.V1Pod): Promise<void> {
+	const name = getName(pod);
+	const namespace = getNamespace(pod);
+	if (!name) {
+		return;
+	}
+	try {
+		await cluster.api.corev1.deleteNamespacedPod({
+			name,
+			namespace,
+		});
+	} catch (error) {
+		console.error(`failed to terminate pod ${namespace}/${name}`, error);
+	}
 }
 
 function Services({ services }: { services: w8s.V1Service[] }) {
