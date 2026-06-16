@@ -10,15 +10,19 @@ import { defaultDeploymentUniqueLabelKey } from "../../../apis/apps/v1/types";
 import { browser } from "../../../test/describe";
 import {
 	deploymentComplete,
+	desiredReplicasAnnotation,
 	equalIgnoreHash,
 	findNewReplicaSet,
 	findOldReplicaSets,
 	getActualReplicaCountForReplicaSets,
 	getReplicaCountForReplicaSets,
 	getTerminatingReplicaCountForReplicaSets,
+	maxReplicasAnnotation,
 	maxUnavailable,
+	minAvailable,
 	newRSNewReplicas,
 	resolveFenceposts,
+	setReplicasAnnotations,
 } from "./deployment-util";
 
 browser.describe("deployment util", () => {
@@ -724,6 +728,100 @@ browser.describe("deployment util", () => {
 				maxUnavailable: test.expected,
 			});
 		}
+	});
+
+	// Models kubernetes/pkg/controller/deployment/util/deployment_util_test.go TestMinAvailable.
+	it("calculates min available", () => {
+		const deployment = (
+			replicas: number,
+			maxUnavailableValue: k8s.IntOrString,
+		): k8s.V1Deployment => ({
+			spec: {
+				replicas,
+				strategy: {
+					rollingUpdate: {
+						maxSurge: 1,
+						maxUnavailable: maxUnavailableValue,
+					},
+					type: "RollingUpdate",
+				},
+				selector: { matchLabels: {} },
+				template: {},
+			},
+		});
+		const tests: Array<{
+			name: string;
+			deployment: k8s.V1Deployment;
+			expected: number;
+		}> = [
+			{
+				name: "replicas greater than maxUnavailable",
+				deployment: deployment(10, 5),
+				expected: 5,
+			},
+			{
+				name: "replicas equal maxUnavailable",
+				deployment: deployment(10, 10),
+				expected: 0,
+			},
+			{
+				name: "replicas less than maxUnavailable",
+				deployment: deployment(5, 10),
+				expected: 0,
+			},
+			{
+				name: "replicas is 0",
+				deployment: deployment(0, 10),
+				expected: 0,
+			},
+			{
+				name: "minAvailable with Recreate deployment strategy",
+				deployment: {
+					spec: {
+						replicas: 10,
+						strategy: { type: "Recreate" },
+						selector: { matchLabels: {} },
+						template: {},
+					},
+				},
+				expected: 0,
+			},
+			{
+				name: "replicas greater than maxUnavailable with percents",
+				deployment: deployment(10, "60%"),
+				expected: 4,
+			},
+			{
+				name: "replicas equal maxUnavailable with percents",
+				deployment: deployment(10, "100%"),
+				expected: 0,
+			},
+			{
+				name: "replicas less than maxUnavailable with percents",
+				deployment: deployment(5, "100%"),
+				expected: 0,
+			},
+		];
+
+		for (const test of tests) {
+			expect({ name: test.name, minAvailable: minAvailable(test.deployment) }).toEqual({
+				name: test.name,
+				minAvailable: test.expected,
+			});
+		}
+	});
+
+	// Models kubernetes/pkg/controller/deployment/util/deployment_util_test.go TestAnnotationUtils.
+	it("sets replicas annotations", () => {
+		const replicaSet: k8s.V1ReplicaSet = { metadata: { annotations: {} } };
+
+		expect(setReplicasAnnotations(replicaSet, 10, 11)).toBe(true);
+		expect(replicaSet.metadata?.annotations?.[desiredReplicasAnnotation]).toBe("10");
+		expect(replicaSet.metadata?.annotations?.[maxReplicasAnnotation]).toBe("11");
+		expect(setReplicasAnnotations(replicaSet, 10, 11)).toBe(false);
+		expect(setReplicasAnnotations(replicaSet, 12, 13)).toBe(true);
+		expect(replicaSet.metadata?.annotations?.[desiredReplicasAnnotation]).toBe("12");
+		expect(replicaSet.metadata?.annotations?.[maxReplicasAnnotation]).toBe("13");
 	});
 });
 
