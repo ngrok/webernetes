@@ -5,6 +5,8 @@ export const demoRequestOriginHeader = "X-Demo-Request-Origin";
 export const demoRequestTypeHeader = "X-Demo-Request-Type";
 export const demoRequestTypeButtonClick = "button-click";
 export const demoRequestTypeTrafficGenerator = "traffic-generator";
+export const demoHealthPort = 8081;
+export const demoControlPort = 9000;
 export const sendRequestButtonId = "send-request-button";
 
 export interface Point {
@@ -142,6 +144,21 @@ export async function getNodePort(
 		throw new Error(`Service ${namespace}/${serviceName} does not have a node port`);
 	}
 	return nodePort;
+}
+
+export async function fetchPodPort(
+	cluster: w8s.Cluster,
+	pod: w8s.V1Pod,
+	port: number,
+	path: string,
+	init?: Parameters<w8s.Cluster["fetch"]>[1],
+): Promise<w8s.HttpResponse> {
+	const podIP = pod.status?.podIP ?? pod.status?.podIPs?.[0]?.ip;
+	if (!podIP) {
+		throw new Error(`Pod ${getNamespace(pod)}/${getName(pod)} does not have a pod IP`);
+	}
+	const host = podIP.includes(":") ? `[${podIP}]` : podIP;
+	return await cluster.fetch(`http://${host}:${port}${path}`, init);
 }
 
 export function getHeader(headers: w8s.HttpHeader, name: string): string | undefined {

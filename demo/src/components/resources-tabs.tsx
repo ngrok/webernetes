@@ -1,7 +1,9 @@
 import { Button, IconButton } from "@ngrok/mantle/button";
 import { Card } from "@ngrok/mantle/card";
+import { RadioGroup } from "@ngrok/mantle/radio-group";
 import { Table } from "@ngrok/mantle/table";
 import { Tabs } from "@ngrok/mantle/tabs";
+import { Tooltip } from "@ngrok/mantle/tooltip";
 import { MinusIcon, PlusIcon, TrashIcon } from "@phosphor-icons/react";
 import type { ReactNode } from "react";
 import { useMemo, useState } from "react";
@@ -12,6 +14,8 @@ import {
 	getNamespace,
 	getReadyContainers,
 	getRestartCount,
+	demoControlPort,
+	fetchPodPort,
 	idFor,
 	podIdsForLabelSelector,
 	podIdsForService,
@@ -27,6 +31,13 @@ type ResourceTab =
 	| "nodes"
 	| "namespaces"
 	| "events";
+type HealthValue = "healthy" | "unhealthy";
+type PodHealthKind = "ready" | "live";
+type PodHealthSelection = {
+	generation: string;
+	live?: HealthValue;
+	ready?: HealthValue;
+};
 
 export function ResourcesTabs({
 	cluster,
@@ -350,6 +361,22 @@ function Pods({
 	onHighlightedPodIdsChange: (podIds: Set<string>) => void;
 	pods: w8s.V1Pod[];
 }) {
+	const [healthSelections, setHealthSelections] = useState<Record<string, PodHealthSelection>>({});
+
+	async function setPodHealthSelection(pod: w8s.V1Pod, kind: PodHealthKind, value: HealthValue) {
+		const podId = idFor(pod);
+		const generation = podHealthGeneration(pod);
+		setHealthSelections((current) => ({
+			...current,
+			[podId]: {
+				...(current[podId]?.generation === generation ? current[podId] : { generation }),
+				generation,
+				[kind]: value,
+			},
+		}));
+		await setPodHealth(cluster, pod, kind, value);
+	}
+
 	return (
 		<ResourceTable count={pods.length} emptyLabel="No pods match this namespace.">
 			<Table.Head>
@@ -358,14 +385,25 @@ function Pods({
 					<Table.Header>Namespace</Table.Header>
 					<Table.Header>Phase</Table.Header>
 					<Table.Header>Node</Table.Header>
-					<Table.Header>Ready</Table.Header>
+					<Table.Header>Containers</Table.Header>
 					<Table.Header>Restarts</Table.Header>
+					<Table.Header>Ready</Table.Header>
+					<Table.Header>Live</Table.Header>
 					<Table.Header>Actions</Table.Header>
 				</Table.Row>
 			</Table.Head>
 			<Table.Body>
 				{pods.map((pod) => {
 					const name = getName(pod);
+					const generation = podHealthGeneration(pod);
+					const selection = healthSelections[idFor(pod)];
+					const readyValue =
+						selection?.generation === generation && selection.ready
+							? selection.ready
+							: podReadyValue(pod);
+					const liveValue =
+						selection?.generation === generation && selection.live ? selection.live : "healthy";
+					const controlsDisabled = pod.status?.podIP === undefined;
 					return (
 						<Table.Row
 							key={idFor(pod)}
@@ -381,16 +419,40 @@ function Pods({
 							</Table.Cell>
 							<Table.Cell>{getRestartCount(pod)}</Table.Cell>
 							<Table.Cell>
-								<IconButton
-									type="button"
-									appearance="outlined"
-									size="sm"
-									className="border-danger-600 text-danger-600 focus-visible:ring-focus-danger not-disabled:hover:border-danger-700 not-disabled:hover:bg-danger-500/10 not-disabled:hover:text-danger-700"
-									label={`Terminate ${name || "pod"}`}
-									icon={<TrashIcon aria-hidden weight="bold" />}
-									disabled={!name}
-									onClick={() => void terminatePod(cluster, pod)}
+								<HealthControl
+									disabled={controlsDisabled}
+									label={`Readiness for ${name || "pod"}`}
+									tooltip="Readiness controls whether this pod receives service traffic."
+									value={readyValue}
+									healthyLabel="Ready"
+									unhealthyLabel="Not ready"
+									onChange={(value) => setPodHealthSelection(pod, "ready", value)}
 								/>
+							</Table.Cell>
+							<Table.Cell>
+								<HealthControl
+									disabled={controlsDisabled}
+									label={`Liveness for ${name || "pod"}`}
+									tooltip="Liveness failure makes the kubelet restart this container."
+									value={liveValue}
+									healthyLabel="Live"
+									unhealthyLabel="Not live"
+									onChange={(value) => setPodHealthSelection(pod, "live", value)}
+								/>
+							</Table.Cell>
+							<Table.Cell>
+								<div className="flex items-center gap-1">
+									<IconButton
+										type="button"
+										appearance="outlined"
+										size="sm"
+										className="border-danger-600 text-danger-600 focus-visible:ring-focus-danger not-disabled:hover:border-danger-700 not-disabled:hover:bg-danger-500/10 not-disabled:hover:text-danger-700"
+										label={`Terminate ${name || "pod"}`}
+										icon={<TrashIcon aria-hidden weight="bold" />}
+										disabled={!name}
+										onClick={() => void terminatePod(cluster, pod)}
+									/>
+								</div>
 							</Table.Cell>
 						</Table.Row>
 					);
@@ -398,6 +460,74 @@ function Pods({
 			</Table.Body>
 		</ResourceTable>
 	);
+}
+
+function HealthControl({
+	disabled,
+	healthyLabel,
+	label,
+	onChange,
+	tooltip,
+	unhealthyLabel,
+	value,
+}: {
+	disabled: boolean;
+	healthyLabel: string;
+	label: string;
+	onChange: (value: HealthValue) => void;
+	tooltip: string;
+	unhealthyLabel: string;
+	value: HealthValue;
+}) {
+	return (
+		<Tooltip.Root>
+			<Tooltip.Trigger asChild>
+				<RadioGroup.ButtonGroup
+					aria-label={label}
+					className="w-fit"
+					disabled={disabled}
+					value={value}
+					onChange={(nextValue) => onChange(nextValue as HealthValue)}
+				>
+					<RadioGroup.Button value="healthy" aria-label={healthyLabel} title={healthyLabel}>
+						<span aria-hidden>✓</span>
+					</RadioGroup.Button>
+					<RadioGroup.Button value="unhealthy" aria-label={unhealthyLabel} title={unhealthyLabel}>
+						<span aria-hidden>✕</span>
+					</RadioGroup.Button>
+				</RadioGroup.ButtonGroup>
+			</Tooltip.Trigger>
+			<Tooltip.Content className="max-w-72">{tooltip}</Tooltip.Content>
+		</Tooltip.Root>
+	);
+}
+
+async function setPodHealth(
+	cluster: w8s.Cluster,
+	pod: w8s.V1Pod,
+	kind: PodHealthKind,
+	value: HealthValue,
+): Promise<void> {
+	const path =
+		kind === "ready"
+			? value === "healthy"
+				? "/ready"
+				: "/not-ready"
+			: value === "healthy"
+				? "/live"
+				: "/not-live";
+	await fetchPodPort(cluster, pod, demoControlPort, path, { method: "POST" });
+}
+
+function podReadyValue(pod: w8s.V1Pod): HealthValue {
+	const containers = pod.spec?.containers?.length ?? 0;
+	return containers > 0 && getReadyContainers(pod) === containers ? "healthy" : "unhealthy";
+}
+
+function podHealthGeneration(pod: w8s.V1Pod): string {
+	return (pod.status?.containerStatuses ?? [])
+		.map((status) => `${status.name}:${status.containerID ?? ""}:${status.restartCount}`)
+		.join("|");
 }
 
 async function terminatePod(cluster: w8s.Cluster, pod: w8s.V1Pod): Promise<void> {

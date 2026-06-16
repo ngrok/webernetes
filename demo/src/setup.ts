@@ -6,6 +6,7 @@ import {
 	DemoRedisImage,
 	DemoTrafficGeneratorImage,
 } from "./images";
+import { demoControlPort, demoHealthPort } from "./helpers";
 
 export async function setup(cluster: w8s.Cluster): Promise<void> {
 	cluster.registerImage(DemoApiImage);
@@ -21,6 +22,9 @@ export async function setup(cluster: w8s.Cluster): Promise<void> {
 				{
 					name: "traffic-generator",
 					image: "demo/traffic-generator:1.0",
+					ports: demoHealthPorts(),
+					readinessProbe: demoReadinessProbe(),
+					livenessProbe: demoLivenessProbe(),
 				},
 			],
 		}),
@@ -31,19 +35,9 @@ export async function setup(cluster: w8s.Cluster): Promise<void> {
 				{
 					name: "api",
 					image: "demo/api:1.0",
-					ports: [{ name: "http", containerPort: 8080 }],
-					readinessProbe: {
-						httpGet: { path: "/readyz", port: "http" },
-						periodSeconds: 2,
-						failureThreshold: 1,
-						timeoutSeconds: 3,
-					},
-					livenessProbe: {
-						httpGet: { path: "/healthz", port: "http" },
-						periodSeconds: 3,
-						failureThreshold: 2,
-						timeoutSeconds: 3,
-					},
+					ports: [{ name: "http", containerPort: 8080 }, ...demoHealthPorts()],
+					readinessProbe: demoReadinessProbe(),
+					livenessProbe: demoLivenessProbe(),
 				},
 			],
 		}),
@@ -54,13 +48,9 @@ export async function setup(cluster: w8s.Cluster): Promise<void> {
 				{
 					name: "database",
 					image: "demo/database:1.0",
-					ports: [{ name: "http", containerPort: 5432 }],
-					readinessProbe: {
-						httpGet: { path: "/readyz", port: "http" },
-						periodSeconds: 2,
-						failureThreshold: 1,
-						timeoutSeconds: 3,
-					},
+					ports: [{ name: "http", containerPort: 5432 }, ...demoHealthPorts()],
+					readinessProbe: demoReadinessProbe(),
+					livenessProbe: demoLivenessProbe(),
 				},
 			],
 		}),
@@ -71,13 +61,9 @@ export async function setup(cluster: w8s.Cluster): Promise<void> {
 				{
 					name: "redis",
 					image: "demo/redis:1.0",
-					ports: [{ name: "http", containerPort: 6379 }],
-					readinessProbe: {
-						httpGet: { path: "/readyz", port: "http" },
-						periodSeconds: 2,
-						failureThreshold: 1,
-						timeoutSeconds: 3,
-					},
+					ports: [{ name: "http", containerPort: 6379 }, ...demoHealthPorts()],
+					readinessProbe: demoReadinessProbe(),
+					livenessProbe: demoLivenessProbe(),
 				},
 			],
 		}),
@@ -159,5 +145,30 @@ function deployment({
 				},
 			},
 		},
+	};
+}
+
+function demoHealthPorts(): w8s.V1ContainerPort[] {
+	return [
+		{ name: "health", containerPort: demoHealthPort },
+		{ name: "control", containerPort: demoControlPort },
+	];
+}
+
+function demoReadinessProbe(): w8s.V1Probe {
+	return {
+		httpGet: { path: "/health", port: "health" },
+		periodSeconds: 2,
+		failureThreshold: 1,
+		timeoutSeconds: 3,
+	};
+}
+
+function demoLivenessProbe(): w8s.V1Probe {
+	return {
+		httpGet: { path: "/live", port: "health" },
+		periodSeconds: 2,
+		failureThreshold: 1,
+		timeoutSeconds: 3,
 	};
 }

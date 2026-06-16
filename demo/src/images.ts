@@ -1,13 +1,63 @@
 import * as w8s from "webernetes";
 
 import {
+	demoControlPort,
+	demoHealthPort,
 	demoRequestIdHeader,
 	demoRequestTypeHeader,
 	demoRequestTypeTrafficGenerator,
 	getHeader,
 } from "./helpers";
 
-export class DemoApiImage extends w8s.BaseImage {
+const readyFile = "/health/ready";
+const liveFile = "/health/live";
+
+abstract class DemoBaseImage extends w8s.BaseImage {
+	protected startHealthControl(ctx: w8s.ProcessContext): void {
+		ctx.fs.write(readyFile);
+		ctx.fs.write(liveFile);
+
+		ctx.listenHttp(demoHealthPort, async (_ctx, request) => {
+			switch (request.url.pathname) {
+				case "/health":
+				case "/readyz":
+					return healthResponse(ctx, readyFile, "ready");
+				case "/live":
+				case "/healthz":
+					return healthResponse(ctx, liveFile, "live");
+				default:
+					return jsonResponse(404, { status: "not_found" });
+			}
+		});
+
+		ctx.listenHttp(demoControlPort, async (_ctx, request) => {
+			if (request.method === "GET" && request.url.pathname === "/state") {
+				return healthStateResponse(ctx);
+			}
+			if (request.method !== "POST") {
+				return jsonResponse(405, { status: "method_not_allowed" });
+			}
+			switch (request.url.pathname) {
+				case "/ready":
+					ctx.fs.write(readyFile);
+					return healthStateResponse(ctx);
+				case "/not-ready":
+					ctx.fs.delete(readyFile);
+					return healthStateResponse(ctx);
+				case "/live":
+					ctx.fs.write(liveFile);
+					return healthStateResponse(ctx);
+				case "/not-live":
+					ctx.fs.delete(liveFile);
+					return healthStateResponse(ctx);
+				default:
+					return jsonResponse(404, { status: "not_found" });
+			}
+		});
+	}
+}
+
+export class DemoApiImage extends DemoBaseImage {
 	static readonly imageName = "demo/api";
 	static readonly imageVersion = "1.0";
 
@@ -18,11 +68,8 @@ export class DemoApiImage extends w8s.BaseImage {
 			return await super.exec(ctx, argv);
 		}
 
+		this.startHealthControl(ctx);
 		ctx.listenHttp(8080, async (_ctx, request) => {
-			if (request.url.pathname === "/readyz" || request.url.pathname === "/healthz") {
-				return jsonResponse(200, { status: "ok" });
-			}
-
 			const [databaseResponse, redisResponse] = await Promise.all([
 				ctx.fetch("http://database/query", {
 					method: "POST",
@@ -64,7 +111,7 @@ export class DemoApiImage extends w8s.BaseImage {
 	}
 }
 
-export class DemoDatabaseImage extends w8s.BaseImage {
+export class DemoDatabaseImage extends DemoBaseImage {
 	static readonly imageName = "demo/database";
 	static readonly imageVersion = "1.0";
 
@@ -75,10 +122,8 @@ export class DemoDatabaseImage extends w8s.BaseImage {
 			return await super.exec(ctx, argv);
 		}
 
-		ctx.listenHttp(5432, async (_ctx, request) => {
-			if (request.url.pathname === "/readyz") {
-				return jsonResponse(200, { status: "ok" });
-			}
+		this.startHealthControl(ctx);
+		ctx.listenHttp(5432, async (_ctx, _request) => {
 			if (randomFailure()) {
 				return jsonResponse(500, {
 					status: "error",
@@ -98,7 +143,7 @@ export class DemoDatabaseImage extends w8s.BaseImage {
 	}
 }
 
-export class DemoRedisImage extends w8s.BaseImage {
+export class DemoRedisImage extends DemoBaseImage {
 	static readonly imageName = "demo/redis";
 	static readonly imageVersion = "1.0";
 
@@ -109,10 +154,8 @@ export class DemoRedisImage extends w8s.BaseImage {
 			return await super.exec(ctx, argv);
 		}
 
-		ctx.listenHttp(6379, async (_ctx, request) => {
-			if (request.url.pathname === "/readyz") {
-				return jsonResponse(200, { status: "ok" });
-			}
+		this.startHealthControl(ctx);
+		ctx.listenHttp(6379, async (_ctx, _request) => {
 			if (randomFailure()) {
 				return jsonResponse(500, {
 					status: "error",
@@ -133,7 +176,7 @@ export class DemoRedisImage extends w8s.BaseImage {
 	}
 }
 
-export class DemoTrafficGeneratorImage extends w8s.BaseImage {
+export class DemoTrafficGeneratorImage extends DemoBaseImage {
 	static readonly imageName = "demo/traffic-generator";
 	static readonly imageVersion = "1.0";
 
@@ -144,6 +187,7 @@ export class DemoTrafficGeneratorImage extends w8s.BaseImage {
 			return await super.exec(ctx, argv);
 		}
 
+		this.startHealthControl(ctx);
 		for (;;) {
 			try {
 				await ctx.fetch("http://api/checkout", {
@@ -161,6 +205,25 @@ export class DemoTrafficGeneratorImage extends w8s.BaseImage {
 			await ctx.sleep(5000);
 		}
 	}
+}
+
+function healthResponse(
+	ctx: w8s.ProcessContext,
+	path: string,
+	check: "ready" | "live",
+): w8s.HttpResponse {
+	const healthy = ctx.fs.has(path);
+	return jsonResponse(healthy ? 200 : 503, {
+		status: healthy ? "ok" : "unhealthy",
+		check,
+	});
+}
+
+function healthStateResponse(ctx: w8s.ProcessContext): w8s.HttpResponse {
+	return jsonResponse(200, {
+		ready: ctx.fs.has(readyFile),
+		live: ctx.fs.has(liveFile),
+	});
 }
 
 function demoRequestHeaders(request: w8s.HttpRequest): w8s.HttpHeader {
