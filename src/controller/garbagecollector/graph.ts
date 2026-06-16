@@ -11,6 +11,7 @@ import {
 export type ModeledObject =
 	| k8s.V1Deployment
 	| k8s.V1ReplicaSet
+	| k8s.V1Node
 	| k8s.V1Pod
 	| k8s.V1Service
 	| k8s.V1EndpointSlice;
@@ -18,6 +19,15 @@ export type ModeledObject =
 // Models kubernetes/pkg/controller/garbagecollector/graph.go objectReference.
 export interface ObjectReference extends k8s.V1OwnerReference {
 	namespace: string;
+}
+
+export interface NodeInit {
+	identity: ObjectReference;
+	dependents?: Iterable<Node>;
+	deletingDependents?: boolean;
+	beingDeleted?: boolean;
+	virtual?: boolean;
+	owners?: k8s.V1OwnerReference[];
 }
 
 // Models kubernetes/pkg/controller/garbagecollector/graph.go node.
@@ -29,25 +39,27 @@ export class Node {
 	virtual: boolean;
 	private owners: k8s.V1OwnerReference[];
 
-	constructor(identity: ObjectReference, object?: ModeledObject) {
-		this.identity = identity;
-		this.owners = object?.metadata?.ownerReferences ?? [];
-		this.beingDeleted = object?.metadata?.deletionTimestamp !== undefined;
-		this.deletingDependents = false;
-		this.virtual = object === undefined;
+	constructor(init: NodeInit) {
+		this.identity = init.identity;
+		for (const dependent of init.dependents ?? []) {
+			this.dependents.add(dependent);
+		}
+		this.owners = init.owners ?? [];
+		this.beingDeleted = init.beingDeleted ?? false;
+		this.deletingDependents = init.deletingDependents ?? false;
+		this.virtual = init.virtual ?? false;
 	}
 
 	// Models kubernetes/pkg/controller/garbagecollector/graph.go clone.
 	clone(): Node {
-		const cloned = new Node(this.identity);
-		for (const dependent of this.dependents) {
-			cloned.dependents.add(dependent);
-		}
-		cloned.deletingDependents = this.deletingDependents;
-		cloned.beingDeleted = this.beingDeleted;
-		cloned.virtual = this.virtual;
-		cloned.owners = [...this.owners];
-		return cloned;
+		return new Node({
+			identity: this.identity,
+			dependents: this.dependents,
+			deletingDependents: this.deletingDependents,
+			beingDeleted: this.beingDeleted,
+			virtual: this.virtual,
+			owners: [...this.owners],
+		});
 	}
 
 	// Models kubernetes/pkg/controller/garbagecollector/graph.go markBeingDeleted.
@@ -152,7 +164,7 @@ export function identityFor(object: ModeledObject): ObjectReference | undefined 
 		apiVersion,
 		kind,
 		name,
-		namespace: object.metadata?.namespace ?? "default",
+		namespace: object.metadata?.namespace ?? "",
 		uid,
 	};
 }
