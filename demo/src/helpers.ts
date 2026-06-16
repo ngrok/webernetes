@@ -61,6 +61,73 @@ export function getRestartCount(pod: w8s.V1Pod): number {
 	);
 }
 
+export function podIdsForService(service: w8s.V1Service, pods: w8s.V1Pod[]): Set<string> {
+	const selector = service.spec?.selector;
+	if (!selector || Object.keys(selector).length === 0) {
+		return new Set();
+	}
+	const namespace = getNamespace(service);
+	return new Set(
+		pods
+			.filter((pod) => getNamespace(pod) === namespace && labelsMatchSelector(pod, selector))
+			.map(idFor),
+	);
+}
+
+export function podIdsForLabelSelector(
+	selector: w8s.V1LabelSelector | undefined,
+	namespace: string,
+	pods: w8s.V1Pod[],
+): Set<string> {
+	if (
+		!selector ||
+		(Object.keys(selector.matchLabels ?? {}).length === 0 &&
+			(selector.matchExpressions?.length ?? 0) === 0)
+	) {
+		return new Set();
+	}
+	return new Set(
+		pods
+			.filter((pod) => getNamespace(pod) === namespace && labelsMatchLabelSelector(pod, selector))
+			.map(idFor),
+	);
+}
+
+function labelsMatchSelector(pod: w8s.V1Pod, selector: Record<string, string>): boolean {
+	const labels = pod.metadata?.labels ?? {};
+	return Object.entries(selector).every(([key, value]) => labels[key] === value);
+}
+
+function labelsMatchLabelSelector(pod: w8s.V1Pod, selector: w8s.V1LabelSelector): boolean {
+	const labels = pod.metadata?.labels ?? {};
+	return (
+		Object.entries(selector.matchLabels ?? {}).every(([key, value]) => labels[key] === value) &&
+		(selector.matchExpressions ?? []).every((expression) =>
+			labelExpressionMatches(labels, expression),
+		)
+	);
+}
+
+function labelExpressionMatches(
+	labels: Record<string, string>,
+	expression: w8s.V1LabelSelectorRequirement,
+): boolean {
+	const hasLabel = Object.hasOwn(labels, expression.key);
+	const values = expression.values ?? [];
+	switch (expression.operator) {
+		case "In":
+			return hasLabel && values.includes(labels[expression.key] ?? "");
+		case "NotIn":
+			return !hasLabel || !values.includes(labels[expression.key] ?? "");
+		case "Exists":
+			return hasLabel;
+		case "DoesNotExist":
+			return !hasLabel;
+		default:
+			return false;
+	}
+}
+
 export async function getNodePort(
 	cluster: w8s.Cluster,
 	namespace: string,

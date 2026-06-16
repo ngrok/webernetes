@@ -8,10 +8,12 @@ import { Pod } from "./pod";
 
 export function Node({
 	cluster,
+	highlightedPodIds,
 	namespace,
 	node,
 }: {
 	cluster: w8s.Cluster;
+	highlightedPodIds: ReadonlySet<string>;
 	namespace: string | undefined;
 	node: w8s.V1Node;
 }) {
@@ -43,7 +45,7 @@ export function Node({
 			<Card.Body>
 				<div className="grid grid-cols-[repeat(auto-fill,minmax(7rem,1fr))] gap-2">
 					{pods.map((pod) => (
-						<Pod key={idFor(pod)} pod={pod} />
+						<Pod key={idFor(pod)} highlighted={highlightedPodIds.has(idFor(pod))} pod={pod} />
 					))}
 				</div>
 			</Card.Body>

@@ -13,6 +13,8 @@ import {
 	getReadyContainers,
 	getRestartCount,
 	idFor,
+	podIdsForLabelSelector,
+	podIdsForService,
 	sortByName,
 } from "../helpers";
 import { useInformer } from "../hooks";
@@ -29,9 +31,11 @@ type ResourceTab =
 export function ResourcesTabs({
 	cluster,
 	namespace,
+	onHighlightedPodIdsChange,
 }: {
 	cluster: w8s.Cluster;
 	namespace: string | undefined;
+	onHighlightedPodIdsChange: (podIds: Set<string>) => void;
 }) {
 	const [tab, setTab] = useState<ResourceTab>("pods");
 	const namespaces = useInformer({
@@ -103,7 +107,10 @@ export function ResourcesTabs({
 			<Tabs.Root
 				appearance="pill"
 				value={tab}
-				onValueChange={(value) => setTab(value as ResourceTab)}
+				onValueChange={(value) => {
+					setTab(value as ResourceTab);
+					onHighlightedPodIdsChange(new Set());
+				}}
 			>
 				<Card.Body>
 					<Tabs.List className="mb-4 flex flex-wrap gap-2">
@@ -138,16 +145,33 @@ export function ResourcesTabs({
 					</Tabs.List>
 
 					<Tabs.Content value="pods">
-						<Pods cluster={cluster} pods={pods} />
+						<Pods
+							cluster={cluster}
+							onHighlightedPodIdsChange={onHighlightedPodIdsChange}
+							pods={pods}
+						/>
 					</Tabs.Content>
 					<Tabs.Content value="deployments">
-						<Deployments cluster={cluster} deployments={deployments} />
+						<Deployments
+							cluster={cluster}
+							deployments={deployments}
+							onHighlightedPodIdsChange={onHighlightedPodIdsChange}
+							pods={pods}
+						/>
 					</Tabs.Content>
 					<Tabs.Content value="replicasets">
-						<ReplicaSets replicasets={replicasets} />
+						<ReplicaSets
+							onHighlightedPodIdsChange={onHighlightedPodIdsChange}
+							pods={pods}
+							replicasets={replicasets}
+						/>
 					</Tabs.Content>
 					<Tabs.Content value="services">
-						<Services services={services} />
+						<Services
+							onHighlightedPodIdsChange={onHighlightedPodIdsChange}
+							pods={pods}
+							services={services}
+						/>
 					</Tabs.Content>
 					<Tabs.Content value="nodes">
 						<Nodes nodes={nodes} />
@@ -167,9 +191,13 @@ export function ResourcesTabs({
 function Deployments({
 	cluster,
 	deployments,
+	onHighlightedPodIdsChange,
+	pods,
 }: {
 	cluster: w8s.Cluster;
 	deployments: w8s.V1Deployment[];
+	onHighlightedPodIdsChange: (podIds: Set<string>) => void;
+	pods: w8s.V1Pod[];
 }) {
 	return (
 		<ResourceTable count={deployments.length} emptyLabel="No deployments match this namespace.">
@@ -189,7 +217,15 @@ function Deployments({
 				{deployments.map((deployment) => {
 					const replicas = deployment.spec?.replicas ?? 1;
 					return (
-						<Table.Row key={idFor(deployment)}>
+						<Table.Row
+							key={idFor(deployment)}
+							onPointerEnter={() =>
+								onHighlightedPodIdsChange(
+									podIdsForLabelSelector(deployment.spec?.selector, getNamespace(deployment), pods),
+								)
+							}
+							onPointerLeave={() => onHighlightedPodIdsChange(new Set())}
+						>
 							<Table.Cell>{getName(deployment, "-")}</Table.Cell>
 							<Table.Cell>{getNamespace(deployment) ?? "default"}</Table.Cell>
 							<Table.Cell>{replicas}</Table.Cell>
@@ -228,7 +264,15 @@ function Deployments({
 	);
 }
 
-function ReplicaSets({ replicasets }: { replicasets: w8s.V1ReplicaSet[] }) {
+function ReplicaSets({
+	onHighlightedPodIdsChange,
+	pods,
+	replicasets,
+}: {
+	onHighlightedPodIdsChange: (podIds: Set<string>) => void;
+	pods: w8s.V1Pod[];
+	replicasets: w8s.V1ReplicaSet[];
+}) {
 	return (
 		<ResourceTable count={replicasets.length} emptyLabel="No replica sets match this namespace.">
 			<Table.Head>
@@ -244,7 +288,15 @@ function ReplicaSets({ replicasets }: { replicasets: w8s.V1ReplicaSet[] }) {
 			</Table.Head>
 			<Table.Body>
 				{replicasets.map((replicaset) => (
-					<Table.Row key={idFor(replicaset)}>
+					<Table.Row
+						key={idFor(replicaset)}
+						onPointerEnter={() =>
+							onHighlightedPodIdsChange(
+								podIdsForLabelSelector(replicaset.spec?.selector, getNamespace(replicaset), pods),
+							)
+						}
+						onPointerLeave={() => onHighlightedPodIdsChange(new Set())}
+					>
 						<Table.Cell>{getName(replicaset, "-")}</Table.Cell>
 						<Table.Cell>{getNamespace(replicaset) ?? "default"}</Table.Cell>
 						<Table.Cell>{replicaset.spec?.replicas ?? 1}</Table.Cell>
@@ -289,7 +341,15 @@ async function scaleDeployment(
 	}
 }
 
-function Pods({ cluster, pods }: { cluster: w8s.Cluster; pods: w8s.V1Pod[] }) {
+function Pods({
+	cluster,
+	onHighlightedPodIdsChange,
+	pods,
+}: {
+	cluster: w8s.Cluster;
+	onHighlightedPodIdsChange: (podIds: Set<string>) => void;
+	pods: w8s.V1Pod[];
+}) {
 	return (
 		<ResourceTable count={pods.length} emptyLabel="No pods match this namespace.">
 			<Table.Head>
@@ -307,7 +367,11 @@ function Pods({ cluster, pods }: { cluster: w8s.Cluster; pods: w8s.V1Pod[] }) {
 				{pods.map((pod) => {
 					const name = getName(pod);
 					return (
-						<Table.Row key={idFor(pod)}>
+						<Table.Row
+							key={idFor(pod)}
+							onPointerEnter={() => onHighlightedPodIdsChange(new Set([idFor(pod)]))}
+							onPointerLeave={() => onHighlightedPodIdsChange(new Set())}
+						>
 							<Table.Cell>{getName(pod, "-")}</Table.Cell>
 							<Table.Cell>{getNamespace(pod) ?? "default"}</Table.Cell>
 							<Table.Cell>{pod.status?.phase ?? "Pending"}</Table.Cell>
@@ -352,7 +416,15 @@ async function terminatePod(cluster: w8s.Cluster, pod: w8s.V1Pod): Promise<void>
 	}
 }
 
-function Services({ services }: { services: w8s.V1Service[] }) {
+function Services({
+	onHighlightedPodIdsChange,
+	pods,
+	services,
+}: {
+	onHighlightedPodIdsChange: (podIds: Set<string>) => void;
+	pods: w8s.V1Pod[];
+	services: w8s.V1Service[];
+}) {
 	return (
 		<ResourceTable count={services.length} emptyLabel="No services match this namespace.">
 			<Table.Head>
@@ -367,7 +439,11 @@ function Services({ services }: { services: w8s.V1Service[] }) {
 			</Table.Head>
 			<Table.Body>
 				{services.map((service) => (
-					<Table.Row key={idFor(service)}>
+					<Table.Row
+						key={idFor(service)}
+						onPointerEnter={() => onHighlightedPodIdsChange(podIdsForService(service, pods))}
+						onPointerLeave={() => onHighlightedPodIdsChange(new Set())}
+					>
 						<Table.Cell>{getName(service, "-")}</Table.Cell>
 						<Table.Cell>{getNamespace(service) ?? "default"}</Table.Cell>
 						<Table.Cell>{service.spec?.type ?? "ClusterIP"}</Table.Cell>

@@ -20,7 +20,13 @@ const demoClusterOptions: w8s.ClusterOptions = {
 export function App() {
 	const { cluster, reset } = useCluster(setup, demoClusterOptions);
 	const [namespace, setNamespace] = useState<string | undefined>("default");
+	const [highlightedPodIds, setHighlightedPodIds] = useState<Set<string>>(new Set());
 	const requestLayerRef = useRef<HTMLDivElement>(null);
+
+	function changeNamespace(value: string | undefined) {
+		setNamespace(value);
+		setHighlightedPodIds(new Set());
+	}
 
 	if (!cluster) {
 		return <div className="text-muted text-sm">Booting simulated Kubernetes cluster...</div>;
@@ -31,18 +37,22 @@ export function App() {
 			<Header
 				cluster={cluster}
 				namespace={namespace}
-				onNamespaceChange={setNamespace}
+				onNamespaceChange={changeNamespace}
 				onReset={reset}
 			/>
 			<main className="space-y-6">
 				<div ref={requestLayerRef} className="relative space-y-6">
-					<Cluster cluster={cluster} namespace={namespace} />
+					<Cluster cluster={cluster} highlightedPodIds={highlightedPodIds} namespace={namespace} />
 					<div className="flex items-center justify-end">
 						<SendRequestButton cluster={cluster} />
 					</div>
 					<RequestOverlay cluster={cluster} containerRef={requestLayerRef} />
 				</div>
-				<ResourcesTabs cluster={cluster} namespace={namespace} />
+				<ResourcesTabs
+					cluster={cluster}
+					namespace={namespace}
+					onHighlightedPodIdsChange={setHighlightedPodIds}
+				/>
 			</main>
 		</div>
 	);

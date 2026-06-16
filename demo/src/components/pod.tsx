@@ -11,11 +11,11 @@ import {
 	idFor,
 } from "../helpers";
 
-export function Pod({ pod }: { pod: w8s.V1Pod }) {
+export function Pod({ highlighted = false, pod }: { highlighted?: boolean; pod: w8s.V1Pod }) {
 	return (
 		<Tooltip.Root>
 			<Tooltip.Trigger asChild>
-				<PodContent pod={pod} />
+				<PodContent highlighted={highlighted} pod={pod} />
 			</Tooltip.Trigger>
 			<Tooltip.Content className="max-w-80">
 				<TooltipContent pod={pod} />
@@ -25,11 +25,12 @@ export function Pod({ pod }: { pod: w8s.V1Pod }) {
 }
 
 type PodContentProps = ComponentPropsWithoutRef<"div"> & {
+	highlighted: boolean;
 	pod: w8s.V1Pod;
 };
 
 const PodContent = forwardRef<HTMLDivElement, PodContentProps>(function PodContent(
-	{ pod, ...props },
+	{ highlighted, pod, ...props },
 	ref,
 ) {
 	const name = getName(pod);
@@ -41,7 +42,9 @@ const PodContent = forwardRef<HTMLDivElement, PodContentProps>(function PodConte
 			id={idFor(pod)}
 			ref={ref}
 			{...props}
-			className="border-card bg-card flex min-h-20 min-w-0 flex-col items-center justify-center gap-2 rounded-md border p-3 text-center transition-transform hover:-translate-y-0.5"
+			className={`border-card bg-card flex min-h-20 min-w-0 flex-col items-center justify-center gap-2 rounded-md border p-3 text-center transition-all hover:-translate-y-0.5 ${
+				highlighted ? "border-accent-600 bg-accent-500/10 ring-accent-600 shadow-sm ring-2" : ""
+			}`}
 		>
 			<div className="w-full min-w-0 truncate font-mono text-xs font-semibold">{name}</div>
 			{showReadiness && (
