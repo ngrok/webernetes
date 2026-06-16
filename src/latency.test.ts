@@ -1,42 +1,59 @@
 import { expect, it } from "vitest";
 
-import type { NetworkHop } from "./cluster/cni/network";
+import type {
+	NetworkHop,
+	PreNetworkRequestEvent,
+	PreNetworkResponseEvent,
+} from "./cluster/cni/network";
 import * as context from "./go/context";
 import { getLatencyProvider, newLatencyProvider, withLatencyProvider } from "./latency";
 import { browser } from "./test/describe";
 
 browser.describe("LatencyProvider", () => {
 	const chain: NetworkHop[] = [{ type: "external", host: "example.com" }];
+	const requestEvent: PreNetworkRequestEvent = {
+		chain,
+		request: {
+			method: "GET",
+			url: new URL("http://example.com/"),
+			header: {},
+			host: "example.com",
+		},
+	};
+	const responseEvent: PreNetworkResponseEvent = {
+		...requestEvent,
+		response: { status: 200, body: "" },
+	};
 
 	it("converts missing latency options to zero-returning functions", () => {
 		const provider = newLatencyProvider();
 
-		expect(provider.clusterNetworkRequestLatency(chain)).toBe(0);
-		expect(provider.clusterNetworkResponseLatency(chain)).toBe(0);
+		expect(provider.clusterNetworkRequestLatency(requestEvent)).toBe(0);
+		expect(provider.clusterNetworkResponseLatency(responseEvent)).toBe(0);
 	});
 
-	it("passes the network hop chain to latency option functions", () => {
+	it("passes the network event to latency option functions", () => {
 		let requestLatency = 1;
 		let responseLatency = 10;
-		const requestChains: Array<readonly NetworkHop[]> = [];
-		const responseChains: Array<readonly NetworkHop[]> = [];
+		const requestEvents: PreNetworkRequestEvent[] = [];
+		const responseEvents: PreNetworkResponseEvent[] = [];
 		const provider = newLatencyProvider({
-			clusterNetworkRequestLatency: (chain) => {
-				requestChains.push(chain);
+			clusterNetworkRequestLatency: (event) => {
+				requestEvents.push(event);
 				return requestLatency++;
 			},
-			clusterNetworkResponseLatency: (chain) => {
-				responseChains.push(chain);
+			clusterNetworkResponseLatency: (event) => {
+				responseEvents.push(event);
 				return (responseLatency += 5);
 			},
 		});
 
-		expect(provider.clusterNetworkRequestLatency(chain)).toBe(1);
-		expect(provider.clusterNetworkRequestLatency(chain)).toBe(2);
-		expect(provider.clusterNetworkResponseLatency(chain)).toBe(15);
-		expect(provider.clusterNetworkResponseLatency(chain)).toBe(20);
-		expect(requestChains).toEqual([chain, chain]);
-		expect(responseChains).toEqual([chain, chain]);
+		expect(provider.clusterNetworkRequestLatency(requestEvent)).toBe(1);
+		expect(provider.clusterNetworkRequestLatency(requestEvent)).toBe(2);
+		expect(provider.clusterNetworkResponseLatency(responseEvent)).toBe(15);
+		expect(provider.clusterNetworkResponseLatency(responseEvent)).toBe(20);
+		expect(requestEvents).toEqual([requestEvent, requestEvent]);
+		expect(responseEvents).toEqual([responseEvent, responseEvent]);
 	});
 
 	it("stores and retrieves providers through context", () => {
@@ -52,7 +69,7 @@ browser.describe("LatencyProvider", () => {
 	it("falls back to the no-op provider when context has no latency provider", () => {
 		const provider = getLatencyProvider(context.background());
 
-		expect(provider.clusterNetworkRequestLatency(chain)).toBe(0);
-		expect(provider.clusterNetworkResponseLatency(chain)).toBe(0);
+		expect(provider.clusterNetworkRequestLatency(requestEvent)).toBe(0);
+		expect(provider.clusterNetworkResponseLatency(responseEvent)).toBe(0);
 	});
 });

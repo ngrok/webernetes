@@ -2,7 +2,7 @@ import { Badge } from "@ngrok/mantle/badge";
 import { Card } from "@ngrok/mantle/card";
 import * as w8s from "webernetes";
 
-import { getName, idFor, sortByName } from "../helpers";
+import { getName, idFor, kubeletIdForNodeName, sortByName } from "../helpers";
 import { useInformer } from "../hooks";
 import { Pod } from "./pod";
 
@@ -43,10 +43,20 @@ export function Node({
 			</Card.Header>
 
 			<Card.Body>
-				<div className="grid grid-cols-[repeat(auto-fill,minmax(7rem,1fr))] gap-2">
-					{pods.map((pod) => (
-						<Pod key={idFor(pod)} highlighted={highlightedPodIds.has(idFor(pod))} pod={pod} />
-					))}
+				<div className="flex min-h-32 flex-col justify-between gap-2">
+					<div className="grid grid-cols-[repeat(auto-fill,minmax(7rem,1fr))] gap-2">
+						{pods.map((pod) => (
+							<Pod key={idFor(pod)} highlighted={highlightedPodIds.has(idFor(pod))} pod={pod} />
+						))}
+					</div>
+					<div className="flex justify-center pt-2">
+						<div
+							id={kubeletIdForNodeName(name)}
+							className="border-muted text-muted flex h-7 w-20 items-center justify-center rounded border border-dashed px-2 text-center font-mono text-[0.6875rem] font-semibold"
+						>
+							kubelet
+						</div>
+					</div>
 				</div>
 			</Card.Body>
 		</Card.Root>

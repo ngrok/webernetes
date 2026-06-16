@@ -14,7 +14,8 @@ import {
 } from "../container";
 import { ExecProber, HTTPProber, TCPProber } from "../../probe";
 import type { ByteWriter, ExecCmd, ExecProbe, ProbeResult } from "../../probe";
-import { newRequestForHTTPGetAction } from "../../probe/http/request";
+import { healthCheckHeader, newRequestForHTTPGetAction } from "../../probe/http/request";
+import * as http from "../../cni/http";
 import { resolveContainerPort } from "../../probe/util";
 import { probeTypeString } from "./prober-manager";
 import type { ProbeType, ProberResult } from "./results";
@@ -148,7 +149,7 @@ export class Prober {
 	// Models kubernetes/pkg/kubelet/prober/prober.go runProbe.
 	private async runProbe(
 		ctx: context.Context,
-		_probeType: ProbeType,
+		probeType: ProbeType,
 		probe: V1Probe,
 		pod: V1Pod,
 		status: V1PodStatus,
@@ -175,6 +176,7 @@ export class Prober {
 			if (err || !req) {
 				return ["unknown", "", err];
 			}
+			http.headerSet(req.header, healthCheckHeader, probeType);
 			return await this.http.probe(pod, req, timeoutMs);
 		}
 		if (probe.tcpSocket) {

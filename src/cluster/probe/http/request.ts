@@ -6,6 +6,8 @@ import type { V1Container, V1HTTPGetAction } from "../../../client";
 import * as http from "../../cni/http";
 import { resolveContainerPort } from "../util";
 
+export const healthCheckHeader = "X-Webernetes-Health-Check";
+
 // Models kubernetes/pkg/probe/http/request.go NewProbeRequest.
 export function newProbeRequest(
 	url: URL,

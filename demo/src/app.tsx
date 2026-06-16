@@ -6,14 +6,23 @@ import { Header } from "./components/header";
 import { RequestOverlay } from "./components/request-overlay";
 import { ResourcesTabs } from "./components/resources-tabs";
 import { SendRequestButton } from "./components/send-request-button";
-import { distance, idFor, sendRequestButtonId } from "./helpers";
+import {
+	distance,
+	getHeader,
+	healthCheckHeader,
+	idFor,
+	kubeletIdForNodeName,
+	sendRequestButtonId,
+} from "./helpers";
 import { useCluster } from "./hooks";
 import { setup } from "./setup";
 
+type PreNetworkEvent = w8s.PreNetworkRequestEvent | w8s.PreNetworkResponseEvent;
+
 const demoClusterOptions: w8s.ClusterOptions = {
 	latencyProvider: w8s.newLatencyProvider({
-		clusterNetworkRequestLatency: (chain) => getLatency("request", chain),
-		clusterNetworkResponseLatency: (chain) => getLatency("response", chain),
+		clusterNetworkRequestLatency: (event) => getLatency("request", event),
+		clusterNetworkResponseLatency: (event) => getLatency("response", event),
 	}),
 };
 
@@ -58,8 +67,8 @@ export function App() {
 	);
 }
 
-function getLatency(direction: "request" | "response", chain: readonly w8s.NetworkHop[]): number {
-	const [fromId, toId] = endpoints(direction, chain);
+function getLatency(direction: "request" | "response", event: PreNetworkEvent): number {
+	const [fromId, toId] = endpoints(direction, event);
 	if (!fromId || !toId || fromId === toId || typeof document === "undefined") {
 		return 0;
 	}
@@ -72,13 +81,14 @@ function getLatency(direction: "request" | "response", chain: readonly w8s.Netwo
 	if (px === 0) {
 		return 0;
 	}
-	return Math.max(150, (px / dotSpeed()) * 1000);
+	return (px / dotSpeed()) * 1000;
 }
 
 function endpoints(
 	direction: "request" | "response",
-	chain: readonly w8s.NetworkHop[],
+	event: PreNetworkEvent,
 ): [string | undefined, string | undefined] {
+	const { chain } = event;
 	const ids = chain
 		.map((hop) => (hop.type === "external" ? undefined : idFor(hop.resource)))
 		.filter((id): id is string => id !== undefined);
@@ -88,11 +98,28 @@ function endpoints(
 	if (direction === "response" && chain.at(-1)?.type === "node") {
 		return [ids[0], sendRequestButtonId];
 	}
+	const pod = isHealthCheckRequest(event) ? podForHealthCheck(chain) : undefined;
+	if (pod) {
+		const podId = idFor(pod);
+		const kubeletId = kubeletIdForNodeName(pod.spec?.nodeName ?? "");
+		return direction === "request" ? [kubeletId, podId] : [podId, kubeletId];
+	}
 	return [ids[0], ids.at(-1)];
 }
 
+function isHealthCheckRequest(event: PreNetworkEvent): boolean {
+	return getHeader(event.request.header, healthCheckHeader) !== undefined;
+}
+
+function podForHealthCheck(chain: readonly w8s.NetworkHop[]): w8s.V1Pod | undefined {
+	return chain.find(
+		(hop): hop is Extract<w8s.NetworkHop, { type: "pod" }> =>
+			hop.type === "pod" && hop.resource.spec?.nodeName !== undefined,
+	)?.resource;
+}
+
 function dotSpeed(): number {
-	const min = 350;
-	const max = 450;
+	const min = 245;
+	const max = 315;
 	return min + Math.random() * (max - min);
 }

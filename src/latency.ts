@@ -1,13 +1,13 @@
 import * as context from "./go/context";
-import type { NetworkHop } from "./cluster/cni/network";
+import type { PreNetworkRequestEvent, PreNetworkResponseEvent } from "./cluster/cni/network";
 
 const key = Symbol("latencyProvider");
 const noopValue = () => 0;
 const noop = newLatencyProvider();
 
 export interface LatencyProvider {
-	clusterNetworkRequestLatency(chain: readonly NetworkHop[]): number;
-	clusterNetworkResponseLatency(chain: readonly NetworkHop[]): number;
+	clusterNetworkRequestLatency(event: PreNetworkRequestEvent): number;
+	clusterNetworkResponseLatency(event: PreNetworkResponseEvent): number;
 }
 
 export function newLatencyProvider(options: Partial<LatencyProvider> = {}): LatencyProvider {

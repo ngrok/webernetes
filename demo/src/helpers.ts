@@ -7,6 +7,7 @@ export const demoRequestTypeButtonClick = "button-click";
 export const demoRequestTypeTrafficGenerator = "traffic-generator";
 export const demoHealthPort = 8081;
 export const demoControlPort = 9000;
+export const healthCheckHeader = "X-Webernetes-Health-Check";
 export const sendRequestButtonId = "send-request-button";
 
 export interface Point {
@@ -39,6 +40,10 @@ export function idFor(resource: w8s.KubernetesObject): string {
 		getName(resource),
 	];
 	return `k8s-${parts.map(idPart).join("-")}`;
+}
+
+export function kubeletIdForNodeName(name: string): string {
+	return `kubelet-${idPart(name)}`;
 }
 
 export function getName(resource: w8s.KubernetesObject, fallback = ""): string {

@@ -5,6 +5,7 @@ export { BaseImage } from "./cluster/images/base";
 export { ImageRegistry } from "./cluster/cri";
 export { Listener as HttpListener } from "./cluster/cni/http";
 export { DnsListener } from "./cluster/cni/dns";
+export { healthCheckHeader } from "./cluster/probe/http/request";
 export {
 	getLatencyProvider as latencyProviderFromContext,
 	newLatencyProvider,

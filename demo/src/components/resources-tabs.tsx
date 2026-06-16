@@ -421,6 +421,7 @@ function Pods({
 							<Table.Cell>
 								<HealthControl
 									disabled={controlsDisabled}
+									kind="ready"
 									label={`Readiness for ${name || "pod"}`}
 									tooltip="Readiness controls whether this pod receives service traffic."
 									value={readyValue}
@@ -432,6 +433,7 @@ function Pods({
 							<Table.Cell>
 								<HealthControl
 									disabled={controlsDisabled}
+									kind="live"
 									label={`Liveness for ${name || "pod"}`}
 									tooltip="Liveness failure makes the kubelet restart this container."
 									value={liveValue}
@@ -465,6 +467,7 @@ function Pods({
 function HealthControl({
 	disabled,
 	healthyLabel,
+	kind,
 	label,
 	onChange,
 	tooltip,
@@ -473,12 +476,14 @@ function HealthControl({
 }: {
 	disabled: boolean;
 	healthyLabel: string;
+	kind: PodHealthKind;
 	label: string;
 	onChange: (value: HealthValue) => void;
 	tooltip: string;
 	unhealthyLabel: string;
 	value: HealthValue;
 }) {
+	const buttonClassName = healthControlButtonClassName(kind);
 	return (
 		<Tooltip.Root>
 			<Tooltip.Trigger asChild>
@@ -489,10 +494,20 @@ function HealthControl({
 					value={value}
 					onChange={(nextValue) => onChange(nextValue as HealthValue)}
 				>
-					<RadioGroup.Button value="healthy" aria-label={healthyLabel} title={healthyLabel}>
+					<RadioGroup.Button
+						value="healthy"
+						aria-label={healthyLabel}
+						title={healthyLabel}
+						className={buttonClassName}
+					>
 						<span aria-hidden>✓</span>
 					</RadioGroup.Button>
-					<RadioGroup.Button value="unhealthy" aria-label={unhealthyLabel} title={unhealthyLabel}>
+					<RadioGroup.Button
+						value="unhealthy"
+						aria-label={unhealthyLabel}
+						title={unhealthyLabel}
+						className={buttonClassName}
+					>
 						<span aria-hidden>✕</span>
 					</RadioGroup.Button>
 				</RadioGroup.ButtonGroup>
@@ -500,6 +515,15 @@ function HealthControl({
 			<Tooltip.Content className="max-w-72">{tooltip}</Tooltip.Content>
 		</Tooltip.Root>
 	);
+}
+
+function healthControlButtonClassName(kind: PodHealthKind): string {
+	switch (kind) {
+		case "ready":
+			return "text-blue-700 not-aria-disabled:hover:border-blue-500 aria-checked:border-blue-500/70 aria-checked:bg-blue-500/20 aria-checked:text-blue-900 dark:text-blue-700 dark:aria-checked:bg-blue-500/25 dark:aria-checked:text-blue-900";
+		case "live":
+			return "text-fuchsia-700 not-aria-disabled:hover:border-fuchsia-500 aria-checked:border-fuchsia-500/70 aria-checked:bg-fuchsia-500/20 aria-checked:text-fuchsia-900 dark:text-fuchsia-700 dark:aria-checked:bg-fuchsia-500/25 dark:aria-checked:text-fuchsia-900";
+	}
 }
 
 async function setPodHealth(
