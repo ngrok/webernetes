@@ -15,7 +15,14 @@ import {
 } from "../helpers";
 import { useInformer } from "../hooks";
 
-type ResourceTab = "pods" | "services" | "nodes" | "namespaces" | "events";
+type ResourceTab =
+	| "pods"
+	| "deployments"
+	| "replicasets"
+	| "services"
+	| "nodes"
+	| "namespaces"
+	| "events";
 
 export function ResourcesTabs({
 	cluster,
@@ -35,6 +42,18 @@ export function ResourcesTabs({
 		cluster,
 		namespace,
 		resource: "pods",
+		sort: sortByName,
+	});
+	const deployments = useInformer({
+		cluster,
+		namespace,
+		resource: "deployments",
+		sort: sortByName,
+	});
+	const replicasets = useInformer({
+		cluster,
+		namespace,
+		resource: "replicasets",
 		sort: sortByName,
 	});
 	const services = useInformer({
@@ -59,12 +78,22 @@ export function ResourcesTabs({
 	const counts = useMemo(
 		() => ({
 			pods: pods.length,
+			deployments: deployments.length,
+			replicasets: replicasets.length,
 			services: services.length,
 			nodes: nodes.length,
 			namespaces: namespaces.length,
 			events: events.length,
 		}),
-		[events.length, namespaces.length, nodes.length, pods.length, services.length],
+		[
+			deployments.length,
+			events.length,
+			namespaces.length,
+			nodes.length,
+			pods.length,
+			replicasets.length,
+			services.length,
+		],
 	);
 
 	return (
@@ -79,6 +108,14 @@ export function ResourcesTabs({
 						<Tabs.Trigger value="pods">
 							Pods
 							<Tabs.Badge>{counts.pods}</Tabs.Badge>
+						</Tabs.Trigger>
+						<Tabs.Trigger value="deployments">
+							Deployments
+							<Tabs.Badge>{counts.deployments}</Tabs.Badge>
+						</Tabs.Trigger>
+						<Tabs.Trigger value="replicasets">
+							ReplicaSets
+							<Tabs.Badge>{counts.replicasets}</Tabs.Badge>
 						</Tabs.Trigger>
 						<Tabs.Trigger value="services">
 							Services
@@ -101,6 +138,12 @@ export function ResourcesTabs({
 					<Tabs.Content value="pods">
 						<Pods pods={pods} />
 					</Tabs.Content>
+					<Tabs.Content value="deployments">
+						<Deployments deployments={deployments} />
+					</Tabs.Content>
+					<Tabs.Content value="replicasets">
+						<ReplicaSets replicasets={replicasets} />
+					</Tabs.Content>
 					<Tabs.Content value="services">
 						<Services services={services} />
 					</Tabs.Content>
@@ -116,6 +159,68 @@ export function ResourcesTabs({
 				</Card.Body>
 			</Tabs.Root>
 		</Card.Root>
+	);
+}
+
+function Deployments({ deployments }: { deployments: w8s.V1Deployment[] }) {
+	return (
+		<ResourceTable count={deployments.length} emptyLabel="No deployments match this namespace.">
+			<Table.Head>
+				<Table.Row>
+					<Table.Header>Name</Table.Header>
+					<Table.Header>Namespace</Table.Header>
+					<Table.Header>Desired</Table.Header>
+					<Table.Header>Ready</Table.Header>
+					<Table.Header>Available</Table.Header>
+					<Table.Header>Updated</Table.Header>
+					<Table.Header>Selector</Table.Header>
+				</Table.Row>
+			</Table.Head>
+			<Table.Body>
+				{deployments.map((deployment) => (
+					<Table.Row key={idFor(deployment)}>
+						<Table.Cell>{getName(deployment, "-")}</Table.Cell>
+						<Table.Cell>{getNamespace(deployment) ?? "default"}</Table.Cell>
+						<Table.Cell>{deployment.spec?.replicas ?? 1}</Table.Cell>
+						<Table.Cell>{deployment.status?.readyReplicas ?? 0}</Table.Cell>
+						<Table.Cell>{deployment.status?.availableReplicas ?? 0}</Table.Cell>
+						<Table.Cell>{deployment.status?.updatedReplicas ?? 0}</Table.Cell>
+						<Table.Cell>{formatLabelSelector(deployment.spec?.selector)}</Table.Cell>
+					</Table.Row>
+				))}
+			</Table.Body>
+		</ResourceTable>
+	);
+}
+
+function ReplicaSets({ replicasets }: { replicasets: w8s.V1ReplicaSet[] }) {
+	return (
+		<ResourceTable count={replicasets.length} emptyLabel="No replica sets match this namespace.">
+			<Table.Head>
+				<Table.Row>
+					<Table.Header>Name</Table.Header>
+					<Table.Header>Namespace</Table.Header>
+					<Table.Header>Desired</Table.Header>
+					<Table.Header>Current</Table.Header>
+					<Table.Header>Ready</Table.Header>
+					<Table.Header>Available</Table.Header>
+					<Table.Header>Selector</Table.Header>
+				</Table.Row>
+			</Table.Head>
+			<Table.Body>
+				{replicasets.map((replicaset) => (
+					<Table.Row key={idFor(replicaset)}>
+						<Table.Cell>{getName(replicaset, "-")}</Table.Cell>
+						<Table.Cell>{getNamespace(replicaset) ?? "default"}</Table.Cell>
+						<Table.Cell>{replicaset.spec?.replicas ?? 1}</Table.Cell>
+						<Table.Cell>{replicaset.status?.replicas ?? 0}</Table.Cell>
+						<Table.Cell>{replicaset.status?.readyReplicas ?? 0}</Table.Cell>
+						<Table.Cell>{replicaset.status?.availableReplicas ?? 0}</Table.Cell>
+						<Table.Cell>{formatLabelSelector(replicaset.spec?.selector)}</Table.Cell>
+					</Table.Row>
+				))}
+			</Table.Body>
+		</ResourceTable>
 	);
 }
 
@@ -290,6 +395,19 @@ function formatSelector(selector: Record<string, string> | undefined): string {
 	return Object.entries(selector)
 		.map(([key, value]) => `${key}=${value}`)
 		.join(", ");
+}
+
+function formatLabelSelector(selector: w8s.V1LabelSelector | undefined): string {
+	const parts = [
+		...Object.entries(selector?.matchLabels ?? {}).map(([key, value]) => `${key}=${value}`),
+		...(selector?.matchExpressions ?? []).map((expression) => {
+			const values = expression.values?.join(",") ?? "";
+			return values
+				? `${expression.key} ${expression.operator} (${values})`
+				: `${expression.key} ${expression.operator}`;
+		}),
+	];
+	return parts.length === 0 ? "-" : parts.join(", ");
 }
 
 function formatEventTime(event: w8s.CoreV1Event): string {
