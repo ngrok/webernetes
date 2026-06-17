@@ -67,17 +67,21 @@ export function useInformer<TResource extends w8s.ClusterInformerResource>({
 		items: w8s.ClusterInformerResources[TResource][],
 	) => w8s.ClusterInformerResources[TResource][];
 }) {
-	const itemsByKey = useRef(new Map<string, w8s.ClusterInformerResources[TResource]>());
+	const currentNamespace = useRef(namespace);
 	const [items, setItems] = useState<w8s.ClusterInformerResources[TResource][]>([]);
+	currentNamespace.current = namespace;
 
 	useEffect(() => {
-		itemsByKey.current.clear();
+		const itemsByKey = new Map<string, w8s.ClusterInformerResources[TResource]>();
 		setItems([]);
 		const informer = cluster.informer(
 			resource,
 			(type, item) => {
-				if (applyInformerEvent(itemsByKey.current, type, item, limit)) {
-					const items = [...itemsByKey.current.values()];
+				if (
+					applyInformerEvent(itemsByKey, type, item, limit) &&
+					namespace === currentNamespace.current
+				) {
+					const items = [...itemsByKey.values()];
 					setItems(sort ? sort(items) : items);
 				}
 			},

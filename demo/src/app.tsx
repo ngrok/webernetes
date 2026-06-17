@@ -5,15 +5,7 @@ import { Cluster } from "./components/cluster";
 import { Header } from "./components/header";
 import { RequestOverlay } from "./components/request-overlay";
 import { ResourcesTabs } from "./components/resources-tabs";
-import { SendRequestButton } from "./components/send-request-button";
-import {
-	distance,
-	getHeader,
-	healthCheckHeader,
-	idFor,
-	kubeletIdForNodeName,
-	sendRequestButtonId,
-} from "./helpers";
+import { distance, getHeader, healthCheckHeader, idFor, kubeletIdForNodeName } from "./helpers";
 import { useCluster } from "./hooks";
 import { setup } from "./setup";
 
@@ -52,10 +44,7 @@ export function App() {
 			<main className="space-y-6">
 				<div ref={requestLayerRef} className="relative space-y-6">
 					<Cluster cluster={cluster} highlightedPodIds={highlightedPodIds} namespace={namespace} />
-					<div className="flex items-center justify-end">
-						<SendRequestButton cluster={cluster} />
-					</div>
-					<RequestOverlay cluster={cluster} containerRef={requestLayerRef} />
+					<RequestOverlay cluster={cluster} containerRef={requestLayerRef} namespace={namespace} />
 				</div>
 				<ResourcesTabs
 					cluster={cluster}
@@ -92,12 +81,6 @@ function endpoints(
 	const ids = chain
 		.map((hop) => (hop.type === "external" ? undefined : idFor(hop.resource)))
 		.filter((id): id is string => id !== undefined);
-	if (direction === "request" && chain[0]?.type === "node") {
-		return [sendRequestButtonId, ids.at(-1)];
-	}
-	if (direction === "response" && chain.at(-1)?.type === "node") {
-		return [ids[0], sendRequestButtonId];
-	}
 	const pod = isHealthCheckRequest(event) ? podForHealthCheck(chain) : undefined;
 	if (pod) {
 		const podId = idFor(pod);
