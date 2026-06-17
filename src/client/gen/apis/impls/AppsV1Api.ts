@@ -1,5 +1,6 @@
 import { retryConflicts } from "../../../../retry";
 import { labelSelectorAsSelector } from "../../../../apimachinery/pkg/apis/meta/v1/helpers";
+import { strategicMergePatch } from "../../../../apimachinery/pkg/util/strategicpatch/patch";
 import type { Etcd } from "../../../../cluster/etcd";
 import { DeploymentStore, ReplicaSetStore, Store } from "../../../../cluster/storage";
 import type * as context from "../../../../go/context";
@@ -405,14 +406,17 @@ export class AppsV1Api implements AppsV1ApiInterface {
 		options?: unknown,
 	): Promise<T> {
 		return await rethrowApiErrors(async () => {
-			validateMergePatchContentType(options);
+			const patchStrategy = validateAppsPatchContentType(options);
 			return await retryConflicts(this.ctx, async () => {
 				const current = await store.get(request.name, request.namespace);
 				if (!current) {
 					throw new NotFound(`${kind} "${request.name}" not found`);
 				}
 				validatePatchName(request.body, request.name);
-				const patched = mergePatch(current, request.body);
+				const patched =
+					patchStrategy === PatchStrategy.StrategicMergePatch
+						? strategicMergePatch(current, request.body)
+						: mergePatch(current, request.body);
 				patched.metadata ??= {};
 				patched.metadata.name = request.name;
 				patched.metadata.namespace ??= request.namespace;
@@ -527,6 +531,17 @@ function validateMergePatchContentType(options: unknown): void {
 	if (contentType !== PatchStrategy.MergePatch) {
 		throw new UnsupportedMediaType(`Unsupported Media Type: ${contentType ?? ""}`);
 	}
+}
+
+function validateAppsPatchContentType(options: unknown): PatchStrategy {
+	const contentType = getContentType(options);
+	if (
+		contentType !== PatchStrategy.MergePatch &&
+		contentType !== PatchStrategy.StrategicMergePatch
+	) {
+		throw new UnsupportedMediaType(`Unsupported Media Type: ${contentType ?? ""}`);
+	}
+	return contentType;
 }
 
 function getContentType(options: unknown): string | undefined {
