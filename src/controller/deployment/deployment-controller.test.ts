@@ -720,6 +720,9 @@ function newFixture(ctx: context.Context): Fixture {
 // Models kubernetes/pkg/controller/deployment/deployment_controller_test.go filterInformerActions.
 function filterInformerActions(actions: ClientAction[]): ClientAction[] {
 	return actions.filter((action) => {
+		if (action.verb === "create" && action.resource === "events") {
+			return false;
+		}
 		if (
 			action.verb === "list" &&
 			(action.resource === "pods" ||
