@@ -17,6 +17,7 @@ import { withClock } from "../clock-context";
 import * as context from "../go/context";
 import { WaitGroup } from "../go/sync/wait-group";
 import { browser } from "../test/describe";
+import { newFakePassiveClock } from "../utils/clock/testing/fake-clock";
 import {
 	ActivePodsWithRanks,
 	type ControllerExpectations,
@@ -630,14 +631,15 @@ browser.describe("controller utils", ({ ctx }) => {
 		];
 
 		for (const test of tests) {
-			const clock = new Clock();
-			clock.pause();
-			clock.step(test.statusEvaluationDelaySeconds * 1000);
+			const oldNow = now;
+			const newNow = newFakePassiveClock(
+				new Date(now.getTime() + test.statusEvaluationDelaySeconds * 1000),
+			);
 			const nextAvailable = findMinNextPodAvailabilityCheck(
 				test.pods,
 				test.minReadySeconds,
-				now,
-				clock,
+				oldNow,
+				newNow,
 			);
 
 			expect({ name: test.name, nextAvailable }).toEqual({
