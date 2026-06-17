@@ -28,6 +28,50 @@ export class GroupKind {
 	}
 }
 
+// Models staging/src/k8s.io/apimachinery/pkg/runtime/schema/group_version.go GroupResource.
+export class GroupResource {
+	constructor(
+		readonly group: string,
+		readonly resource: string,
+	) {}
+
+	// Models staging/src/k8s.io/apimachinery/pkg/runtime/schema/group_version.go GroupResource.WithVersion.
+	withVersion(version: string): GroupVersionResource {
+		return new GroupVersionResource(this.group, version, this.resource);
+	}
+
+	// Models staging/src/k8s.io/apimachinery/pkg/runtime/schema/group_version.go GroupResource.Empty.
+	empty(): boolean {
+		return this.group.length === 0 && this.resource.length === 0;
+	}
+
+	// Models staging/src/k8s.io/apimachinery/pkg/runtime/schema/group_version.go GroupResource.String.
+	toString(): string {
+		if (this.group.length === 0) {
+			return this.resource;
+		}
+		return `${this.resource}.${this.group}`;
+	}
+}
+
+// Models staging/src/k8s.io/apimachinery/pkg/runtime/schema/group_version.go ParseGroupResource.
+export function parseGroupResource(gr: string): GroupResource {
+	const i = gr.indexOf(".");
+	if (i >= 0) {
+		return new GroupResource(gr.slice(i + 1), gr.slice(0, i));
+	}
+	return new GroupResource("", gr);
+}
+
+// Models staging/src/k8s.io/apimachinery/pkg/runtime/schema/group_version.go GroupVersionResource.
+export class GroupVersionResource {
+	constructor(
+		readonly group: string,
+		readonly version: string,
+		readonly resource: string,
+	) {}
+}
+
 // Models staging/src/k8s.io/apimachinery/pkg/runtime/schema/group_version.go GroupVersionKind.
 export class GroupVersionKind {
 	constructor(
