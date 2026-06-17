@@ -3,6 +3,7 @@
  * Derived from Kubernetes, translated and modified for Webernetes.
  */
 import type { PassiveClock } from "../../../utils/clock/clock";
+import type { SendChannel } from "../../../go/channel";
 import { ExpirationCache, type ExpirationPolicy, type TimestampedEntry } from "./expiration-cache";
 import type { KeyFunc, Store } from "./store";
 
@@ -23,7 +24,7 @@ export class FakeExpirationPolicy<T> implements ExpirationPolicy<T> {
 // Models staging/src/k8s.io/client-go/tools/cache/expiration_cache_fakes.go NewFakeExpirationStore.
 export function newFakeExpirationStore<T>(
 	keyFunc: KeyFunc<T>,
-	deletedKeys: string[] | undefined,
+	deletedKeys: SendChannel<string> | undefined,
 	expirationPolicy: ExpirationPolicy<T>,
 	cacheClock: PassiveClock,
 ): Store<T> {
