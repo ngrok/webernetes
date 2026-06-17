@@ -1,14 +1,11 @@
 import * as w8s from "webernetes";
 
 export const demoRequestIdHeader = "X-Demo-Request-Id";
-export const demoRequestOriginHeader = "X-Demo-Request-Origin";
 export const demoRequestTypeHeader = "X-Demo-Request-Type";
-export const demoRequestTypeButtonClick = "button-click";
 export const demoRequestTypeTrafficGenerator = "traffic-generator";
 export const demoHealthPort = 8081;
 export const demoControlPort = 9000;
 export const healthCheckHeader = "X-Webernetes-Health-Check";
-export const sendRequestButtonId = "send-request-button";
 
 export interface Point {
 	x: number;
@@ -133,22 +130,6 @@ function labelExpressionMatches(
 		default:
 			return false;
 	}
-}
-
-export async function getNodePort(
-	cluster: w8s.Cluster,
-	namespace: string,
-	serviceName: string,
-): Promise<number> {
-	const service = await cluster.api.corev1.readNamespacedService({
-		namespace,
-		name: serviceName,
-	});
-	const nodePort = service.spec?.ports?.[0]?.nodePort;
-	if (nodePort === undefined) {
-		throw new Error(`Service ${namespace}/${serviceName} does not have a node port`);
-	}
-	return nodePort;
 }
 
 export async function fetchPodPort(
