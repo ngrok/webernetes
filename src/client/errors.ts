@@ -30,6 +30,10 @@ export function isInvalidError(error: unknown): boolean {
 	return isApiError(error, "Invalid", 422);
 }
 
+export function isUnsupportedMediaTypeError(error: unknown): boolean {
+	return isApiError(error, "UnsupportedMediaType", 415);
+}
+
 export function hasStatusCause(error: unknown, name: string): boolean {
 	if (!(error instanceof Error) || !("body" in error)) {
 		return false;

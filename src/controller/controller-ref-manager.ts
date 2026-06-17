@@ -297,10 +297,10 @@ interface ObjectMetaForMergePatch {
 }
 
 // Models kubernetes/pkg/controller/controller_ref_manager.go GenerateDeleteOwnerRefStrategicMergeBytes.
-function generateDeleteOwnerRefStrategicMergeBytes(
+export function generateDeleteOwnerRefStrategicMergeBytes(
 	dependentUID: string | undefined,
 	ownerUIDs: string[],
-	finalizers: string[],
+	finalizers: string[] = [],
 ): MarshalResult {
 	const ownerReferences: Array<Record<string, string>> = [];
 	for (const ownerUID of ownerUIDs) {
