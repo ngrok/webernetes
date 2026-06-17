@@ -1,5 +1,6 @@
 import { getClock } from "../../../../clock-context";
 import { retryConflicts } from "../../../../retry";
+import { strategicMergePatch } from "../../../../apimachinery/pkg/util/strategicpatch/patch";
 import {
 	EventStore,
 	NamespaceStore,
@@ -482,15 +483,19 @@ export class CoreV1Api implements CoreV1ApiInterface {
 		options?: unknown,
 	): Promise<V1Pod> {
 		return await rethrowApiErrors(async () => {
-			validateMergePatchContentType(options);
+			const patchStrategy = validatePodPatchContentType(options);
 			return await retryConflicts(this.ctx, async () => {
 				const pod = await this.pods.get(request.name, request.namespace);
 				if (!pod) {
 					throw new NotFound(`Pod "${request.name}" not found`);
 				}
 				validatePatchName(request.body, request.name);
+				validatePatchUid(request.body, request.name, pod.metadata?.uid);
 
-				const patched = mergePatch(pod, request.body);
+				const patched =
+					patchStrategy === PatchStrategy.StrategicMergePatch
+						? strategicMergePatch(pod, request.body)
+						: mergePatch(pod, request.body);
 				patched.metadata ??= {};
 				patched.metadata.name = request.name;
 				patched.metadata.namespace ??= request.namespace;
@@ -644,6 +649,17 @@ function validateMergePatchContentType(options: unknown): void {
 	if (contentType !== PatchStrategy.MergePatch) {
 		throw new UnsupportedMediaType(`Unsupported Media Type: ${contentType ?? ""}`);
 	}
+}
+
+function validatePodPatchContentType(options: unknown): PatchStrategy {
+	const contentType = getContentType(options);
+	if (
+		contentType !== PatchStrategy.MergePatch &&
+		contentType !== PatchStrategy.StrategicMergePatch
+	) {
+		throw new UnsupportedMediaType(`Unsupported Media Type: ${contentType ?? ""}`);
+	}
+	return contentType;
 }
 
 function getContentType(options: unknown): string | undefined {
