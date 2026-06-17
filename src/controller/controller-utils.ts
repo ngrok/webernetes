@@ -53,6 +53,11 @@ export function keyFunc(obj: k8s.KubernetesObject): [string, Error | undefined] 
 	return metaNamespaceKeyFunc(obj);
 }
 
+// Models kubernetes/pkg/controller/controller_utils.go PodKey.
+export function podKey(pod: k8s.V1Pod): string {
+	return `${pod.metadata?.namespace ?? "default"}/${pod.metadata?.name ?? ""}`;
+}
+
 // Models kubernetes/pkg/controller/controller_utils.go PodControllerIndexKey.
 export function podControllerIndexKey(
 	namespace: string,
