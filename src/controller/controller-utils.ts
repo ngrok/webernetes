@@ -166,7 +166,7 @@ export class ControlleeExpectations {
 }
 
 // Models kubernetes/pkg/controller/controller_utils.go ExpKeyFunc.
-function expKeyFunc(obj: ControlleeExpectations | ExplicitKey): [string, Error | undefined] {
+export function expKeyFunc(obj: ControlleeExpectations | ExplicitKey): [string, Error | undefined] {
 	if (obj instanceof ExplicitKey) {
 		return [obj.key, undefined];
 	}
@@ -197,7 +197,7 @@ function uidSetKeyFunc(obj: UIDSet | ExplicitKey): [string, Error | undefined] {
 
 // Models kubernetes/pkg/controller/controller_utils.go ControllerExpectations.
 export class ControllerExpectations {
-	private readonly store: Store<ControlleeExpectations>;
+	store: Store<ControlleeExpectations>;
 	private readonly lock = new Mutex();
 
 	constructor(private readonly ctx: context.Context) {
