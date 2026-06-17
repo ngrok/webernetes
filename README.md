@@ -32,11 +32,19 @@ images from Docker Hub or anything like that, nor is it a goal to do so.**
 import { BaseImage, type ProcessContext } from "webernetes";
 
 class MyImage extends BaseImage {
+	// The imageName and imageVersion variables are what make up the image label
+	// you'll use in your container definition. Here we have my-image:1.0 but
+	// webernetes also knows what to do if you specify just my-image or
+	// my-image:latest
 	static readonly imageName = "my-image";
 	static readonly imageVersion = "1.0";
 
+	// If no other command is specified in your container manifest, this is the
+	// command that will be passed in as argv below.
 	readonly defaultCommand = ["server"];
 
+	// exec is the main entrypoint for your image. It will be called with the
+	// command-line arguments passed in from your container definition.
 	override async exec(ctx: ProcessContext, argv: readonly string[]): Promise<number> {
 		if (argv[0] !== "server") {
 			// The base image defines a bunch of core utils (cat, false, printenv,
@@ -46,7 +54,7 @@ class MyImage extends BaseImage {
 		}
 
 		// Binds to port 8080 on this container.
-		ctx.listenHttp(8080, async () => {
+		ctx.listenHttp(8080, async (request) => {
 			return {
 				statusCode: 200,
 				body: "hello, world\n",
@@ -70,7 +78,69 @@ const cluster = new Cluster();
 cluster.registerImage(MyImage);
 ```
 
+And then we can run the cluster and spawn a pod using our image in it.
+
+```typescript
+// By default this spins up a 3-node cluster. This can't currently be changed.
+await cluster.init();
+
+await cluster.apply([
+	{
+		apiVersion: "v1",
+		kind: "Pod",
+		metadata: {
+			name: "my-pod",
+			labels: { app: "my-pod" },
+		},
+		spec: {
+			containers: [
+				{
+					name: "my-container",
+					image: "my-image:1.0",
+				},
+			],
+		},
+	},
+]);
+```
+
+To send a request to your pod, you'll need to create a `Service` to talk to it.
+In this case, a `NodePort` service gives us the easiest route.
+
+```typescript
+await cluster.apply([
+	{
+		apiVersion: "v1",
+		kind: "Service",
+		metadata: { name: "my-service" },
+		spec: {
+			type: "NodePort",
+			ports: [
+				{
+					port: 80,
+					targetPort: 8080,
+					nodePort: 31000,
+					protocol: "TCP",
+				},
+			],
+			selector: {
+				app: "my-pod",
+			},
+		},
+	},
+]);
+
+const resp = await cluster.fetch("http://node-1:31000");
+const text = await resp.text(); // hello, world
+```
+
+Pods are also able to talk to each other over HTTP. To see how this works in a
+more complete example, check out the code under the `demo/` directory.
+
 ## What's implemented and what isn't
+
+I've scoped this so far to the bits I need to make the first piece of content
+I want to make, which is about probing.
 
 - [x]
 
