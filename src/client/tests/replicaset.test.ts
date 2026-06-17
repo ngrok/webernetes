@@ -338,12 +338,13 @@ kubernetes.describe("ReplicaSets", ({ apps, core, k8s, kubeConfig, helpers }) =>
 		});
 	});
 
-	it("should recreate a manually deleted replicaset pod", async () => {
+	it("should maintain the requested replica count after a replicaset pod is manually deleted", async () => {
 		const namespace = await getTestNamespace();
+		const desiredReplicas = 3;
 		await createReplicaSet({
 			metadata: { name: "pod-recreate-rs" },
 			spec: {
-				replicas: 2,
+				replicas: desiredReplicas,
 				selector: {
 					matchLabels: {
 						app: "pod-recreate-rs",
@@ -365,16 +366,18 @@ kubernetes.describe("ReplicaSets", ({ apps, core, k8s, kubeConfig, helpers }) =>
 		let originalPodNames: string[] = [];
 		await waitFor(async () => {
 			const pods = await activePods(namespace, "app=pod-recreate-rs");
-			expect(pods).toHaveLength(2);
+			expect(pods).toHaveLength(desiredReplicas);
 			originalPodNames = pods.map((pod) => pod.metadata?.name ?? "").sort();
 		});
 
-		await core.deleteNamespacedPod({ namespace, name: originalPodNames[0] ?? "" });
+		const deletedPodName = originalPodNames[0];
+		expect(deletedPodName).toBeTruthy();
+		await core.deleteNamespacedPod({ namespace, name: deletedPodName ?? "" });
 
 		await waitFor(async () => {
 			const pods = await activePods(namespace, "app=pod-recreate-rs");
 			const podNames = pods.map((pod) => pod.metadata?.name ?? "").sort();
-			expect(pods).toHaveLength(2);
+			expect(pods).toHaveLength(desiredReplicas);
 			expect(podNames).not.toEqual(originalPodNames);
 			expect(podNames.some((name) => !originalPodNames.includes(name))).toBe(true);
 		});

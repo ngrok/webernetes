@@ -414,12 +414,13 @@ kubernetes.describe("Deployments", ({ apps, core, k8s, kubeConfig, helpers }) =>
 		});
 	});
 
-	it("should recreate a manually deleted deployment pod", async () => {
+	it("should maintain the requested replica count after a deployment pod is manually deleted", async () => {
 		const namespace = await getTestNamespace();
+		const desiredReplicas = 3;
 		await createDeployment({
 			metadata: { name: "pod-recreate-deployment" },
 			spec: {
-				replicas: 2,
+				replicas: desiredReplicas,
 				selector: {
 					matchLabels: {
 						app: "pod-recreate-deployment",
@@ -441,16 +442,131 @@ kubernetes.describe("Deployments", ({ apps, core, k8s, kubeConfig, helpers }) =>
 		let originalPodNames: string[] = [];
 		await waitFor(async () => {
 			const pods = await activePods(namespace, "app=pod-recreate-deployment");
-			expect(pods).toHaveLength(2);
+			expect(pods).toHaveLength(desiredReplicas);
 			originalPodNames = pods.map((pod) => pod.metadata?.name ?? "").sort();
 		});
 
-		await core.deleteNamespacedPod({ namespace, name: originalPodNames[0] ?? "" });
+		const deletedPodName = originalPodNames[0];
+		expect(deletedPodName).toBeTruthy();
+		await core.deleteNamespacedPod({ namespace, name: deletedPodName ?? "" });
 
 		await waitFor(async () => {
 			const pods = await activePods(namespace, "app=pod-recreate-deployment");
 			const podNames = pods.map((pod) => pod.metadata?.name ?? "").sort();
+			expect(pods).toHaveLength(desiredReplicas);
+			expect(podNames).not.toEqual(originalPodNames);
+			expect(podNames.some((name) => !originalPodNames.includes(name))).toBe(true);
+		});
+	});
+
+	it("should recreate an immediately deleted deployment pod", async () => {
+		const namespace = await getTestNamespace();
+		await createDeployment({
+			metadata: { name: "immediate-pod-recreate-deployment" },
+			spec: {
+				replicas: 2,
+				selector: {
+					matchLabels: {
+						app: "immediate-pod-recreate-deployment",
+					},
+				},
+				template: {
+					metadata: {
+						labels: {
+							app: "immediate-pod-recreate-deployment",
+						},
+					},
+					spec: {
+						containers: [{ name: "pause", image: podImage }],
+					},
+				},
+			},
+		});
+
+		let originalPodNames: string[] = [];
+		await waitFor(async () => {
+			const pods = await activePods(namespace, "app=immediate-pod-recreate-deployment");
 			expect(pods).toHaveLength(2);
+			originalPodNames = pods.map((pod) => pod.metadata?.name ?? "").sort();
+		});
+
+		await core.deleteNamespacedPod({
+			namespace,
+			name: originalPodNames[0] ?? "",
+			gracePeriodSeconds: 0,
+			body: { gracePeriodSeconds: 0 },
+		});
+
+		await waitFor(async () => {
+			const pods = await activePods(namespace, "app=immediate-pod-recreate-deployment");
+			const podNames = pods.map((pod) => pod.metadata?.name ?? "").sort();
+			expect(pods).toHaveLength(2);
+			expect(podNames).not.toEqual(originalPodNames);
+			expect(podNames.some((name) => !originalPodNames.includes(name))).toBe(true);
+		});
+	});
+
+	it("should recreate an immediately deleted health-probed deployment pod", async () => {
+		const namespace = await getTestNamespace();
+		await createDeployment({
+			metadata: { name: "probed-pod-recreate-deployment" },
+			spec: {
+				replicas: 3,
+				selector: {
+					matchLabels: {
+						app: "probed-pod-recreate-deployment",
+					},
+				},
+				template: {
+					metadata: {
+						labels: {
+							app: "probed-pod-recreate-deployment",
+						},
+					},
+					spec: {
+						containers: [
+							{
+								name: "server",
+								image: agnhostImage,
+								command: ["/agnhost", "netexec", "--http-port=8080"],
+								ports: [{ name: "http", containerPort: 8080 }],
+								readinessProbe: {
+									httpGet: { path: "/readyz", port: "http" },
+									periodSeconds: 5,
+									failureThreshold: 1,
+									timeoutSeconds: 5,
+								},
+								livenessProbe: {
+									httpGet: { path: "/healthz", port: "http" },
+									periodSeconds: 5,
+									failureThreshold: 1,
+									timeoutSeconds: 5,
+								},
+							},
+						],
+					},
+				},
+			},
+		});
+
+		let originalPodNames: string[] = [];
+		await waitFor(async () => {
+			const pods = await activePods(namespace, "app=probed-pod-recreate-deployment");
+			expect(pods).toHaveLength(3);
+			originalPodNames = pods.map((pod) => pod.metadata?.name ?? "").sort();
+		});
+
+		await core.deleteNamespacedPod({
+			namespace,
+			name: originalPodNames[0] ?? "",
+			gracePeriodSeconds: 0,
+			body: { gracePeriodSeconds: 0 },
+		});
+
+		await waitFor(async () => {
+			const pods = await activePods(namespace, "app=probed-pod-recreate-deployment");
+			const podNames = pods.map((pod) => pod.metadata?.name ?? "").sort();
+			expect(pods).toHaveLength(3);
 			expect(podNames).not.toEqual(originalPodNames);
 			expect(podNames.some((name) => !originalPodNames.includes(name))).toBe(true);
 		});
