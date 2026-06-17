@@ -1,14 +1,652 @@
+// oxlint-disable vitest/no-conditional-expect
 /*!
  * SPDX-License-Identifier: Apache-2.0
  * Derived from Kubernetes, translated and modified for Webernetes.
  */
 import { expect, it } from "vitest";
 
-import type { V1Pod, V1PodTemplateSpec } from "../client";
+import type { KubernetesObject, V1Pod, V1PodTemplateSpec } from "../client";
+import { newControllerRef } from "../apimachinery/pkg/apis/meta/v1/controller_ref";
+import { GroupVersion } from "../apimachinery/pkg/runtime/schema/group_version";
+import { newTestKubeClient } from "../client/test";
+import { TTLPolicy } from "../client-go/tools/cache/expiration-cache";
+import { newFakeExpirationStore } from "../client-go/tools/cache/expiration-cache-fakes";
+import { newFakeRecorder } from "../client-go/tools/record/fake";
+import { Clock } from "../clock";
+import { withClock } from "../clock-context";
+import * as context from "../go/context";
+import { WaitGroup } from "../go/sync/wait-group";
 import { browser } from "../test/describe";
-import { ActivePodsWithRanks, computeHash } from "./controller-utils";
+import {
+	ActivePodsWithRanks,
+	type ControllerExpectations,
+	computeHash,
+	expKeyFunc,
+	findMinNextPodAvailabilitySimpleCheck,
+	findMinNextPodAvailabilityCheck,
+	keyFunc,
+	nextPodAvailabilityCheck,
+	newControllerExpectations,
+	newUIDTrackingControllerExpectations,
+	podKey,
+	RealPodControl,
+} from "./controller-utils";
 
-browser.describe("controller utils", () => {
+// Models kubernetes/pkg/controller/controller_utils_test.go NewFakeControllerExpectationsLookup.
+function newFakeControllerExpectationsLookup(ttl: number): [ControllerExpectations, Clock] {
+	const fakeClock = new Clock();
+	fakeClock.pause();
+	const ctx = withClock(context.background(), fakeClock);
+	const ttlPolicy = new TTLPolicy(ttl, fakeClock);
+	const ttlStore = newFakeExpirationStore(expKeyFunc, undefined, ttlPolicy, fakeClock);
+	const expectations = newControllerExpectations(ctx);
+	expectations.store = ttlStore;
+	return [expectations, fakeClock];
+}
+
+interface TestReplicationController extends KubernetesObject {
+	spec: {
+		replicas: number;
+		selector: Record<string, string>;
+		template: V1PodTemplateSpec;
+	};
+}
+
+// Models kubernetes/pkg/controller/controller_utils_test.go newReplicationController.
+function newReplicationController(replicas: number): TestReplicationController {
+	return {
+		apiVersion: "v1",
+		kind: "ReplicationController",
+		metadata: {
+			uid: crypto.randomUUID(),
+			name: "foobar",
+			namespace: "default",
+			resourceVersion: "18",
+		},
+		spec: {
+			replicas,
+			selector: { foo: "bar" },
+			template: {
+				metadata: {
+					labels: {
+						name: "foo",
+						type: "production",
+					},
+				},
+				spec: {
+					containers: [{ name: "", image: "foo/bar" }],
+					restartPolicy: "Always",
+					dnsPolicy: "Default",
+					nodeSelector: {
+						baz: "blah",
+					},
+				},
+			},
+		},
+	};
+}
+
+// Models kubernetes/pkg/controller/controller_utils_test.go newPodList.
+function newPodList(
+	_store: undefined,
+	count: number,
+	status: string,
+	rc: TestReplicationController,
+): V1Pod[] {
+	const pods: V1Pod[] = [];
+	for (let i = 0; i < count; i++) {
+		const newPod: V1Pod = {
+			metadata: {
+				name: `pod${i}`,
+				labels: rc.spec.selector,
+				namespace: rc.metadata?.namespace,
+			},
+			status: { phase: status },
+		};
+		pods.push(newPod);
+	}
+	return pods;
+}
+
+browser.describe("controller utils", ({ ctx }) => {
+	// Models kubernetes/pkg/controller/controller_utils_test.go TestControllerExpectations.
+	it("ControllerExpectations", async () => {
+		const ttl = 30 * 1000;
+		const [e, fakeClock] = newFakeControllerExpectationsLookup(ttl);
+		const adds = 10;
+		const dels = 30;
+		const rc = newReplicationController(1);
+
+		// RC fires off adds and deletes at apiserver, then sets expectations
+		const [rcKey, keyErr] = keyFunc(rc);
+		expect(keyErr).toBeUndefined();
+
+		await e.setExpectations(rcKey, adds, dels);
+		const wg = new WaitGroup();
+		const errors: unknown[] = [];
+		for (let i = 0; i < adds + 1; i++) {
+			wg.add(1);
+			queueMicrotask(() => {
+				void e
+					.creationObserved(rcKey)
+					.catch((error: unknown) => {
+						errors.push(error);
+					})
+					.finally(() => {
+						wg.done();
+					});
+			});
+		}
+		await wg.wait();
+		if (errors.length > 0) {
+			throw errors[0];
+		}
+
+		expect(e.satisfiedExpectations(rcKey)).toBe(false);
+
+		for (let i = 0; i < dels + 1; i++) {
+			wg.add(1);
+			queueMicrotask(() => {
+				void e
+					.deletionObserved(rcKey)
+					.catch((error: unknown) => {
+						errors.push(error);
+					})
+					.finally(() => {
+						wg.done();
+					});
+			});
+		}
+		await wg.wait();
+		if (errors.length > 0) {
+			throw errors[0];
+		}
+
+		const tests: Array<{
+			name: string;
+			expectationsToSet?: [number, number];
+			expireExpectations: boolean;
+			wantPodExpectations: [number, number];
+			wantExpectationsSatisfied: boolean;
+		}> = [
+			{
+				name: "Expectations have been surpassed",
+				expireExpectations: false,
+				wantPodExpectations: [-1, -1],
+				wantExpectationsSatisfied: true,
+			},
+			{
+				name: "Old expectations are cleared because of ttl",
+				expectationsToSet: [1, 2],
+				expireExpectations: true,
+				wantPodExpectations: [1, 2],
+				wantExpectationsSatisfied: false,
+			},
+		];
+
+		for (const test of tests) {
+			if (test.expectationsToSet) {
+				await e.setExpectations(rcKey, test.expectationsToSet[0], test.expectationsToSet[1]);
+			}
+			const [podExp, exists, err] = e.getExpectations(rcKey);
+			expect(err).toBeUndefined();
+			expect(exists).toBe(true);
+			expect({ name: test.name, expectations: podExp?.getExpectations() }).toEqual({
+				name: test.name,
+				expectations: test.wantPodExpectations,
+			});
+			expect({ name: test.name, satisfied: e.satisfiedExpectations(rcKey) }).toEqual({
+				name: test.name,
+				satisfied: test.wantExpectationsSatisfied,
+			});
+
+			if (test.expireExpectations) {
+				fakeClock.step(ttl + 1);
+				expect(e.satisfiedExpectations(rcKey)).toBe(true);
+			}
+		}
+	});
+
+	// Models kubernetes/pkg/controller/controller_utils_test.go TestUIDExpectations.
+	it("UIDExpectations", async () => {
+		const uidExp = newUIDTrackingControllerExpectations(newControllerExpectations(ctx));
+		type TestCase = {
+			name: string;
+			numReplicas: number;
+		};
+
+		const shuffleTests = (tests: TestCase[]): void => {
+			for (let i = 0; i < tests.length; i++) {
+				const j = Math.floor(Math.random() * (i + 1));
+				const test = tests[i];
+				const swap = tests[j];
+				if (test && swap) {
+					tests[i] = swap;
+					tests[j] = test;
+				}
+			}
+		};
+
+		const getRcDataFrom = async (test: TestCase): Promise<[string, string[]]> => {
+			const rc = newReplicationController(test.numReplicas);
+
+			const rcName = `rc-${test.numReplicas}`;
+			if (rc.metadata) {
+				rc.metadata.name = rcName;
+			}
+			rc.spec.selector[rcName] = rcName;
+
+			const podList = newPodList(undefined, 5, "Running", rc);
+			const [rcKey, err] = keyFunc(rc);
+			if (err) {
+				throw new Error(`Couldn't get key for object ${JSON.stringify(rc)}: ${err.message}`);
+			}
+
+			const rcPodNames: string[] = [];
+			for (const p of podList) {
+				p.metadata ??= {};
+				p.metadata.name = `${p.metadata.name}-${rc.metadata?.name ?? ""}`;
+				rcPodNames.push(podKey(p));
+			}
+			await uidExp.expectDeletions(rcKey, rcPodNames);
+			return [rcKey, rcPodNames];
+		};
+
+		const tests: TestCase[] = [
+			{ name: "Replication controller with 2 replicas", numReplicas: 2 },
+			{ name: "Replication controller with 1 replica", numReplicas: 1 },
+			{ name: "Replication controller with no replicas", numReplicas: 0 },
+			{ name: "Replication controller with 5 replicas", numReplicas: 5 },
+		];
+
+		shuffleTests(tests);
+		for (const test of tests) {
+			const [rcKey, rcPodNames] = await getRcDataFrom(test);
+			expect({ name: test.name, satisfied: uidExp.satisfiedExpectations(rcKey) }).toEqual({
+				name: test.name,
+				satisfied: false,
+			});
+
+			for (const p of rcPodNames) {
+				await uidExp.deletionObserved(rcKey, p);
+			}
+
+			expect({ name: test.name, satisfied: uidExp.satisfiedExpectations(rcKey) }).toEqual({
+				name: test.name,
+				satisfied: true,
+			});
+
+			await uidExp.deleteExpectations(rcKey);
+
+			expect({ name: test.name, uids: uidExp.getUIDs(rcKey) }).toEqual({
+				name: test.name,
+				uids: undefined,
+			});
+		}
+	});
+
+	// Models kubernetes/pkg/controller/controller_utils_test.go TestCreatePodsWithGenerateName.
+	it("CreatePodsWithGenerateName", async () => {
+		const namespace = "default";
+		const generateName = "hello-";
+		const controllerSpec = newReplicationController(1);
+		const controllerRef = newControllerRef(
+			controllerSpec,
+			new GroupVersion("", "v1").withKind("ReplicationController"),
+		);
+
+		type TestCase = {
+			name: string;
+			podCreationFunc: (podControl: RealPodControl) => Promise<Error | undefined>;
+			wantPod: V1Pod;
+		};
+		const tests: TestCase[] = [
+			{
+				name: "Create pod",
+				podCreationFunc: async (podControl) =>
+					await podControl.createPods(
+						ctx,
+						namespace,
+						controllerSpec.spec?.template ?? {},
+						controllerSpec,
+						controllerRef,
+					),
+				wantPod: {
+					metadata: {
+						labels: controllerSpec.spec?.template?.metadata?.labels,
+						generateName: `${controllerSpec.metadata?.name}-`,
+					},
+					spec: controllerSpec.spec?.template?.spec,
+				},
+			},
+			{
+				name: "Create pod with generate name",
+				podCreationFunc: async (podControl) =>
+					await podControl.createPodsWithGenerateName(
+						ctx,
+						namespace,
+						controllerSpec.spec?.template ?? {},
+						controllerSpec,
+						controllerRef,
+						generateName,
+					),
+				wantPod: {
+					metadata: {
+						labels: controllerSpec.spec?.template?.metadata?.labels,
+						generateName,
+						ownerReferences: [controllerRef],
+					},
+					spec: controllerSpec.spec?.template?.spec,
+				},
+			},
+		];
+
+		for (const test of tests) {
+			const [client] = await newTestKubeClient(ctx, [
+				{ apiVersion: "v1", kind: "Namespace", metadata: { name: namespace } },
+			]);
+			let callbackCalled = false;
+			const podControl = new RealPodControl(client.corev1, newFakeRecorder(10), () => {
+				callbackCalled = true;
+			});
+
+			const err = await test.podCreationFunc(podControl);
+			expect(err).toBeUndefined();
+			expect({ name: test.name, callbackCalled }).toEqual({
+				name: test.name,
+				callbackCalled: true,
+			});
+
+			const pods = await client.corev1.listNamespacedPod({ namespace });
+			expect({ name: test.name, podCount: pods.items.length }).toEqual({
+				name: test.name,
+				podCount: 1,
+			});
+			expect({ name: test.name, pod: pods.items[0] }).toMatchObject({
+				name: test.name,
+				pod: test.wantPod,
+			});
+		}
+	});
+
+	// Models kubernetes/pkg/controller/controller_utils_test.go TestPatchPodCallbacks.
+	it("PatchPodCallbacks", async () => {
+		const [client] = await newTestKubeClient(ctx, [
+			{
+				apiVersion: "v1",
+				kind: "Pod",
+				metadata: { name: "test-pod", namespace: "default" },
+				spec: { containers: [{ name: "main", image: "image" }] },
+			},
+		]);
+		let wroteCallbackCalled = false;
+		const podControl = new RealPodControl(client.corev1, newFakeRecorder(10), () => {
+			wroteCallbackCalled = true;
+		});
+
+		const patchBytes = new TextEncoder().encode("{}");
+		const notFoundErr = await podControl.patchPod(ctx, "default", "non-existing-pod", patchBytes);
+		expect(wroteCallbackCalled).toBe(false);
+		expect(notFoundErr).toMatchObject({ code: 404 });
+
+		const err = await podControl.patchPod(ctx, "default", "test-pod", patchBytes);
+		expect(wroteCallbackCalled).toBe(true);
+		expect(err).toBeUndefined();
+	});
+
+	// Models kubernetes/pkg/controller/controller_utils_test.go TestDeletePodsAllowsMissing.
+	it("DeletePodsAllowsMissing", async () => {
+		const [client] = await newTestKubeClient(ctx);
+		const podControl = new RealPodControl(client.corev1, newFakeRecorder(10));
+		const controllerSpec = newReplicationController(1);
+
+		const err = await podControl.deletePod(ctx, "namespace-name", "podName", controllerSpec);
+		expect(err).toMatchObject({ code: 404 });
+	});
+
+	// Models kubernetes/pkg/controller/controller_utils_test.go TestNextPodAvailabilityCheck.
+	it("NextPodAvailabilityCheck", () => {
+		const newPodWithReadyCond = (now: Date, ready: boolean, beforeSec: number): V1Pod => ({
+			status: {
+				conditions: [
+					{
+						type: "Ready",
+						lastTransitionTime: new Date(now.getTime() - beforeSec * 1000),
+						status: ready ? "True" : "False",
+					},
+				],
+			},
+		});
+
+		const now = new Date();
+		const tests: Array<{
+			name: string;
+			pod: V1Pod;
+			minReadySeconds: number;
+			expected: number | undefined;
+		}> = [
+			{
+				name: "not ready",
+				pod: newPodWithReadyCond(now, false, 0),
+				minReadySeconds: 0,
+				expected: undefined,
+			},
+			{
+				name: "no minReadySeconds defined",
+				pod: newPodWithReadyCond(now, true, 0),
+				minReadySeconds: 0,
+				expected: undefined,
+			},
+			{
+				name: "lastTransitionTime is zero",
+				pod: { status: { conditions: [{ type: "Ready", status: "True" }] } },
+				minReadySeconds: 1,
+				expected: undefined,
+			},
+			{
+				name: "just became ready - available in 1s",
+				pod: newPodWithReadyCond(now, true, 0),
+				minReadySeconds: 1,
+				expected: 1000,
+			},
+			{
+				name: "ready for 20s - available in 10s",
+				pod: newPodWithReadyCond(now, true, 20),
+				minReadySeconds: 30,
+				expected: 10_000,
+			},
+			{
+				name: "available",
+				pod: newPodWithReadyCond(now, true, 51),
+				minReadySeconds: 50,
+				expected: undefined,
+			},
+		];
+
+		for (const test of tests) {
+			const nextAvailable = nextPodAvailabilityCheck(test.pod, test.minReadySeconds, now);
+			expect({ name: test.name, nextAvailable }).toEqual({
+				name: test.name,
+				nextAvailable: test.expected,
+			});
+		}
+	});
+
+	// Models kubernetes/pkg/controller/controller_utils_test.go TestFindMinNextPodAvailabilitySimpleCheck.
+	it("FindMinNextPodAvailabilitySimpleCheck", () => {
+		const clock = new Clock();
+		clock.pause();
+		const now = clock.now();
+		const pod = (name: string, ready: boolean, beforeSec: number): V1Pod => ({
+			metadata: { name },
+			status: {
+				conditions: [
+					{
+						type: "Ready",
+						status: ready ? "True" : "False",
+						lastTransitionTime: new Date(now.getTime() - beforeSec * 1000),
+					},
+				],
+			},
+		});
+
+		const tests: Array<{
+			name: string;
+			pods: V1Pod[];
+			minReadySeconds: number;
+			expected: number | undefined;
+			expectedPod: string | undefined;
+		}> = [
+			{
+				name: "no pods",
+				pods: [],
+				minReadySeconds: 0,
+				expected: undefined,
+				expectedPod: undefined,
+			},
+			{
+				name: "unready pods",
+				pods: [pod("pod1", false, 0), pod("pod2", false, 0)],
+				minReadySeconds: 0,
+				expected: undefined,
+				expectedPod: undefined,
+			},
+			{
+				name: "ready pods with no minReadySeconds",
+				pods: [pod("pod1", true, 0), pod("pod2", true, 0)],
+				minReadySeconds: 0,
+				expected: undefined,
+				expectedPod: undefined,
+			},
+			{
+				name: "unready and ready pods should find min next availability check",
+				pods: [
+					pod("pod1", false, 0),
+					pod("pod2", true, 2),
+					pod("pod3", true, 0),
+					pod("pod4", true, 4),
+					pod("pod5", false, 0),
+				],
+				minReadySeconds: 10,
+				expected: 6000,
+				expectedPod: "pod4",
+			},
+			{
+				name: "unready and available pods do not require min next availability check",
+				pods: [
+					pod("pod1", false, 0),
+					pod("pod2", true, 15),
+					pod("pod3", true, 11),
+					pod("pod4", true, 10),
+					pod("pod5", false, 0),
+				],
+				minReadySeconds: 10,
+				expected: undefined,
+				expectedPod: undefined,
+			},
+		];
+
+		for (const test of tests) {
+			const [nextAvailable, checkPod] = findMinNextPodAvailabilitySimpleCheck(
+				test.pods,
+				test.minReadySeconds,
+				now,
+			);
+			expect({
+				name: test.name,
+				nextAvailable,
+				checkPodName: checkPod?.metadata?.name,
+			}).toEqual({
+				name: test.name,
+				nextAvailable: test.expected,
+				checkPodName: test.expectedPod,
+			});
+
+			const nextAvailableFromPublicCheck = findMinNextPodAvailabilityCheck(
+				test.pods,
+				test.minReadySeconds,
+				now,
+				clock,
+			);
+			expect({
+				name: test.name,
+				nextAvailable: nextAvailableFromPublicCheck,
+			}).toEqual({
+				name: test.name,
+				nextAvailable: test.expected,
+			});
+		}
+	});
+
+	// Models kubernetes/pkg/controller/controller_utils_test.go TestFindMinNextPodAvailability.
+	it("FindMinNextPodAvailability", () => {
+		const now = new Date();
+		const pod = (name: string, ready: boolean, beforeSec: number): V1Pod => ({
+			metadata: { name },
+			status: {
+				conditions: [
+					{
+						type: "Ready",
+						status: ready ? "True" : "False",
+						lastTransitionTime: new Date(now.getTime() - beforeSec * 1000),
+					},
+				],
+			},
+		});
+
+		const tests: Array<{
+			name: string;
+			pods: V1Pod[];
+			minReadySeconds: number;
+			statusEvaluationDelaySeconds: number;
+			expected: number | undefined;
+		}> = [
+			{
+				name: "unready and ready pods should find min next availability check considering status evaluation/update delay",
+				pods: [
+					pod("pod1", false, 0),
+					pod("pod2", true, 2),
+					pod("pod3", true, 0),
+					pod("pod4", true, 4),
+					pod("pod5", false, 0),
+				],
+				minReadySeconds: 10,
+				statusEvaluationDelaySeconds: 2,
+				expected: 4000,
+			},
+			{
+				name: "unready and ready pods should find min next availability check even if the status evaluation delay is longer than minReadySeconds",
+				pods: [
+					pod("pod1", false, 0),
+					pod("pod2", true, 2),
+					pod("pod3", true, 0),
+					pod("pod4", true, 4),
+					pod("pod5", false, 0),
+				],
+				minReadySeconds: 10,
+				statusEvaluationDelaySeconds: 7,
+				expected: 0,
+			},
+		];
+
+		for (const test of tests) {
+			const clock = new Clock();
+			clock.pause();
+			clock.step(test.statusEvaluationDelaySeconds * 1000);
+			const nextAvailable = findMinNextPodAvailabilityCheck(
+				test.pods,
+				test.minReadySeconds,
+				now,
+				clock,
+			);
+
+			expect({ name: test.name, nextAvailable }).toEqual({
+				name: test.name,
+				nextAvailable: test.expected,
+			});
+		}
+	});
+
 	// Models kubernetes/pkg/controller/controller_utils_test.go TestSortingActivePodsWithRanks.
 	it("SortingActivePodsWithRanks", () => {
 		const now = new Date("2026-01-01T00:00:00.000Z");
