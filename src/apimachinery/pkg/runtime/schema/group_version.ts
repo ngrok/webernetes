@@ -46,6 +46,11 @@ export class GroupVersionKind {
 		return new GroupKind(this.group, this.kind);
 	}
 
+	// Models staging/src/k8s.io/apimachinery/pkg/runtime/schema/group_version.go GroupVersionKind.GroupVersion.
+	groupVersion(): GroupVersion {
+		return new GroupVersion(this.group, this.version);
+	}
+
 	// Models staging/src/k8s.io/apimachinery/pkg/runtime/schema/group_version.go GroupVersionKind.String.
 	toString(): string {
 		return `${this.group}/${this.version}, Kind=${this.kind}`;

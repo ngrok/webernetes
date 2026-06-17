@@ -25,9 +25,11 @@ import type { PassiveClock } from "../utils/clock/clock";
 import * as hashutil from "../util/hash/hash";
 
 const podPhaseToOrdinal: Record<string, number> = { Pending: 0, Unknown: 1, Running: 2 };
-const expectationsTimeoutMs = 5 * 60 * 1000;
 const podControllerIndex = "podController";
 const namespaceTerminatingCause = "NamespaceTerminating";
+
+// Models kubernetes/pkg/controller/controller_utils.go ExpectationsTimeout.
+export const expectationsTimeoutMs = 5 * 60 * 1000;
 
 // Models kubernetes/pkg/controller/controller_utils.go FailedCreatePodReason.
 export const failedCreatePodReason = "FailedCreate";
@@ -120,9 +122,6 @@ export function filterPodsByOwner(
 
 // Models kubernetes/pkg/controller/controller_utils.go ControlleeExpectations.
 export class ControlleeExpectations {
-	apiVersion?: string;
-	kind?: string;
-	metadata?: k8s.V1ObjectMeta;
 	add_: number;
 	del: number;
 
