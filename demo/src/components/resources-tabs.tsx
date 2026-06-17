@@ -1,13 +1,23 @@
-import { Button, IconButton } from "@ngrok/mantle/button";
+import { IconButton } from "@ngrok/mantle/button";
 import { Card } from "@ngrok/mantle/card";
+import {
+	CodeBlock,
+	createMantleCodeBlockValue,
+	decorateHighlightedHtml,
+	type MantleCodeBlockValue,
+} from "@ngrok/mantle/code-block";
+import { Popover } from "@ngrok/mantle/popover";
 import { RadioGroup } from "@ngrok/mantle/radio-group";
 import { Table } from "@ngrok/mantle/table";
 import { Tabs } from "@ngrok/mantle/tabs";
+import { useAppliedTheme } from "@ngrok/mantle/theme";
 import { Tooltip } from "@ngrok/mantle/tooltip";
-import { MinusIcon, PlusIcon, TrashIcon } from "@phosphor-icons/react";
-import type { ReactNode } from "react";
-import { useMemo, useState } from "react";
+import { EyeIcon, MinusIcon, PlusIcon, TrashIcon } from "@phosphor-icons/react";
+import type { ComponentProps, ReactNode } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { codeToHtml } from "shiki";
 import * as w8s from "webernetes";
+import { stringify as stringifyYaml } from "yaml";
 
 import {
 	getName,
@@ -245,26 +255,25 @@ function Deployments({
 							<Table.Cell>{deployment.status?.updatedReplicas ?? 0}</Table.Cell>
 							<Table.Cell>{formatLabelSelector(deployment.spec?.selector)}</Table.Cell>
 							<Table.Cell>
-								<div className="flex items-center gap-1">
-									<Button
+								<div className="flex items-center gap-2">
+									<RowActionIconButton
 										type="button"
 										appearance="outlined"
-										priority="neutral"
+										size="md"
 										disabled={replicas === 0}
-										aria-label={`Scale ${getName(deployment, "deployment")} down`}
+										label="Remove replica"
+										icon={<MinusIcon aria-hidden />}
 										onClick={() => void scaleDeployment(cluster, deployment, -1)}
-									>
-										<MinusIcon aria-hidden weight="bold" />
-									</Button>
-									<Button
+									/>
+									<RowActionIconButton
 										type="button"
 										appearance="outlined"
-										priority="neutral"
-										aria-label={`Scale ${getName(deployment, "deployment")} up`}
+										size="md"
+										label="Add replica"
+										icon={<PlusIcon aria-hidden />}
 										onClick={() => void scaleDeployment(cluster, deployment, 1)}
-									>
-										<PlusIcon aria-hidden weight="bold" />
-									</Button>
+									/>
+									<ResourceYamlPopover resource={deployment} />
 								</div>
 							</Table.Cell>
 						</Table.Row>
@@ -295,6 +304,7 @@ function ReplicaSets({
 					<Table.Header>Ready</Table.Header>
 					<Table.Header>Available</Table.Header>
 					<Table.Header>Selector</Table.Header>
+					<Table.Header>Actions</Table.Header>
 				</Table.Row>
 			</Table.Head>
 			<Table.Body>
@@ -315,6 +325,9 @@ function ReplicaSets({
 						<Table.Cell>{replicaset.status?.readyReplicas ?? 0}</Table.Cell>
 						<Table.Cell>{replicaset.status?.availableReplicas ?? 0}</Table.Cell>
 						<Table.Cell>{formatLabelSelector(replicaset.spec?.selector)}</Table.Cell>
+						<Table.Cell>
+							<ResourceYamlPopover resource={replicaset} />
+						</Table.Cell>
 					</Table.Row>
 				))}
 			</Table.Body>
@@ -425,8 +438,8 @@ function Pods({
 									label={`Readiness for ${name || "pod"}`}
 									tooltip="Readiness controls whether this pod receives service traffic."
 									value={readyValue}
-									healthyLabel="Ready"
-									unhealthyLabel="Not ready"
+									healthyLabel="Make this pod pass its readiness check"
+									unhealthyLabel="Make this pod fail its readiness check"
 									onChange={(value) => setPodHealthSelection(pod, "ready", value)}
 								/>
 							</Table.Cell>
@@ -437,23 +450,24 @@ function Pods({
 									label={`Liveness for ${name || "pod"}`}
 									tooltip="Liveness failure makes the kubelet restart this container."
 									value={liveValue}
-									healthyLabel="Live"
-									unhealthyLabel="Not live"
+									healthyLabel="Make this pod pass its liveness check"
+									unhealthyLabel="Make this pod fail its liveness check"
 									onChange={(value) => setPodHealthSelection(pod, "live", value)}
 								/>
 							</Table.Cell>
 							<Table.Cell>
-								<div className="flex items-center gap-1">
-									<IconButton
+								<div className="flex items-center gap-2">
+									<RowActionIconButton
 										type="button"
 										appearance="outlined"
-										size="sm"
+										size="md"
 										className="border-danger-600 text-danger-600 focus-visible:ring-focus-danger not-disabled:hover:border-danger-700 not-disabled:hover:bg-danger-500/10 not-disabled:hover:text-danger-700"
-										label={`Terminate ${name || "pod"}`}
-										icon={<TrashIcon aria-hidden weight="bold" />}
+										label="Delete pod"
+										icon={<TrashIcon aria-hidden />}
 										disabled={!name}
 										onClick={() => void terminatePod(cluster, pod)}
 									/>
+									<ResourceYamlPopover resource={pod} />
 								</div>
 							</Table.Cell>
 						</Table.Row>
@@ -589,6 +603,7 @@ function Services({
 					<Table.Header>Cluster IP</Table.Header>
 					<Table.Header>Ports</Table.Header>
 					<Table.Header>Selector</Table.Header>
+					<Table.Header>Actions</Table.Header>
 				</Table.Row>
 			</Table.Head>
 			<Table.Body>
@@ -604,6 +619,9 @@ function Services({
 						<Table.Cell>{service.spec?.clusterIP ?? "-"}</Table.Cell>
 						<Table.Cell>{formatServicePorts(service)}</Table.Cell>
 						<Table.Cell>{formatSelector(service.spec?.selector)}</Table.Cell>
+						<Table.Cell>
+							<ResourceYamlPopover resource={service} />
+						</Table.Cell>
 					</Table.Row>
 				))}
 			</Table.Body>
@@ -619,6 +637,7 @@ function Nodes({ nodes }: { nodes: w8s.V1Node[] }) {
 					<Table.Header>Name</Table.Header>
 					<Table.Header>Status</Table.Header>
 					<Table.Header>Pod CIDR</Table.Header>
+					<Table.Header>Actions</Table.Header>
 				</Table.Row>
 			</Table.Head>
 			<Table.Body>
@@ -627,6 +646,9 @@ function Nodes({ nodes }: { nodes: w8s.V1Node[] }) {
 						<Table.Cell>{getName(node, "-")}</Table.Cell>
 						<Table.Cell>{node.status?.phase === "NotReady" ? "Not ready" : "Ready"}</Table.Cell>
 						<Table.Cell>{node.spec?.podCIDR ?? "-"}</Table.Cell>
+						<Table.Cell>
+							<ResourceYamlPopover resource={node} />
+						</Table.Cell>
 					</Table.Row>
 				))}
 			</Table.Body>
@@ -641,6 +663,7 @@ function Namespaces({ namespaces }: { namespaces: w8s.V1Namespace[] }) {
 				<Table.Row>
 					<Table.Header>Name</Table.Header>
 					<Table.Header>Status</Table.Header>
+					<Table.Header>Actions</Table.Header>
 				</Table.Row>
 			</Table.Head>
 			<Table.Body>
@@ -648,6 +671,9 @@ function Namespaces({ namespaces }: { namespaces: w8s.V1Namespace[] }) {
 					<Table.Row key={idFor(namespace)}>
 						<Table.Cell>{getName(namespace, "-")}</Table.Cell>
 						<Table.Cell>{namespace.status?.phase ?? "Active"}</Table.Cell>
+						<Table.Cell>
+							<ResourceYamlPopover resource={namespace} />
+						</Table.Cell>
 					</Table.Row>
 				))}
 			</Table.Body>
@@ -667,6 +693,7 @@ function Events({ events }: { events: w8s.CoreV1Event[] }) {
 							<Table.Header>Object</Table.Header>
 							<Table.Header>Reason</Table.Header>
 							<Table.Header>Message</Table.Header>
+							<Table.Header>Actions</Table.Header>
 						</Table.Row>
 					</Table.Head>
 					<Table.Body>
@@ -679,6 +706,9 @@ function Events({ events }: { events: w8s.CoreV1Event[] }) {
 								</Table.Cell>
 								<Table.Cell>{event.reason ?? "-"}</Table.Cell>
 								<Table.Cell>{event.message ?? "-"}</Table.Cell>
+								<Table.Cell>
+									<ResourceYamlPopover resource={event} />
+								</Table.Cell>
 							</Table.Row>
 						))}
 					</Table.Body>
@@ -705,6 +735,133 @@ function ResourceTable({
 			{count === 0 && <div className="text-muted p-4 text-sm">{emptyLabel}</div>}
 		</>
 	);
+}
+
+function RowActionIconButton({ label, ...props }: ComponentProps<typeof IconButton>) {
+	return (
+		<Tooltip.Root>
+			<Tooltip.Trigger asChild>
+				<IconButton label={label} {...props} />
+			</Tooltip.Trigger>
+			<Tooltip.Content>{label}</Tooltip.Content>
+		</Tooltip.Root>
+	);
+}
+
+function ResourceYamlPopover({ resource }: { resource: w8s.KubernetesObject }) {
+	const yaml = useMemo(() => resourceYaml(resource), [resource]);
+	const label = "Inspect manifest";
+	return (
+		<Tooltip.Root>
+			<Popover.Root>
+				<Tooltip.Trigger asChild>
+					<Popover.Trigger asChild>
+						<IconButton
+							type="button"
+							appearance="outlined"
+							size="md"
+							label={label}
+							icon={<EyeIcon aria-hidden />}
+						/>
+					</Popover.Trigger>
+				</Tooltip.Trigger>
+				<Tooltip.Content>{label}</Tooltip.Content>
+				<Popover.Content
+					align="end"
+					side="left"
+					sideOffset={8}
+					preferredWidth="max-w-[min(48rem,calc(100vw-2rem))]"
+					className="p-3"
+					style={{ width: "min(48rem, calc(100vw - 2rem))" }}
+				>
+					<HighlightedYamlCode code={yaml} />
+				</Popover.Content>
+			</Popover.Root>
+		</Tooltip.Root>
+	);
+}
+
+function HighlightedYamlCode({ code }: { code: string }) {
+	const appliedTheme = useAppliedTheme();
+	const shikiTheme = appliedTheme.startsWith("dark") ? "github-dark" : "github-light";
+	const [highlightedHtml, setHighlightedHtml] = useState<string>();
+
+	useEffect(() => {
+		let cancelled = false;
+		void highlightYaml(code, shikiTheme).then(
+			(html) => {
+				if (!cancelled) {
+					setHighlightedHtml(html);
+				}
+				return null;
+			},
+			() => {
+				if (!cancelled) {
+					setHighlightedHtml(undefined);
+				}
+			},
+		);
+		return () => {
+			cancelled = true;
+		};
+	}, [code, shikiTheme]);
+
+	const value = useMemo<MantleCodeBlockValue>(
+		() =>
+			createMantleCodeBlockValue({
+				language: "yaml",
+				code,
+				preHtml: highlightedHtml,
+				showLineNumbers: false,
+			}),
+		[code, highlightedHtml],
+	);
+
+	return (
+		<CodeBlock.Root className="w-full max-w-full border-0 bg-transparent text-[0.6875rem]">
+			<CodeBlock.Body>
+				<CodeBlock.Code
+					value={value}
+					className="max-h-96 w-full text-[0.6875rem] leading-snug"
+					style={{ margin: 0, overflow: "auto", padding: 0 }}
+				/>
+			</CodeBlock.Body>
+		</CodeBlock.Root>
+	);
+}
+
+function resourceYaml(resource: w8s.KubernetesObject): string {
+	return stringifyYaml(JSON.parse(JSON.stringify(resource)));
+}
+
+const highlightedYamlCache = new Map<string, Promise<string>>();
+
+async function highlightYaml(code: string, theme: string): Promise<string> {
+	const cacheKey = `${theme}\n${code}`;
+	let promise = highlightedYamlCache.get(cacheKey);
+	if (!promise) {
+		promise = renderHighlightedYaml(code, theme);
+		highlightedYamlCache.set(cacheKey, promise);
+	}
+	return promise;
+}
+
+async function renderHighlightedYaml(code: string, theme: string): Promise<string> {
+	const html = await codeToHtml(code, {
+		lang: "yaml",
+		theme,
+	});
+	return decorateHighlightedHtml({
+		html: extractShikiCodeHtml(html),
+		showLineNumbers: false,
+	});
+}
+
+function extractShikiCodeHtml(html: string): string {
+	// Shiki returns a full <pre><code> block, but Mantle CodeBlock renders that wrapper itself.
+	const template = document.createElement("template");
+	template.innerHTML = html;
+	return template.content.querySelector("code")?.innerHTML ?? html;
 }
 
 function formatServicePorts(service: w8s.V1Service): string {

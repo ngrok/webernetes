@@ -96,6 +96,9 @@ importers:
       webernetes:
         specifier: workspace:*
         version: link:..
+      yaml:
+        specifier: ^2.9.0
+        version: 2.9.0
     devDependencies:
       '@tailwindcss/vite':
         specifier: ^4.3.0
