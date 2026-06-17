@@ -26,6 +26,10 @@ export function isConflictError(error: unknown): boolean {
 	return isApiError(error, "Conflict", 409);
 }
 
+export function isInvalidError(error: unknown): boolean {
+	return isApiError(error, "Invalid", 422);
+}
+
 export function hasStatusCause(error: unknown, name: string): boolean {
 	if (!(error instanceof Error) || !("body" in error)) {
 		return false;

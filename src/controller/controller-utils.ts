@@ -405,7 +405,7 @@ export interface PodControlInterface {
 		ctx: context.Context,
 		namespace: string,
 		name: string,
-		data: object,
+		data: Uint8Array,
 	): Promise<Error | undefined>;
 }
 
@@ -467,14 +467,18 @@ export class RealPodControl implements PodControlInterface {
 		_ctx: context.Context,
 		namespace: string,
 		name: string,
-		data: object,
+		data: Uint8Array,
 	): Promise<Error | undefined> {
 		try {
+			const body = JSON.parse(new TextDecoder().decode(data)) as unknown;
+			if (typeof body !== "object" || body === null || Array.isArray(body)) {
+				return new Error("decoded pod patch must be an object");
+			}
 			const pod = await this.kubeClient.patchNamespacedPod(
 				{
 					namespace,
 					name,
-					body: data,
+					body,
 				},
 				k8s.setHeaderOptions("Content-Type", k8s.PatchStrategy.StrategicMergePatch),
 			);
