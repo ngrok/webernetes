@@ -26,6 +26,17 @@ export function isConflictError(error: unknown): boolean {
 	return isApiError(error, "Conflict", 409);
 }
 
+export function hasStatusCause(error: unknown, name: string): boolean {
+	if (!(error instanceof Error) || !("body" in error)) {
+		return false;
+	}
+	const body = error.body;
+	if (!isRecord(body) || !isRecord(body.details) || !Array.isArray(body.details.causes)) {
+		return false;
+	}
+	return body.details.causes.some((cause) => isRecord(cause) && cause.reason === name);
+}
+
 export function isApiError(error: unknown, name: string, code: number): boolean {
 	return (
 		error instanceof Error &&
@@ -33,4 +44,8 @@ export function isApiError(error: unknown, name: string, code: number): boolean 
 			("code" in error && error.code === code) ||
 			error.message.includes(`HTTP-Code: ${code}`))
 	);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
