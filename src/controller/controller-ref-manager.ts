@@ -11,7 +11,7 @@ import { newAggregate } from "../apimachinery/pkg/util/errors/errors";
 import { isInvalidError, isNotFoundError } from "../client/errors";
 import type * as context from "../go/context";
 import { Once } from "../go/sync/once";
-import type { PodControlInterface } from "./controller-utils";
+import type { PodControlInterface, RSControlInterface } from "./controller-utils";
 
 // Models kubernetes/pkg/controller/controller_ref_manager.go BaseControllerRefManager.
 export class BaseControllerRefManager {
@@ -217,6 +217,124 @@ export function newPodControllerRefManager(
 		controllerKind,
 		canAdopt,
 		finalizers,
+	);
+}
+
+// Models kubernetes/pkg/controller/controller_ref_manager.go ReplicaSetControllerRefManager.
+export class ReplicaSetControllerRefManager extends BaseControllerRefManager {
+	constructor(
+		readonly rsControl: RSControlInterface,
+		controller: k8s.KubernetesObject,
+		selector: Selector,
+		readonly controllerKind: GroupVersionKind,
+		canAdoptFunc?: (ctx: context.Context) => Promise<Error | undefined>,
+	) {
+		super(controller, selector, canAdoptFunc);
+	}
+
+	// Models kubernetes/pkg/controller/controller_ref_manager.go ClaimReplicaSets.
+	async claimReplicaSets(
+		ctx: context.Context,
+		sets: k8s.V1ReplicaSet[],
+	): Promise<[k8s.V1ReplicaSet[], Error | undefined]> {
+		const claimed: k8s.V1ReplicaSet[] = [];
+		const errlist: Error[] = [];
+
+		const match = (obj: k8s.KubernetesObject): boolean =>
+			this.selector.matches(new LabelSet(obj.metadata?.labels));
+		const adopt = async (
+			adoptCtx: context.Context,
+			obj: k8s.KubernetesObject,
+		): Promise<Error | undefined> => await this.adoptReplicaSet(adoptCtx, obj as k8s.V1ReplicaSet);
+		const release = async (
+			releaseCtx: context.Context,
+			obj: k8s.KubernetesObject,
+		): Promise<Error | undefined> =>
+			await this.releaseReplicaSet(releaseCtx, obj as k8s.V1ReplicaSet);
+
+		for (const rs of sets) {
+			const [ok, err] = await this.claimObject(ctx, rs, match, adopt, release);
+			if (err) {
+				errlist.push(err);
+				continue;
+			}
+			if (ok) {
+				claimed.push(rs);
+			}
+		}
+		return [claimed, newAggregate(errlist)];
+	}
+
+	// Models kubernetes/pkg/controller/controller_ref_manager.go AdoptReplicaSet.
+	async adoptReplicaSet(ctx: context.Context, rs: k8s.V1ReplicaSet): Promise<Error | undefined> {
+		const err = await this.canAdopt(ctx);
+		if (err) {
+			return new Error(
+				`can't adopt ReplicaSet ${rs.metadata?.namespace}/${rs.metadata?.name} (${rs.metadata?.uid}): ${err.message}`,
+			);
+		}
+		const [patchBytes, patchErr] = ownerRefControllerPatch(
+			this.controller,
+			this.controllerKind,
+			rs.metadata?.uid,
+			[],
+		);
+		if (patchErr) {
+			return patchErr;
+		}
+		if (!patchBytes) {
+			return new Error("ownerRefControllerPatch returned no patch");
+		}
+		return await this.rsControl.patchReplicaSet(
+			ctx,
+			rs.metadata?.namespace ?? "default",
+			rs.metadata?.name ?? "",
+			patchBytes,
+		);
+	}
+
+	// Models kubernetes/pkg/controller/controller_ref_manager.go ReleaseReplicaSet.
+	async releaseReplicaSet(
+		ctx: context.Context,
+		replicaSet: k8s.V1ReplicaSet,
+	): Promise<Error | undefined> {
+		const [patchBytes, patchErr] = generateDeleteOwnerRefStrategicMergeBytes(
+			replicaSet.metadata?.uid,
+			[this.controller.metadata?.uid ?? ""],
+		);
+		if (patchErr) {
+			return patchErr;
+		}
+		if (!patchBytes) {
+			return new Error("GenerateDeleteOwnerRefStrategicMergeBytes returned no patch");
+		}
+		const err = await this.rsControl.patchReplicaSet(
+			ctx,
+			replicaSet.metadata?.namespace ?? "default",
+			replicaSet.metadata?.name ?? "",
+			patchBytes,
+		);
+		if (err && (isNotFoundError(err) || isInvalidError(err))) {
+			return undefined;
+		}
+		return err;
+	}
+}
+
+// Models kubernetes/pkg/controller/controller_ref_manager.go NewReplicaSetControllerRefManager.
+export function newReplicaSetControllerRefManager(
+	rsControl: RSControlInterface,
+	controller: k8s.KubernetesObject,
+	selector: Selector,
+	controllerKind: GroupVersionKind,
+	canAdopt?: (ctx: context.Context) => Promise<Error | undefined>,
+): ReplicaSetControllerRefManager {
+	return new ReplicaSetControllerRefManager(
+		rsControl,
+		controller,
+		selector,
+		controllerKind,
+		canAdopt,
 	);
 }
 
