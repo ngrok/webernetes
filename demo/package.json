@@ -14,6 +14,7 @@
     "date-fns": "^4.4.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
+    "shiki": "^4.2.0",
     "webernetes": "workspace:*"
   },
   "devDependencies": {

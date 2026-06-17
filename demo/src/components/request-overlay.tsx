@@ -1,13 +1,26 @@
 import {
+	CodeBlock,
+	createMantleCodeBlockValue,
+	decorateHighlightedHtml,
+	type MantleCodeBlockValue,
+} from "@ngrok/mantle/code-block";
+import { HoverCard } from "@ngrok/mantle/hover-card";
+import { useAppliedTheme } from "@ngrok/mantle/theme";
+import {
+	forwardRef,
 	useCallback,
 	useEffect,
 	useLayoutEffect,
+	useMemo,
 	useRef,
 	useState,
 	type CSSProperties,
-	type ComponentType,
+	type ForwardRefExoticComponent,
+	type HTMLAttributes,
+	type RefAttributes,
 	type RefObject,
 } from "react";
+import { codeToHtml } from "shiki";
 import * as w8s from "webernetes";
 
 import {
@@ -33,12 +46,24 @@ interface Flight {
 	to: Point;
 	durationMs: number;
 	kind: FlightKind;
+	event: w8s.NetworkRequestEvent | w8s.NetworkResponseEvent;
 }
 
 interface Warning {
 	id: number;
 	anchorId: string;
 	message: string;
+}
+
+interface HeaderEntry {
+	name: string;
+	value: string;
+}
+
+interface TooltipExchange {
+	line: string;
+	headers: HeaderEntry[];
+	body?: string;
 }
 
 export function RequestOverlay({
@@ -179,61 +204,197 @@ function FlightDot({
 	}, [paused]);
 
 	const Dot = flightDotComponent(flight.kind);
-	return <Dot innerRef={dotRef} style={{ visibility: "hidden" }} />;
+	return (
+		<HoverCard.Root closeDelay={200} openDelay={0}>
+			<HoverCard.Trigger asChild>
+				<Dot
+					ref={dotRef}
+					className={paused ? "pointer-events-auto" : ""}
+					style={{ visibility: "hidden" }}
+				/>
+			</HoverCard.Trigger>
+			{paused ? <RequestHoverCardContent event={flight.event} /> : undefined}
+		</HoverCard.Root>
+	);
 }
 
-type DotProps = {
-	innerRef: RefObject<HTMLDivElement | null>;
+type DotProps = HTMLAttributes<HTMLDivElement> & {
 	style: CSSProperties;
 };
 
-function DefaultRequestDot({ innerRef, style }: DotProps) {
+type DotComponent = ForwardRefExoticComponent<DotProps & RefAttributes<HTMLDivElement>>;
+
+const DefaultRequestDot = forwardRef<HTMLDivElement, DotProps>(function DefaultRequestDot(
+	{ className = "", ...props },
+	ref,
+) {
 	return (
 		<div
-			ref={innerRef}
-			className="absolute left-0 top-0 size-2.5 rounded-full border border-neutral-200/80 bg-neutral-300/65 shadow-sm dark:border-neutral-400/80 dark:bg-neutral-500/70"
-			style={style}
+			ref={ref}
+			className={`absolute left-0 top-0 z-20 size-2.5 rounded-full border border-neutral-200/80 bg-neutral-300/65 shadow-sm hover:z-[1000] dark:border-neutral-400/80 dark:bg-neutral-500/70 ${className}`}
+			{...props}
 		/>
+	);
+});
+
+const FailedRequestDot = forwardRef<HTMLDivElement, DotProps>(function FailedRequestDot(
+	{ className = "", ...props },
+	ref,
+) {
+	return (
+		<div
+			ref={ref}
+			className={`border-danger-600 bg-danger-500/80 absolute left-0 top-0 z-20 size-2.5 rounded-full border shadow-sm hover:z-[1000] ${className}`}
+			{...props}
+		/>
+	);
+});
+
+const ReadinessProbeDot = forwardRef<HTMLDivElement, DotProps>(function ReadinessProbeDot(
+	{ className = "", ...props },
+	ref,
+) {
+	return (
+		<div
+			ref={ref}
+			className={`absolute left-0 top-0 z-20 size-2.5 rounded-full border border-dotted border-blue-500/70 bg-blue-500/35 shadow-sm hover:z-[1000] ${className}`}
+			{...props}
+		/>
+	);
+});
+
+const LivenessProbeDot = forwardRef<HTMLDivElement, DotProps>(function LivenessProbeDot(
+	{ className = "", ...props },
+	ref,
+) {
+	return (
+		<div
+			ref={ref}
+			className={`absolute left-0 top-0 z-20 size-2.5 rounded-full border border-dotted border-fuchsia-500/70 bg-fuchsia-500/35 shadow-sm hover:z-[1000] ${className}`}
+			{...props}
+		/>
+	);
+});
+
+const StartupProbeDot = forwardRef<HTMLDivElement, DotProps>(function StartupProbeDot(
+	{ className = "", ...props },
+	ref,
+) {
+	return (
+		<div
+			ref={ref}
+			className={`absolute left-0 top-0 z-20 size-2.5 rounded-full border border-dotted border-amber-500/70 bg-amber-500/35 shadow-sm hover:z-[1000] ${className}`}
+			{...props}
+		/>
+	);
+});
+
+function RequestHoverCardContent({
+	event,
+}: {
+	event: w8s.NetworkRequestEvent | w8s.NetworkResponseEvent;
+}) {
+	const request = useMemo(() => formatRequest(event.request), [event.request]);
+	const response = useMemo(() => formatResponseEvent(event), [event]);
+
+	return (
+		<HoverCard.Content
+			side="bottom"
+			align="center"
+			sideOffset={8}
+			className="text-strong min-w-72 max-w-[min(34rem,calc(100vw-2rem))] p-3 text-left text-xs"
+			style={{ width: "max-content" }}
+		>
+			<div className="space-y-2">
+				<RequestTooltipSection title="Request" exchange={request} />
+				{response ? <RequestTooltipSection title="Response" exchange={response} /> : undefined}
+			</div>
+		</HoverCard.Content>
 	);
 }
 
-function FailedRequestDot({ innerRef, style }: DotProps) {
+function RequestTooltipSection({ title, exchange }: { title: string; exchange: TooltipExchange }) {
 	return (
-		<div
-			ref={innerRef}
-			className="border-danger-600 bg-danger-500/80 absolute left-0 top-0 size-2.5 rounded-full border shadow-sm"
-			style={style}
-		/>
+		<div className="space-y-1">
+			<div className="text-accent-600 font-sans text-[0.6875rem] font-semibold uppercase">
+				{title}
+			</div>
+			<div className="w-full overflow-auto font-mono text-[0.6875rem] leading-snug">
+				<div className="text-warning-600 font-semibold">{exchange.line}</div>
+				{exchange.headers.length > 0 ? (
+					<div>
+						{exchange.headers.map((header, index) => (
+							<div key={`${header.name}-${index}`}>
+								<span className="text-muted font-semibold">{header.name}</span>
+								<span className="text-muted">: {header.value}</span>
+							</div>
+						))}
+					</div>
+				) : undefined}
+				{exchange.body ? <RequestTooltipBody body={exchange.body} /> : undefined}
+			</div>
+		</div>
 	);
 }
 
-function ReadinessProbeDot({ innerRef, style }: DotProps) {
-	return (
-		<div
-			ref={innerRef}
-			className="absolute left-0 top-0 size-2.5 rounded-full border border-dotted border-blue-500/70 bg-blue-500/35 shadow-sm"
-			style={style}
-		/>
-	);
+function RequestTooltipBody({ body }: { body: string }) {
+	const code = useMemo(() => parseJsonBody(body), [body]);
+	if (!code) {
+		return (
+			<pre className="mt-2 max-h-60 w-full overflow-auto whitespace-pre font-mono text-[0.6875rem] leading-snug">
+				{body}
+			</pre>
+		);
+	}
+	return <HighlightedJsonCode code={code} />;
 }
 
-function LivenessProbeDot({ innerRef, style }: DotProps) {
-	return (
-		<div
-			ref={innerRef}
-			className="absolute left-0 top-0 size-2.5 rounded-full border border-dotted border-fuchsia-500/70 bg-fuchsia-500/35 shadow-sm"
-			style={style}
-		/>
-	);
-}
+function HighlightedJsonCode({ code }: { code: string }) {
+	const appliedTheme = useAppliedTheme();
+	const shikiTheme = appliedTheme.startsWith("dark") ? "github-dark" : "github-light";
+	const [highlightedHtml, setHighlightedHtml] = useState<string>();
 
-function StartupProbeDot({ innerRef, style }: DotProps) {
+	useEffect(() => {
+		let cancelled = false;
+		void highlightJson(code, shikiTheme).then(
+			(html) => {
+				if (!cancelled) {
+					setHighlightedHtml(html);
+				}
+				return null;
+			},
+			() => {
+				if (!cancelled) {
+					setHighlightedHtml(undefined);
+				}
+			},
+		);
+		return () => {
+			cancelled = true;
+		};
+	}, [code, shikiTheme]);
+
+	const value = useMemo<MantleCodeBlockValue>(
+		() =>
+			createMantleCodeBlockValue({
+				language: "json",
+				code,
+				preHtml: highlightedHtml,
+				showLineNumbers: false,
+			}),
+		[code, highlightedHtml],
+	);
+
 	return (
-		<div
-			ref={innerRef}
-			className="absolute left-0 top-0 size-2.5 rounded-full border border-dotted border-amber-500/70 bg-amber-500/35 shadow-sm"
-			style={style}
-		/>
+		<CodeBlock.Root className="mt-2 w-full max-w-full border-0 bg-transparent text-[0.6875rem]">
+			<CodeBlock.Body>
+				<CodeBlock.Code
+					value={value}
+					className="max-h-60 w-full text-[0.6875rem] leading-snug"
+					style={{ margin: 0, overflow: "auto", padding: 0 }}
+				/>
+			</CodeBlock.Body>
+		</CodeBlock.Root>
 	);
 }
 
@@ -321,9 +482,9 @@ function healthCheckFlight(
 	const kubelet = pointForId(kubeletIdForNodeName(nodeName), container);
 	const podPoint = pointForId(idFor(pod), container);
 	if (isResponseEvent(event)) {
-		return buildFlight(podPoint, kubelet, event.latencyMs, kind);
+		return buildFlight(event, podPoint, kubelet, event.latencyMs, kind);
 	}
-	return buildFlight(kubelet, podPoint, event.latencyMs, kind);
+	return buildFlight(event, kubelet, podPoint, event.latencyMs, kind);
 }
 
 function requestFlight(
@@ -333,7 +494,7 @@ function requestFlight(
 ): Omit<Flight, "id"> | undefined {
 	const from = requestFlightStart(event, points, container);
 	const to = points.at(-1);
-	return buildFlight(from, to, event.latencyMs, "default");
+	return buildFlight(event, from, to, event.latencyMs, "default");
 }
 
 function responseFlight(
@@ -343,7 +504,13 @@ function responseFlight(
 ): Omit<Flight, "id"> | undefined {
 	const from = points[0];
 	const to = responseFlightEnd(event, points, container);
-	return buildFlight(from, to, event.latencyMs, failedResponse(event) ? "failed" : "default");
+	return buildFlight(
+		event,
+		from,
+		to,
+		event.latencyMs,
+		failedResponse(event) ? "failed" : "default",
+	);
 }
 
 function requestFlightStart(
@@ -369,6 +536,7 @@ function responseFlightEnd(
 }
 
 function buildFlight(
+	event: w8s.NetworkRequestEvent | w8s.NetworkResponseEvent,
 	from: Point | undefined,
 	to: Point | undefined,
 	durationMs: number,
@@ -378,6 +546,7 @@ function buildFlight(
 		return undefined;
 	}
 	return {
+		event,
 		from,
 		to,
 		durationMs,
@@ -464,6 +633,96 @@ function isResponseEvent(
 	return "response" in event;
 }
 
+function formatRequest(request: w8s.HttpRequest): TooltipExchange {
+	return {
+		line: `${request.method} ${request.url.toString()}`,
+		headers: requestHeaders(request),
+		body: request.body,
+	};
+}
+
+function formatResponseEvent(
+	event: w8s.NetworkRequestEvent | w8s.NetworkResponseEvent,
+): TooltipExchange | undefined {
+	if (!isResponseEvent(event)) {
+		return undefined;
+	}
+	if (event.error) {
+		return {
+			line: `Error: ${event.error.message}`,
+			headers: [],
+		};
+	}
+	if (!event.response) {
+		return {
+			line: "No response",
+			headers: [],
+		};
+	}
+	return {
+		line: `HTTP ${event.response.status}`,
+		headers: headerEntries(event.response.header ?? {}),
+		body: event.response.body,
+	};
+}
+
+function headerEntries(headers: w8s.HttpHeader): HeaderEntry[] {
+	return Object.entries(headers).flatMap(([name, values]) =>
+		values.map((value) => ({ name, value })),
+	);
+}
+
+function requestHeaders(request: w8s.HttpRequest): HeaderEntry[] {
+	const headers = headerEntries(request.header);
+	if (getHeader(request.header, "Host") !== undefined) {
+		return headers;
+	}
+	return [{ name: "Host", value: request.host }, ...headers];
+}
+
+function parseJsonBody(body: string): string | undefined {
+	const trimmed = body.trim();
+	if (trimmed.length === 0) {
+		return undefined;
+	}
+	try {
+		const parsed: unknown = JSON.parse(trimmed);
+		return JSON.stringify(parsed, undefined, 2);
+	} catch {
+		return undefined;
+	}
+}
+
+const highlightedJsonCache = new Map<string, Promise<string>>();
+
+async function highlightJson(code: string, theme: string): Promise<string> {
+	const cacheKey = `${theme}\n${code}`;
+	let promise = highlightedJsonCache.get(cacheKey);
+	if (!promise) {
+		promise = renderHighlightedJson(code, theme);
+		highlightedJsonCache.set(cacheKey, promise);
+	}
+	return promise;
+}
+
+async function renderHighlightedJson(code: string, theme: string): Promise<string> {
+	const html = await codeToHtml(code, {
+		lang: "json",
+		theme,
+	});
+	return decorateHighlightedHtml({
+		html: extractShikiCodeHtml(html),
+		showLineNumbers: false,
+	});
+}
+
+function extractShikiCodeHtml(html: string): string {
+	// Shiki returns a full <pre><code> block, but Mantle CodeBlock renders that wrapper itself.
+	const template = document.createElement("template");
+	template.innerHTML = html;
+	return template.content.querySelector("code")?.innerHTML ?? html;
+}
+
 function failedResponse(event: w8s.NetworkResponseEvent): boolean {
 	return (event.response?.status ?? 0) >= 400 || Boolean(event.error);
 }
@@ -492,7 +751,7 @@ function dotTransform(point: { x: number; y: number }): string {
 	return `translate(${point.x}px, ${point.y}px) translate(-50%, -50%)`;
 }
 
-function flightDotComponent(kind: FlightKind): ComponentType<DotProps> {
+function flightDotComponent(kind: FlightKind): DotComponent {
 	switch (kind) {
 		case "readiness":
 			return ReadinessProbeDot;

@@ -1,27 +1,10 @@
 import { Badge } from "@ngrok/mantle/badge";
-import { Tooltip } from "@ngrok/mantle/tooltip";
 import { forwardRef, type ComponentPropsWithoutRef } from "react";
 import * as w8s from "webernetes";
-import {
-	getName,
-	getNamespace,
-	getReadyContainers,
-	getRestartCount,
-	hasReadiness,
-	idFor,
-} from "../helpers";
+import { getName, hasReadiness, idFor } from "../helpers";
 
 export function Pod({ highlighted = false, pod }: { highlighted?: boolean; pod: w8s.V1Pod }) {
-	return (
-		<Tooltip.Root>
-			<Tooltip.Trigger asChild>
-				<PodContent highlighted={highlighted} pod={pod} />
-			</Tooltip.Trigger>
-			<Tooltip.Content className="max-w-80">
-				<TooltipContent pod={pod} />
-			</Tooltip.Content>
-		</Tooltip.Root>
-	);
+	return <PodContent highlighted={highlighted} pod={pod} />;
 }
 
 type PodContentProps = ComponentPropsWithoutRef<"div"> & {
@@ -42,7 +25,7 @@ const PodContent = forwardRef<HTMLDivElement, PodContentProps>(function PodConte
 			id={idFor(pod)}
 			ref={ref}
 			{...props}
-			className={`border-card bg-card flex min-h-20 min-w-0 flex-col items-center justify-center gap-2 rounded-md border p-3 text-center transition-all hover:-translate-y-0.5 ${
+			className={`border-card bg-card flex min-h-20 min-w-0 flex-col items-center justify-center gap-2 rounded-md border p-3 text-center transition-colors ${
 				highlighted ? "border-accent-600 bg-accent-500/10 ring-accent-600 shadow-sm ring-2" : ""
 			}`}
 		>
@@ -55,25 +38,6 @@ const PodContent = forwardRef<HTMLDivElement, PodContentProps>(function PodConte
 		</div>
 	);
 });
-
-function TooltipContent({ pod }: { pod: w8s.V1Pod }) {
-	const containers = pod.spec?.containers ?? [];
-
-	return (
-		<div className="space-y-1 font-sans text-xs">
-			<div className="font-mono font-semibold">{getName(pod)}</div>
-			<div>Namespace: {getNamespace(pod)}</div>
-			<div>Phase: {pod.status?.phase ?? "Unknown"}</div>
-			{hasReadiness(pod) && (
-				<div>
-					Ready: {getReadyContainers(pod)}/{containers.length}
-				</div>
-			)}
-			<div>Restarts: {getRestartCount(pod)}</div>
-			<div>Node: {pod.spec?.nodeName ?? ""}</div>
-		</div>
-	);
-}
 
 function isPodReady(pod: w8s.V1Pod): boolean {
 	const condition = pod.status?.conditions?.find((c) => c.type === "Ready");
