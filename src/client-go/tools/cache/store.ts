@@ -61,6 +61,14 @@ export class ExplicitKey {
 	constructor(readonly key: string) {}
 }
 
+// Models staging/src/k8s.io/client-go/tools/cache/delta_fifo.go DeletedFinalStateUnknown.
+export class DeletedFinalStateUnknown<T extends KubernetesObject = KubernetesObject> {
+	constructor(
+		readonly key: string,
+		readonly obj: T,
+	) {}
+}
+
 // Models staging/src/k8s.io/client-go/tools/cache/store.go cache.
 class Cache<T extends KubernetesObject> implements Indexer<T> {
 	private cacheStorage: ThreadSafeStore<T>;
