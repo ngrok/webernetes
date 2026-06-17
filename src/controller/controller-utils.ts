@@ -568,6 +568,141 @@ export class RealPodControl implements PodControlInterface {
 	}
 }
 
+// Models kubernetes/pkg/controller/controller_utils.go FakePodControl.
+export class FakePodControl implements PodControlInterface {
+	private readonly mutex = new Mutex();
+	templates: k8s.V1PodTemplateSpec[] = [];
+	controllerRefs: k8s.V1OwnerReference[] = [];
+	deletePodName: string[] = [];
+	patches: Uint8Array[] = [];
+	err: Error | undefined;
+	createLimit = 0;
+	createCallCount = 0;
+
+	// Models kubernetes/pkg/controller/controller_utils.go FakePodControl.PatchPod.
+	async patchPod(
+		_ctx: context.Context,
+		_namespace: string,
+		_name: string,
+		data: Uint8Array,
+	): Promise<Error | undefined> {
+		return await this.mutex.withLock(() => {
+			this.patches.push(data);
+			if (this.err) {
+				return this.err;
+			}
+			return undefined;
+		});
+	}
+
+	// Models kubernetes/pkg/controller/controller_utils.go FakePodControl.CreatePods.
+	async createPods(
+		ctx: context.Context,
+		namespace: string,
+		spec: k8s.V1PodTemplateSpec,
+		object: k8s.KubernetesObject,
+		controllerRef: k8s.V1OwnerReference,
+	): Promise<Error | undefined> {
+		return await this.createPodsWithGenerateName(ctx, namespace, spec, object, controllerRef, "");
+	}
+
+	// Models kubernetes/pkg/controller/controller_utils.go FakePodControl.CreatePodsWithGenerateName.
+	async createPodsWithGenerateName(
+		_ctx: context.Context,
+		_namespace: string,
+		spec: k8s.V1PodTemplateSpec,
+		_object: k8s.KubernetesObject,
+		controllerRef: k8s.V1OwnerReference,
+		generateNamePrefix: string,
+	): Promise<Error | undefined> {
+		return await this.mutex.withLock(() => {
+			this.createCallCount++;
+			if (this.createLimit !== 0 && this.createCallCount > this.createLimit) {
+				return new Error(
+					`not creating pod, limit ${this.createLimit} already reached (create call ${this.createCallCount})`,
+				);
+			}
+			const template = structuredClone(spec);
+			template.metadata ??= {};
+			template.metadata.generateName = generateNamePrefix;
+			this.templates.push(template);
+			this.controllerRefs.push(structuredClone(controllerRef));
+			if (this.err) {
+				return this.err;
+			}
+			return undefined;
+		});
+	}
+
+	// Models kubernetes/pkg/controller/controller_utils.go FakePodControl.DeletePod.
+	async deletePod(
+		_ctx: context.Context,
+		_namespace: string,
+		podID: string,
+		_object: k8s.KubernetesObject,
+	): Promise<Error | undefined> {
+		return await this.mutex.withLock(() => {
+			this.deletePodName.push(podID);
+			if (this.err) {
+				return this.err;
+			}
+			return undefined;
+		});
+	}
+
+	// Models kubernetes/pkg/controller/controller_utils.go FakePodControl.Clear.
+	async clear(): Promise<void> {
+		await this.mutex.withLock(() => {
+			this.deletePodName = [];
+			this.templates = [];
+			this.controllerRefs = [];
+			this.patches = [];
+			this.createLimit = 0;
+			this.createCallCount = 0;
+		});
+	}
+}
+
+// Models kubernetes/pkg/controller/controller_utils.go RSControlInterface.
+export interface RSControlInterface {
+	patchReplicaSet(
+		ctx: context.Context,
+		namespace: string,
+		name: string,
+		data: Uint8Array,
+	): Promise<Error | undefined>;
+}
+
+// Models kubernetes/pkg/controller/controller_utils.go RealRSControl.
+export class RealRSControl implements RSControlInterface {
+	constructor(
+		private readonly kubeClient: k8s.KubeClient,
+		readonly recorder: EventRecorder,
+	) {}
+
+	// Models kubernetes/pkg/controller/controller_utils.go PatchReplicaSet.
+	async patchReplicaSet(
+		_ctx: context.Context,
+		namespace: string,
+		name: string,
+		data: Uint8Array,
+	): Promise<Error | undefined> {
+		try {
+			await this.kubeClient.appsv1.patchNamespacedReplicaSet(
+				{
+					namespace,
+					name,
+					body: JSON.parse(new TextDecoder().decode(data)) as unknown,
+				},
+				k8s.setHeaderOptions("Content-Type", k8s.PatchStrategy.StrategicMergePatch),
+			);
+		} catch (error) {
+			return error instanceof Error ? error : new Error(String(error));
+		}
+		return undefined;
+	}
+}
+
 // Models kubernetes/pkg/controller/controller_utils.go GetPodFromTemplate.
 export function getPodFromTemplate(
 	template: k8s.V1PodTemplateSpec,
