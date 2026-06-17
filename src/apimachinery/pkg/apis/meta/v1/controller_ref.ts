@@ -4,6 +4,7 @@
  */
 import type { KubernetesObject } from "../../../../../client/types";
 import type { V1OwnerReference } from "../../../../../client/gen/models";
+import type { GroupVersionKind } from "../../../runtime/schema/group_version";
 
 // Models staging/src/k8s.io/apimachinery/pkg/apis/meta/v1/controller_ref.go GetControllerOf.
 export function getControllerOf(controllee: KubernetesObject): V1OwnerReference | undefined {
@@ -30,4 +31,16 @@ export function getControllerOfNoCopy(controllee: KubernetesObject): V1OwnerRefe
 		}
 	}
 	return undefined;
+}
+
+// Models staging/src/k8s.io/apimachinery/pkg/apis/meta/v1/controller_ref.go NewControllerRef.
+export function newControllerRef(owner: KubernetesObject, gvk: GroupVersionKind): V1OwnerReference {
+	return {
+		apiVersion: gvk.groupVersion().toString(),
+		kind: gvk.kind,
+		name: owner.metadata?.name ?? "",
+		uid: owner.metadata?.uid ?? "",
+		blockOwnerDeletion: true,
+		controller: true,
+	};
 }
