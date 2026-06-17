@@ -83,17 +83,26 @@ class Fixture {
 		);
 		this.client = client;
 		const c = new DeploymentController(client, kubeConfig);
+		if (!c.eventRecorder) {
+			throw new Error("expected deployment controller event recorder");
+		}
+		if (!c.rsControl) {
+			throw new Error("expected deployment controller ReplicaSet control");
+		}
 		for (const d of this.dLister) {
 			const [key, err] = keyFunc(d);
 			if (!err) {
 				c.deployments.set(key, d);
 			}
+			await c.deploymentIndexer.add(d);
 		}
 		for (const rs of this.rsLister) {
 			c.replicaSets.set(replicaSetKey(rs), rs);
+			await c.replicaSetIndexer.add(rs);
 		}
 		for (const pod of this.podLister) {
 			c.pods.set(podKey(pod), pod);
+			await c.podIndexer.add(pod);
 		}
 		return c;
 	}
@@ -496,7 +505,7 @@ browser.describe("DeploymentController", ({ ctx }) => {
 
 		const dc = await f.newController();
 
-		dc.addReplicaSet(ctx, rs1);
+		await dc.addReplicaSet(ctx, rs1);
 		expect(dc.queue.len()).toBe(1);
 		let [key, done] = await dc.queue.get();
 		if (key === "" || done) {
@@ -505,7 +514,7 @@ browser.describe("DeploymentController", ({ ctx }) => {
 		let [expectedKey] = keyFunc(d1);
 		expect(key).toBe(expectedKey);
 
-		dc.addReplicaSet(ctx, rs2);
+		await dc.addReplicaSet(ctx, rs2);
 		expect(dc.queue.len()).toBe(1);
 		[key, done] = await dc.queue.get();
 		if (key === "" || done) {
@@ -532,7 +541,7 @@ browser.describe("DeploymentController", ({ ctx }) => {
 
 		const dc = await f.newController();
 
-		dc.addReplicaSet(ctx, rs);
+		await dc.addReplicaSet(ctx, rs);
 		expect(dc.queue.len()).toBe(2);
 	});
 
@@ -555,7 +564,7 @@ browser.describe("DeploymentController", ({ ctx }) => {
 		let prev = structuredClone(rs1);
 		let next = structuredClone(rs1);
 		bumpResourceVersion(next);
-		dc.updateReplicaSet(ctx, prev, next);
+		await dc.updateReplicaSet(ctx, prev, next);
 		expect(dc.queue.len()).toBe(1);
 		let [key, done] = await dc.queue.get();
 		if (key === "" || done) {
@@ -567,7 +576,7 @@ browser.describe("DeploymentController", ({ ctx }) => {
 		prev = structuredClone(rs2);
 		next = structuredClone(rs2);
 		bumpResourceVersion(next);
-		dc.updateReplicaSet(ctx, prev, next);
+		await dc.updateReplicaSet(ctx, prev, next);
 		expect(dc.queue.len()).toBe(1);
 		[key, done] = await dc.queue.get();
 		if (key === "" || done) {
@@ -597,7 +606,7 @@ browser.describe("DeploymentController", ({ ctx }) => {
 		prev.metadata = { ...prev.metadata, labels: { foo: "notbar" } };
 		const next = structuredClone(rs);
 		bumpResourceVersion(next);
-		dc.updateReplicaSet(ctx, prev, next);
+		await dc.updateReplicaSet(ctx, prev, next);
 		expect(dc.queue.len()).toBe(2);
 	});
 
@@ -620,7 +629,7 @@ browser.describe("DeploymentController", ({ ctx }) => {
 		prev.metadata = { ...prev.metadata, ownerReferences: [newControllerRef(d2)] };
 		const next = structuredClone(rs);
 		bumpResourceVersion(next);
-		dc.updateReplicaSet(ctx, prev, next);
+		await dc.updateReplicaSet(ctx, prev, next);
 		expect(dc.queue.len()).toBe(2);
 	});
 
@@ -643,7 +652,7 @@ browser.describe("DeploymentController", ({ ctx }) => {
 		const next = structuredClone(rs);
 		next.metadata = { ...next.metadata, ownerReferences: undefined };
 		bumpResourceVersion(next);
-		dc.updateReplicaSet(ctx, prev, next);
+		await dc.updateReplicaSet(ctx, prev, next);
 		expect(dc.queue.len()).toBe(2);
 	});
 
@@ -663,7 +672,7 @@ browser.describe("DeploymentController", ({ ctx }) => {
 
 		const dc = await f.newController();
 
-		dc.deleteReplicaSet(ctx, rs1);
+		await dc.deleteReplicaSet(ctx, rs1);
 		expect(dc.queue.len()).toBe(1);
 		let [key, done] = await dc.queue.get();
 		if (key === "" || done) {
@@ -672,7 +681,7 @@ browser.describe("DeploymentController", ({ ctx }) => {
 		let [expectedKey] = keyFunc(d1);
 		expect(key).toBe(expectedKey);
 
-		dc.deleteReplicaSet(ctx, rs2);
+		await dc.deleteReplicaSet(ctx, rs2);
 		expect(dc.queue.len()).toBe(1);
 		[key, done] = await dc.queue.get();
 		if (key === "" || done) {
@@ -698,7 +707,7 @@ browser.describe("DeploymentController", ({ ctx }) => {
 
 		const dc = await f.newController();
 
-		dc.deleteReplicaSet(ctx, rs);
+		await dc.deleteReplicaSet(ctx, rs);
 		expect(dc.queue.len()).toBe(0);
 	});
 });
