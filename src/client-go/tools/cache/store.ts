@@ -258,6 +258,21 @@ export function metaNamespaceKeyFunc<T extends KubernetesObject>(
 	return [objName.string(), undefined];
 }
 
+// Models staging/src/k8s.io/client-go/tools/cache/store.go SplitMetaNamespaceKey.
+export function splitMetaNamespaceKey(
+	key: string,
+): [namespace: string, name: string, err: Error | undefined] {
+	const parts = key.split("/");
+	switch (parts.length) {
+		case 1:
+			return ["", parts[0] ?? "", undefined];
+		case 2:
+			return [parts[0] ?? "", parts[1] ?? "", undefined];
+	}
+
+	return ["", "", new Error(`unexpected key format: ${JSON.stringify(key)}`)];
+}
+
 // Models staging/src/k8s.io/client-go/tools/cache/store.go ObjectName.
 class ObjectName {
 	constructor(
