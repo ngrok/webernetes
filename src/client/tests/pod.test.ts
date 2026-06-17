@@ -841,6 +841,49 @@ kubernetes.describe("Pods", (context) => {
 		expect(patched.status?.message).toBe("uid precondition accepted");
 	});
 
+	it("should apply strategic merge patch ownerReference and finalizer delete directives", async () => {
+		const namespace = await getTestNamespace();
+		const name = "strategic-ownerref-patch-test";
+		const pod = await core.createNamespacedPod({
+			namespace,
+			body: {
+				metadata: {
+					name,
+					ownerReferences: [
+						{ apiVersion: "v1", kind: "Pod", name: "kept", uid: "kept-uid" },
+						{ apiVersion: "v1", kind: "Pod", name: "removed", uid: "removed-uid" },
+					],
+					finalizers: ["example.com/keep", "example.com/remove"],
+				},
+				spec: {
+					containers: [{ name: "pause", image: podImage }],
+				},
+			},
+		});
+		const strategicPatchOptions = k8s.setHeaderOptions(
+			"Content-Type",
+			k8s.PatchStrategy.StrategicMergePatch,
+		);
+
+		const patched = await core.patchNamespacedPod(
+			{
+				name,
+				namespace,
+				body: {
+					metadata: {
+						uid: pod.metadata?.uid,
+						ownerReferences: [{ $patch: "delete", uid: "removed-uid" }],
+						"$deleteFromPrimitiveList/finalizers": ["example.com/remove"],
+					},
+				},
+			},
+			strategicPatchOptions,
+		);
+
+		expect(patched.metadata?.ownerReferences?.map((ref) => ref.uid)).toEqual(["kept-uid"]);
+		expect(patched.metadata?.finalizers).toEqual(["example.com/keep"]);
+	});
+
 	it("should reject non-merge pod status patches in the simulator", async () => {
 		if (target !== "simulator") {
 			return;
