@@ -6,7 +6,7 @@ import type { KubernetesObject } from "../../../client/types";
 import { ExplicitKey, type KeyFunc, type Store } from "./store";
 
 // Models staging/src/k8s.io/client-go/tools/cache/index.go Indexer.
-export interface Indexer<T extends KubernetesObject> extends Store<T> {
+export interface Indexer<T> extends Store<T> {
 	index(indexName: string, obj: T): [items: T[], err: Error | undefined];
 	indexKeys(indexName: string, indexedValue: string): [keys: string[], err: Error | undefined];
 	listIndexFuncValues(indexName: string): string[];
@@ -16,14 +16,10 @@ export interface Indexer<T extends KubernetesObject> extends Store<T> {
 }
 
 // Models staging/src/k8s.io/client-go/tools/cache/index.go IndexFunc.
-export type IndexFunc<T extends KubernetesObject> = (
-	obj: T,
-) => [values: string[], err: Error | undefined];
+export type IndexFunc<T> = (obj: T) => [values: string[], err: Error | undefined];
 
 // Models staging/src/k8s.io/client-go/tools/cache/index.go IndexFuncToKeyFuncAdapter.
-export function indexFuncToKeyFuncAdapter<T extends KubernetesObject>(
-	indexFunc: IndexFunc<T>,
-): KeyFunc<T> {
+export function indexFuncToKeyFuncAdapter<T>(indexFunc: IndexFunc<T>): KeyFunc<T> {
 	return (obj) => {
 		if (obj instanceof ExplicitKey) {
 			return [obj.key, undefined];
@@ -59,7 +55,7 @@ export function metaNamespaceIndexFunc<T extends KubernetesObject>(
 export type Index = Map<string, Set<string>>;
 
 // Models staging/src/k8s.io/client-go/tools/cache/index.go Indexers.
-export type Indexers<T extends KubernetesObject> = Record<string, IndexFunc<T>>;
+export type Indexers<T> = Record<string, IndexFunc<T>>;
 
 // Models staging/src/k8s.io/client-go/tools/cache/index.go Indices.
 export type Indices = Map<string, Index>;

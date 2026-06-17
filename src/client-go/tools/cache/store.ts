@@ -8,20 +8,18 @@ import type { Indexer, Indexers } from "./index";
 import { newThreadSafeStore, type ThreadSafeStore } from "./thread-safe-store";
 
 // Models staging/src/k8s.io/client-go/tools/cache/store.go KeyFunc.
-export type KeyFunc<T extends KubernetesObject> = (
+export type KeyFunc<T> = (
 	obj: T | ExplicitKey,
 ) => MaybePromise<[key: string, err: Error | undefined]>;
 
 // Models staging/src/k8s.io/client-go/tools/cache/delta_fifo.go TransformFunc.
-export type TransformFunc<T extends KubernetesObject> = (
-	obj: T,
-) => MaybePromise<[obj: T, err: Error | undefined]>;
+export type TransformFunc<T> = (obj: T) => MaybePromise<[obj: T, err: Error | undefined]>;
 
 // Models staging/src/k8s.io/client-go/tools/cache/store.go StoreOption.
-export type StoreOption<T extends KubernetesObject> = (cache: Cache<T>) => void;
+export type StoreOption<T> = (cache: Cache<T>) => void;
 
 // Models staging/src/k8s.io/client-go/tools/cache/store.go Store.
-export interface Store<T extends KubernetesObject> {
+export interface Store<T> {
 	add(obj: T): MaybePromise<Error | undefined>;
 	update(obj: T): MaybePromise<Error | undefined>;
 	delete(obj: T): MaybePromise<Error | undefined>;
@@ -47,7 +45,7 @@ export interface Transaction<T> {
 }
 
 // Models staging/src/k8s.io/client-go/tools/cache/store.go KeyError.
-export class KeyError<T extends KubernetesObject> extends Error {
+export class KeyError<T> extends Error {
 	constructor(
 		readonly obj: T | ExplicitKey,
 		readonly err: Error,
@@ -62,7 +60,7 @@ export class ExplicitKey {
 }
 
 // Models staging/src/k8s.io/client-go/tools/cache/delta_fifo.go DeletedFinalStateUnknown.
-export class DeletedFinalStateUnknown<T extends KubernetesObject = KubernetesObject> {
+export class DeletedFinalStateUnknown<T = unknown> {
 	constructor(
 		readonly key: string,
 		readonly obj: T,
@@ -70,7 +68,7 @@ export class DeletedFinalStateUnknown<T extends KubernetesObject = KubernetesObj
 }
 
 // Models staging/src/k8s.io/client-go/tools/cache/store.go cache.
-class Cache<T extends KubernetesObject> implements Indexer<T> {
+class Cache<T> implements Indexer<T> {
 	private cacheStorage: ThreadSafeStore<T>;
 	transformer: TransformFunc<T> | undefined;
 
@@ -218,19 +216,14 @@ class Cache<T extends KubernetesObject> implements Indexer<T> {
 }
 
 // Models staging/src/k8s.io/client-go/tools/cache/store.go WithTransformer.
-export function withTransformer<T extends KubernetesObject>(
-	transformer: TransformFunc<T>,
-): StoreOption<T> {
+export function withTransformer<T>(transformer: TransformFunc<T>): StoreOption<T> {
 	return (cache) => {
 		cache.transformer = transformer;
 	};
 }
 
 // Models staging/src/k8s.io/client-go/tools/cache/store.go NewStore.
-export function newStore<T extends KubernetesObject>(
-	keyFunc: KeyFunc<T>,
-	...opts: Array<StoreOption<T>>
-): Store<T> {
+export function newStore<T>(keyFunc: KeyFunc<T>, ...opts: Array<StoreOption<T>>): Store<T> {
 	const cache = new Cache(keyFunc);
 	for (const opt of opts) {
 		opt(cache);
@@ -239,7 +232,7 @@ export function newStore<T extends KubernetesObject>(
 }
 
 // Models staging/src/k8s.io/client-go/tools/cache/store.go NewIndexer.
-export function newIndexer<T extends KubernetesObject>(
+export function newIndexer<T>(
 	keyFunc: KeyFunc<T>,
 	indexers: Indexers<T>,
 	...opts: Array<StoreOption<T>>
