@@ -39,9 +39,14 @@ export interface LastSyncRVGetter {
 
 // Models kubernetes/pkg/controller/util/consistency/consistency.go RealConsistencyStore.
 export class RealConsistencyStore implements ConsistencyStore {
-	private readonly writes = new Map<string, OwnerRecord>();
+	readonly writes = new Map<string, OwnerRecord>();
+	private readonly stores = new Map<string, LastSyncRVGetter>();
 
-	constructor(private readonly stores: Map<string, LastSyncRVGetter>) {}
+	constructor(stores?: ReadonlyMap<GroupResource | string, LastSyncRVGetter>) {
+		for (const [resource, store] of stores ?? []) {
+			this.stores.set(typeof resource === "string" ? resource : resource.toString(), store);
+		}
+	}
 
 	// Models kubernetes/pkg/controller/util/consistency/consistency.go getWrittenRecord.
 	getWrittenRecord(owner: NamespacedName): OwnerRecord | undefined {
@@ -94,12 +99,14 @@ export class RealConsistencyStore implements ConsistencyStore {
 }
 
 // Models kubernetes/pkg/controller/util/consistency/consistency.go NewConsistencyStore.
-export function newConsistencyStore(stores: Map<string, LastSyncRVGetter>): RealConsistencyStore {
+export function newConsistencyStore(
+	stores?: ReadonlyMap<GroupResource | string, LastSyncRVGetter>,
+): RealConsistencyStore {
 	return new RealConsistencyStore(stores);
 }
 
 // Models kubernetes/pkg/controller/util/consistency/consistency.go ownerRecord.
-class OwnerRecord {
+export class OwnerRecord {
 	readonly versions = new Map<string, string>();
 
 	constructor(readonly ownerUID: string) {}
@@ -144,7 +151,7 @@ class OwnerRecord {
 }
 
 // Models kubernetes/pkg/controller/util/consistency/consistency.go newOwnerRecord.
-function newOwnerRecord(ownerUID: string): OwnerRecord {
+export function newOwnerRecord(ownerUID: string): OwnerRecord {
 	return new OwnerRecord(ownerUID);
 }
 
