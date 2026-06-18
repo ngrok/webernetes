@@ -645,6 +645,8 @@ browser.describe("replicaset controller", ({ ctx }) => {
 			}
 			for (const pod of c.pods) {
 				await manager.podIndexer.add(pod);
+				await addPod(manager, pod);
+				await addPod(manager, pod);
 				await manager.addPod(ctx, pod);
 			}
 			const [actualPods, err] = manager.getIndirectlyRelatedPods(c.rs);
@@ -1003,6 +1005,7 @@ browser.describe("replicaset controller", ({ ctx }) => {
 		};
 		await manager.expectations.expectDeletions(rsKey, [podKey(pod)]);
 
+		await addPod(manager, pod);
 		await manager.addPod(ctx, pod);
 
 		let [indexedPod, podExists] = manager.podIndexer.getByKey(podKey(pod));
@@ -1102,6 +1105,7 @@ browser.describe("replicaset controller", ({ ctx }) => {
 			resourceVersion: "1",
 		};
 		await addPod(manager, activePod);
+		await addPod(manager, terminatingPod);
 		await manager.addPod(ctx, terminatingPod);
 		client.clearActions();
 
@@ -2101,7 +2105,7 @@ browser.describe("replicaset controller", ({ ctx }) => {
 
 		for (const test of tests) {
 			const related = test.related ?? test.pods;
-			const podsToDelete = getPodsToDelete(test.pods, related, test.diff, now);
+			const podsToDelete = getPodsToDelete(ctx, test.pods, related, test.diff);
 			expect({ name: test.name, len: podsToDelete.length }).toEqual({
 				name: test.name,
 				len: test.expectedPodsToDelete.length,
