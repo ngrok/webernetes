@@ -12,11 +12,21 @@ export function installDevPerformanceMeasureCleanup(): void {
 		return;
 	}
 
-	const originalMeasure = performance.measure.bind(performance);
+	type PatchedPerformance = Performance & {
+		__webernetesOriginalMeasure?: Performance["measure"];
+	};
+
+	const patched = performance as PatchedPerformance;
+	if (patched.__webernetesOriginalMeasure) {
+		return;
+	}
+
+	patched.__webernetesOriginalMeasure = performance.measure.bind(performance);
+
 	performance.measure = function measure(
 		...args: Parameters<Performance["measure"]>
 	): PerformanceMeasure {
-		const entry = originalMeasure(...args);
+		const entry = patched.__webernetesOriginalMeasure!(...args);
 		performance.clearMeasures(entry.name);
 		return entry;
 	};
