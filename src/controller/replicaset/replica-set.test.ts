@@ -1005,6 +1005,10 @@ browser.describe("replicaset controller", ({ ctx }) => {
 
 		await manager.addPod(ctx, pod);
 
+		let [indexedPod, podExists] = manager.podIndexer.getByKey(podKey(pod));
+		expect(indexedPod).toBeDefined();
+		expect(podExists).toBe(true);
+
 		let [queueRS, done] = await manager.queue.get();
 		expect(queueRS).toBe(rsKey);
 		expect(done).toBe(false);
@@ -1019,6 +1023,10 @@ browser.describe("replicaset controller", ({ ctx }) => {
 		oldPod.metadata = { ...oldPod.metadata, resourceVersion: "2" };
 		await manager.expectations.expectDeletions(rsKey, [podKey(pod)]);
 		await manager.updatePod(ctx, oldPod, pod);
+
+		[indexedPod, podExists] = manager.podIndexer.getByKey(podKey(pod));
+		expect(indexedPod).toBeDefined();
+		expect(podExists).toBe(true);
 
 		[queueRS, done] = await manager.queue.get();
 		expect(queueRS).toBe(rsKey);
@@ -1077,6 +1085,34 @@ browser.describe("replicaset controller", ({ ctx }) => {
 		expect(err).toBeUndefined();
 		expect(exists).toBe(true);
 		expect(podExp?.fulfilled()).toBe(true);
+	});
+
+	it("syncReplicaSet counts terminating pods still visible in the informer store", async () => {
+		const labelMap = { foo: "bar" };
+		const rs = newReplicaSet(1, labelMap);
+		const fakePodControl = new FakePodControl();
+		const [manager, client] = await newSeededTestReplicaSetController(ctx, [rs], fakePodControl);
+		await addReplicaSet(manager, rs);
+
+		const activePod = newPod("active-pod", rs, "Running", undefined, true);
+		const terminatingPod = newPod("terminating-pod", rs, "Running", undefined, true);
+		terminatingPod.metadata = {
+			...terminatingPod.metadata,
+			deletionTimestamp: getClock(ctx).now(),
+			resourceVersion: "1",
+		};
+		await addPod(manager, activePod);
+		await manager.addPod(ctx, terminatingPod);
+		client.clearActions();
+
+		await expect(manager.syncReplicaSet(ctx, getKey(rs))).resolves.toBeUndefined();
+
+		const updatedRS = await client.appsv1.readNamespacedReplicaSet({
+			namespace: rs.metadata?.namespace ?? "default",
+			name: rs.metadata?.name ?? "",
+		});
+		expect(updatedRS.status?.replicas).toBe(1);
+		expect(updatedRS.status?.terminatingReplicas).toBe(1);
 	});
 
 	// Models kubernetes/pkg/controller/replicaset/replica_set_test.go TestDoNotPatchPodWithOtherControlRef.
@@ -1597,6 +1633,52 @@ browser.describe("replicaset controller", ({ ctx }) => {
 		}
 	});
 
+	it("updateReplicaSetStatus treats nil and zero terminatingReplicas as different", async () => {
+		const rs = newReplicaSet(0, { foo: "bar" });
+		rs.metadata = {
+			...rs.metadata,
+			generation: 1,
+		};
+		rs.status = {
+			replicas: 0,
+			fullyLabeledReplicas: 0,
+			readyReplicas: 0,
+			availableReplicas: 0,
+			observedGeneration: 1,
+			terminatingReplicas: undefined,
+		};
+		const [, client] = await newSeededTestReplicaSetController(ctx, [rs]);
+		client.clearActions();
+
+		const [updatedRS, err] = await updateReplicaSetStatus(
+			client.appsv1,
+			rs.metadata?.namespace ?? "default",
+			rs.metadata?.name ?? "",
+			rs,
+			{
+				replicas: 0,
+				fullyLabeledReplicas: 0,
+				readyReplicas: 0,
+				availableReplicas: 0,
+				terminatingReplicas: 0,
+			},
+			defaultReplicaSetControllerFeatures(),
+		);
+
+		expect(err).toBeUndefined();
+		expect(updatedRS?.status?.terminatingReplicas).toBe(0);
+		expect(
+			client
+				.actions()
+				.filter(
+					(action) =>
+						action.verb === "update" &&
+						action.resource === "replicasets" &&
+						action.subresource === "status",
+				),
+		).toHaveLength(1);
+	});
+
 	// Models kubernetes/pkg/controller/replicaset/replica_set_test.go imagePullBackOff.
 	const imagePullBackOff = "ImagePullBackOff";
 
@@ -1846,6 +1928,53 @@ browser.describe("replicaset controller", ({ ctx }) => {
 		scheduledRunningReadyPodOnNode2.spec = { containers: [] };
 		scheduledRunningReadyPodOnNode2.spec!.nodeName = "fake-node-2";
 		scheduledRunningReadyPodOnNode2.status!.conditions = [{ type: "Ready", status: "True" }];
+		const now = getClock(ctx).now();
+		const newerReadyPodWithLaterUID = newPod(
+			"newer-ready-pod-with-later-uid",
+			rs,
+			"Running",
+			undefined,
+			true,
+		);
+		newerReadyPodWithLaterUID.metadata = {
+			...newerReadyPodWithLaterUID.metadata,
+			uid: "z",
+			creationTimestamp: new Date(now.getTime() - 10_000),
+		};
+		newerReadyPodWithLaterUID.spec = { containers: [], nodeName: "fake-node" };
+		newerReadyPodWithLaterUID.status = {
+			phase: "Running",
+			conditions: [
+				{
+					type: "Ready",
+					status: "True",
+					lastTransitionTime: new Date(now.getTime() - 100),
+				},
+			],
+		};
+		const olderReadyPodWithEarlierUID = newPod(
+			"older-ready-pod-with-earlier-uid",
+			rs,
+			"Running",
+			undefined,
+			true,
+		);
+		olderReadyPodWithEarlierUID.metadata = {
+			...olderReadyPodWithEarlierUID.metadata,
+			uid: "a",
+			creationTimestamp: new Date(now.getTime() - 10_000),
+		};
+		olderReadyPodWithEarlierUID.spec = { containers: [], nodeName: "fake-node" };
+		olderReadyPodWithEarlierUID.status = {
+			phase: "Running",
+			conditions: [
+				{
+					type: "Ready",
+					status: "True",
+					lastTransitionTime: new Date(now.getTime() - 120),
+				},
+			],
+		};
 
 		const tests: Array<{
 			name: string;
@@ -1962,11 +2091,17 @@ browser.describe("replicaset controller", ({ ctx }) => {
 					scheduledRunningNotReadyPod,
 				],
 			},
+			{
+				name: "ready time logarithmic tie sorts by UID, diff < len(pods)",
+				pods: [newerReadyPodWithLaterUID, olderReadyPodWithEarlierUID],
+				diff: 1,
+				expectedPodsToDelete: [olderReadyPodWithEarlierUID],
+			},
 		];
 
 		for (const test of tests) {
 			const related = test.related ?? test.pods;
-			const podsToDelete = getPodsToDelete(test.pods, related, test.diff);
+			const podsToDelete = getPodsToDelete(test.pods, related, test.diff, now);
 			expect({ name: test.name, len: podsToDelete.length }).toEqual({
 				name: test.name,
 				len: test.expectedPodsToDelete.length,
