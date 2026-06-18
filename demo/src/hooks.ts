@@ -48,11 +48,16 @@ export function useCluster(
 	};
 }
 
-export function usePauseClusterWhenPageInactive(cluster: w8s.Cluster): void {
+export function usePauseClusterWhenPageInactive(cluster: w8s.Cluster | undefined): void {
 	const pageActive = usePageActive();
 	const autoPaused = useRef(false);
 
 	useEffect(() => {
+		if (!cluster) {
+			autoPaused.current = false;
+			return;
+		}
+
 		if (!pageActive) {
 			if (!cluster.isPaused()) {
 				cluster.pause();
@@ -65,7 +70,7 @@ export function usePauseClusterWhenPageInactive(cluster: w8s.Cluster): void {
 			cluster.resume();
 		}
 		autoPaused.current = false;
-	}, [pageActive]);
+	}, [cluster, pageActive]);
 }
 
 export function usePageActive(): boolean {
