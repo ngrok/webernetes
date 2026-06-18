@@ -1,5 +1,6 @@
 import * as context from "./go/context";
 import type { PreNetworkRequestEvent, PreNetworkResponseEvent } from "./cluster/cni/network";
+import type { V1Container } from "./client";
 
 const key = Symbol("latencyProvider");
 const noopValue = () => 0;
@@ -8,12 +9,18 @@ const noop = newLatencyProvider();
 export interface LatencyProvider {
 	clusterNetworkRequestLatency(event: PreNetworkRequestEvent): number;
 	clusterNetworkResponseLatency(event: PreNetworkResponseEvent): number;
+	containerTerminationLatency(event: ContainerTerminationLatencyEvent): number;
+}
+
+export interface ContainerTerminationLatencyEvent {
+	container: V1Container;
 }
 
 export function newLatencyProvider(options: Partial<LatencyProvider> = {}): LatencyProvider {
 	return {
 		clusterNetworkRequestLatency: options.clusterNetworkRequestLatency ?? noopValue,
 		clusterNetworkResponseLatency: options.clusterNetworkResponseLatency ?? noopValue,
+		containerTerminationLatency: options.containerTerminationLatency ?? noopValue,
 	};
 }
 
@@ -36,9 +43,11 @@ function isLatencyProvider(value: unknown): value is LatencyProvider {
 	const candidate = value as {
 		clusterNetworkRequestLatency?: unknown;
 		clusterNetworkResponseLatency?: unknown;
+		containerTerminationLatency?: unknown;
 	};
 	return (
 		typeof candidate.clusterNetworkRequestLatency === "function" &&
-		typeof candidate.clusterNetworkResponseLatency === "function"
+		typeof candidate.clusterNetworkResponseLatency === "function" &&
+		typeof candidate.containerTerminationLatency === "function"
 	);
 }

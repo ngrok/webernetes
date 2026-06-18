@@ -11,7 +11,7 @@ interface TestObject extends Storable {
 		name?: string;
 		generateName?: string;
 		deletionGracePeriodSeconds?: number;
-		deletionTimestamp?: Date | string;
+		deletionTimestamp?: Date;
 		finalizers?: string[];
 		resourceVersion?: string;
 		uid?: string;

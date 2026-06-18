@@ -29,7 +29,7 @@ export type {
 export type { NodePortRange } from "./cluster/storage";
 export type { ImageConstructor, ImageDefinition } from "./cluster/cri";
 export type { ProcessContext } from "./cluster/cri";
-export type { LatencyProvider } from "./latency";
+export type { ContainerTerminationLatencyEvent, LatencyProvider } from "./latency";
 export type {
 	ContainerFileSystem,
 	ContainerInstance,
