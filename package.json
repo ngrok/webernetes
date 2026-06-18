@@ -45,6 +45,9 @@
   "scripts": {
     "clean": "rm -rf dist",
     "build": "pnpm run clean && tsc -p tsconfig.build.json",
+    "changeset": "changeset",
+    "changeset:version": "changeset version",
+    "changeset:publish": "pnpm run build && changeset publish",
     "demo": "pnpm --filter webernetes-demo start",
     "example:single-pod": "tsx examples/01-single-pod.ts",
     "example:node-port": "tsx examples/02-node-port-service.ts",
@@ -76,6 +79,8 @@
     "events": "^3.3.0"
   },
   "devDependencies": {
+    "@changesets/changelog-github": "^0.7.0",
+    "@changesets/cli": "^2.31.0",
     "@kubernetes/client-node": "^1.4.0",
     "@testcontainers/k3s": "^12.0.1",
     "@types/cli-progress": "^3.11.6",
