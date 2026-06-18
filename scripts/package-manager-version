@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Print the pnpm version pinned by root package.json#packageManager.
+
+set -euo pipefail
+
+# Avoid Node here: mise resolves this before it installs the pinned Node runtime.
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd -- "${script_dir}/.." && pwd)"
+package_manager="$(awk -F'"' '$2 == "packageManager" { print $4; exit }' "${repo_root}/package.json")"
+
+case "${package_manager}" in
+	pnpm@*) printf '%s\n' "${package_manager#pnpm@}" ;;
+	*)
+		echo "webernetes: expected package.json#packageManager to be pnpm@<version>, got ${package_manager:-<missing>}" >&2
+		exit 1
+		;;
+esac

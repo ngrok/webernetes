@@ -216,3 +216,30 @@ place and largely at parity with the upstream Kubernetes ReplicaSet controller.
 Supported, including `RollingUpdate` and `Recreate` strategies. Deployment
 controller is in place and largely at parity with the upstream Kubernetes
 Deployment controller.
+
+## Development
+
+This repo uses [mise](https://mise.jdx.dev/) to pin the toolchain (Node, pnpm,
+`ast-grep`, `ripgrep`) so it's reproducible across machines. Node is read from
+`.nvmrc` and pnpm is single-sourced from `package.json#packageManager`.
+
+After [installing mise](https://mise.jdx.dev/installing-mise.html), from a fresh
+clone:
+
+```bash
+mise install      # install the pinned tools (and write mise.lock)
+mise run setup     # install workspace dependencies from the lockfile
+```
+
+Available mise tasks:
+
+- `mise run install` — `pnpm install --frozen-lockfile`.
+- `mise run setup` — prepare the repo after a fresh clone (runs `install`).
+- `mise run relock` — refresh `mise.lock` to match `.nvmrc` and
+  `package.json#packageManager`.
+- `mise run doctor` — verify the active tools match the committed pins.
+
+To bump a pinned version, edit `.nvmrc`, `package.json#packageManager`, or
+`mise.toml` and run `mise run relock`. The package scripts (`pnpm test`,
+`pnpm build`, `pnpm vibe-check`, etc.) are unchanged and run as usual once
+dependencies are installed.

@@ -1,0 +1,72 @@
+[settings]
+# Commit mise.lock so the toolchain is reproducible across machines.
+lockfile = true
+# Read Node from .nvmrc. pnpm is configured below via package.json#packageManager.
+idiomatic_version_file_enable_tools = ["node"]
+
+[tools]
+ast-grep = "0.42.1"
+ripgrep = "15.1.0"
+# Keep pnpm's version single-sourced in root package.json#packageManager.
+# The helper avoids needing Node before mise has installed Node.
+"npm:pnpm" = "{{ exec(command='./scripts/package-manager-version') }}"
+
+[env]
+# Make node_modules/.bin available to `mise x --` and to shells that activate mise.
+_.path = ["{{config_root}}/node_modules/.bin"]
+DO_NOT_TRACK = "1"
+
+[tasks.install]
+description = "Install workspace dependencies using the committed lockfile"
+run = "pnpm install --frozen-lockfile"
+
+[tasks.setup]
+description = "Prepare the repository after a fresh clone"
+depends = ["install"]
+
+[tasks.relock]
+description = "Refresh mise.lock to match .nvmrc and package.json#packageManager"
+run = "mise lock"
+
+[tasks.doctor]
+description = "Verify active tools match committed pins"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Compare active Node to .nvmrc (strip leading "v" so formats match).
+expected_node=$(tr -d '[:space:]' < .nvmrc)
+actual_node=$(node --version)
+actual_node="${actual_node#v}"
+if [ "$actual_node" != "$expected_node" ]; then
+  echo "node version mismatch: active=$actual_node, expected=$expected_node (.nvmrc)" >&2
+  exit 1
+fi
+
+# Compare active pnpm to package.json#packageManager.
+expected_pnpm=$(./scripts/package-manager-version)
+actual_pnpm=$(pnpm --version)
+if [ "$actual_pnpm" != "$expected_pnpm" ]; then
+  echo "pnpm version mismatch: active=$actual_pnpm, expected=$expected_pnpm (package.json#packageManager)" >&2
+  exit 1
+fi
+
+# Compare active ast-grep to mise.toml.
+expected_ast_grep=$(awk -F '"' '$1 ~ /^ast-grep[[:space:]]*=[[:space:]]*$/ { print $2; exit }' mise.toml)
+actual_ast_grep=$(ast-grep --version | awk '{ print $2 }')
+if [ "$actual_ast_grep" != "$expected_ast_grep" ]; then
+  echo "ast-grep version mismatch: active=$actual_ast_grep, expected=$expected_ast_grep (mise.toml)" >&2
+  exit 1
+fi
+
+# Compare active ripgrep to mise.toml. macOS does not ship rg by default, so
+# mise owns the expected project version.
+expected_ripgrep=$(awk -F '"' '$1 ~ /^ripgrep[[:space:]]*=[[:space:]]*$/ { print $2; exit }' mise.toml)
+actual_ripgrep=$(rg --version | awk 'NR == 1 { print $2 }')
+if [ "$actual_ripgrep" != "$expected_ripgrep" ]; then
+  echo "ripgrep version mismatch: active=$actual_ripgrep, expected=$expected_ripgrep (mise.toml)" >&2
+  exit 1
+fi
+
+echo "OK: node $actual_node, pnpm $actual_pnpm, ast-grep $actual_ast_grep, ripgrep $actual_ripgrep"
+'''
