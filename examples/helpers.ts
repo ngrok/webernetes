@@ -1,4 +1,4 @@
-import type { Cluster, V1Deployment, V1Pod } from "../src";
+import type { Cluster, V1Deployment, V1Pod } from "@ngrok/webernetes";
 
 export function waitForPodReady(cluster: Cluster, pod: V1Pod): Promise<V1Pod>;
 export function waitForPodReady(cluster: Cluster, ...pods: V1Pod[]): Promise<V1Pod[]>;

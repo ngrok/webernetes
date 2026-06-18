@@ -1,4 +1,4 @@
-import { BaseImage, Cluster, type ProcessContext } from "../src";
+import { BaseImage, Cluster, type ProcessContext } from "@ngrok/webernetes";
 import { waitForPodReady } from "./helpers";
 
 class ApiImage extends BaseImage {

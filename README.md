@@ -28,14 +28,14 @@ figuring this out as I go.
 First, install webernetes as a dependency:
 
 ```bash
-npm install webernetes
+npm install @ngrok/webernetes
 ```
 
 Then define an image to run in your cluster. **Webernetes does not run real
 images from Docker Hub, nor is it a goal to do so.**
 
 ```typescript
-import { BaseImage, type ProcessContext } from "webernetes";
+import { BaseImage, type ProcessContext } from "@ngrok/webernetes";
 
 class MyImage extends BaseImage {
 	// The imageName and imageVersion variables are what make up the image label
@@ -78,7 +78,7 @@ class MyImage extends BaseImage {
 Then we create a cluster and register our image with it.
 
 ```typescript
-import { Cluster } from "webernetes";
+import { Cluster } from "@ngrok/webernetes";
 
 const cluster = new Cluster();
 cluster.registerImage(MyImage);

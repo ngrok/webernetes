@@ -1,4 +1,4 @@
-import { BaseImage, Cluster, newLatencyProvider, type ProcessContext } from "../src";
+import { BaseImage, Cluster, newLatencyProvider, type ProcessContext } from "@ngrok/webernetes";
 import { waitForPodReady } from "./helpers";
 
 class CallerImage extends BaseImage {

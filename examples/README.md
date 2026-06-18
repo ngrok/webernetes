@@ -7,7 +7,7 @@ Each script is standalone and can also be run directly with `pnpm tsx`, for
 example:
 
 ```bash
-pnpm tsx examples/04-deployment-service-replicas.ts
+pnpm tsx --tsconfig examples/tsconfig.json examples/04-deployment-service-replicas.ts
 ```
 
 - `01-single-pod.ts` starts one pod and fetches its pod IP directly.
