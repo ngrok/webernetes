@@ -11,6 +11,7 @@ const examples = [
 ];
 
 const examplesDirectory = fileURLToPath(new URL(".", import.meta.url));
+const examplesTsconfig = fileURLToPath(new URL("tsconfig.json", import.meta.url));
 
 for (const example of examples) {
 	console.log(`\n> ${example}`);
@@ -21,6 +22,10 @@ async function runExample(example: string): Promise<void> {
 	const exitCode = await new Promise<number | null>((resolve, reject) => {
 		const child = spawn(process.execPath, ["--import", "tsx", example], {
 			cwd: examplesDirectory,
+			env: {
+				...process.env,
+				TSX_TSCONFIG_PATH: examplesTsconfig,
+			},
 			stdio: "inherit",
 		});
 		child.on("error", reject);
