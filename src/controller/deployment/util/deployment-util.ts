@@ -4,11 +4,16 @@
  */
 import * as k8s from "../../../client";
 import { defaultDeploymentUniqueLabelKey } from "../../../apis/apps/v1/types";
+import { getControllerOf } from "../../../apimachinery/pkg/apis/meta/v1/controller_ref";
+import { labelSelectorAsSelector } from "../../../apimachinery/pkg/apis/meta/v1/helpers";
+import { Set as LabelSet } from "../../../apimachinery/pkg/labels/labels";
+import { everything } from "../../../apimachinery/pkg/labels/selector";
 import { getClock } from "../../../clock-context";
 import { deepEqual } from "../../../deep-equal";
 import { getScaledValueFromIntOrPercent } from "../../../apimachinery/pkg/util/intstr/intstr";
 import { parseInt, parseUint } from "../../../go/strconv";
 import type * as context from "../../../go/context";
+import type { DeploymentLister } from "../../../client-go/listers/apps/v1/deployment";
 import {
 	compareReplicaSetsByCreationTimestamp,
 	filterActiveReplicaSets,
@@ -324,7 +329,7 @@ export function getReplicaSetProportion(
 	deploymentReplicasAdded: number,
 ): number {
 	if (
-		(rs.spec?.replicas ?? 0) === 0 ||
+		(rs.spec?.replicas ?? 1) === 0 ||
 		deploymentReplicasToAdd === 0 ||
 		deploymentReplicasToAdd === deploymentReplicasAdded
 	) {
@@ -341,7 +346,7 @@ export function getReplicaSetProportion(
 function getReplicaSetFraction(rs: k8s.V1ReplicaSet, deployment: k8s.V1Deployment): number {
 	const deploymentReplicas = deployment.spec?.replicas ?? 1;
 	if (deploymentReplicas === 0) {
-		return -(rs.spec?.replicas ?? 0);
+		return -(rs.spec?.replicas ?? 1);
 	}
 	const deploymentMaxReplicas = deploymentReplicas + maxSurge(deployment);
 	let [deploymentMaxReplicasBeforeScale, ok] = getMaxReplicasAnnotation(rs);
@@ -351,9 +356,51 @@ function getReplicaSetFraction(rs: k8s.V1ReplicaSet, deployment: k8s.V1Deploymen
 			return 0;
 		}
 	}
-	const scaleBase = rs.spec?.replicas ?? 0;
+	const scaleBase = rs.spec?.replicas ?? 1;
 	const newRSSize = (scaleBase * deploymentMaxReplicas) / deploymentMaxReplicasBeforeScale;
 	return Math.round(newRSSize) - scaleBase;
+}
+
+export interface ReplicaSetListOptions {
+	labelSelector?: string;
+}
+
+// Models kubernetes/pkg/controller/deployment/util/deployment_util.go RsListFunc.
+export type RsListFunc = (
+	namespace: string,
+	options: ReplicaSetListOptions,
+) => Promise<[replicaSets: k8s.V1ReplicaSet[], err: Error | undefined]>;
+
+// Models kubernetes/pkg/controller/deployment/util/deployment_util.go RsListFromClient.
+export function rsListFromClient(api: k8s.KubeClient["appsv1"]): RsListFunc {
+	return async (namespace, options) => {
+		try {
+			const replicaSetList = await api.listNamespacedReplicaSet({
+				namespace,
+				labelSelector: options.labelSelector,
+			});
+			return [replicaSetList.items ?? [], undefined];
+		} catch (error) {
+			return [[], error instanceof Error ? error : new Error(String(error))];
+		}
+	};
+}
+
+// Models kubernetes/pkg/controller/deployment/util/deployment_util.go ListReplicaSets.
+export async function listReplicaSets(
+	deployment: k8s.V1Deployment,
+	getRSList: RsListFunc,
+): Promise<[replicaSets: k8s.V1ReplicaSet[], err: Error | undefined]> {
+	const namespace = deployment.metadata?.namespace ?? "default";
+	const [selector, selectorErr] = labelSelectorAsSelector(deployment.spec?.selector);
+	if (selectorErr || !selector) {
+		return [[], selectorErr ?? new Error("deployment has no selector")];
+	}
+	const [all, listErr] = await getRSList(namespace, { labelSelector: selector.string() });
+	if (listErr) {
+		return [[], listErr];
+	}
+	return [all.filter((replicaSet) => isControlledBy(replicaSet, deployment)), undefined];
 }
 
 // Models kubernetes/pkg/controller/deployment/util/deployment_util.go IsSaturated.
@@ -374,7 +421,7 @@ export function isSaturated(
 	}
 	const deploymentReplicas = deployment.spec?.replicas ?? 1;
 	return (
-		(rs.spec?.replicas ?? 0) === deploymentReplicas &&
+		(rs.spec?.replicas ?? 1) === deploymentReplicas &&
 		Number(desired) === deploymentReplicas &&
 		(rs.status?.availableReplicas ?? 0) === deploymentReplicas
 	);
@@ -482,7 +529,7 @@ export function findOldReplicaSets(
 			continue;
 		}
 		allRSs.push(rs);
-		if ((rs.spec?.replicas ?? 0) !== 0) {
+		if ((rs.spec?.replicas ?? 1) !== 0) {
 			requiredRSs.push(rs);
 		}
 	}
@@ -493,7 +540,7 @@ export function findOldReplicaSets(
 export function getReplicaCountForReplicaSets(replicaSets: k8s.V1ReplicaSet[]): number {
 	let totalReplicas = 0;
 	for (const replicaSet of replicaSets) {
-		totalReplicas += replicaSet.spec?.replicas ?? 0;
+		totalReplicas += replicaSet.spec?.replicas ?? 1;
 	}
 	return totalReplicas;
 }
@@ -621,14 +668,14 @@ export function newRSNewReplicas(
 			const currentPodCount = getReplicaCountForReplicaSets(allRSs);
 			const maxTotalPods = (deployment.spec.replicas ?? 1) + maxSurge;
 			if (currentPodCount >= maxTotalPods) {
-				return [newRS.spec?.replicas ?? 0, undefined];
+				return [newRS.spec?.replicas ?? 1, undefined];
 			}
 			let scaleUpCount = maxTotalPods - currentPodCount;
 			scaleUpCount = Math.min(
 				scaleUpCount,
-				(deployment.spec.replicas ?? 1) - (newRS.spec?.replicas ?? 0),
+				(deployment.spec.replicas ?? 1) - (newRS.spec?.replicas ?? 1),
 			);
-			return [(newRS.spec?.replicas ?? 0) + scaleUpCount, undefined];
+			return [(newRS.spec?.replicas ?? 1) + scaleUpCount, undefined];
 		}
 		case "Recreate":
 			return [deployment.spec?.replicas ?? 1, undefined];
@@ -688,6 +735,56 @@ export function revision(replicaSet: k8s.V1ReplicaSet): [value: number, err: Err
 		return [0, err];
 	}
 	return [Number(parsed), undefined];
+}
+
+// Models kubernetes/pkg/controller/deployment/util/deployment_util.go GetDeploymentsForReplicaSet.
+export function getDeploymentsForReplicaSet(
+	deploymentLister: DeploymentLister,
+	replicaSet: k8s.V1ReplicaSet,
+): [deployments: k8s.V1Deployment[], err: Error | undefined] {
+	if (Object.keys(replicaSet.metadata?.labels ?? {}).length === 0) {
+		return [
+			[],
+			new Error(
+				`no deployments found for ReplicaSet ${replicaSet.metadata?.name ?? ""} because it has no labels`,
+			),
+		];
+	}
+
+	const [deploymentList, listErr] = deploymentLister
+		.deployments(replicaSet.metadata?.namespace ?? "default")
+		.list(everything());
+	if (listErr) {
+		return [[], listErr];
+	}
+
+	const deployments: k8s.V1Deployment[] = [];
+	for (const deployment of deploymentList) {
+		const [selector, selectorErr] = labelSelectorAsSelector(deployment.spec?.selector);
+		if (selectorErr || !selector) {
+			continue;
+		}
+		if (selector.empty() || !selector.matches(new LabelSet(replicaSet.metadata?.labels))) {
+			continue;
+		}
+		deployments.push(deployment);
+	}
+
+	if (deployments.length === 0) {
+		return [
+			[],
+			new Error(
+				`could not find deployments set for ReplicaSet ${replicaSet.metadata?.name ?? ""} in namespace ${replicaSet.metadata?.namespace ?? "default"} with labels: ${JSON.stringify(replicaSet.metadata?.labels ?? {})}`,
+			),
+		];
+	}
+
+	return [deployments, undefined];
+}
+
+function isControlledBy(resource: k8s.KubernetesObject, owner: k8s.KubernetesObject): boolean {
+	const uid = owner.metadata?.uid;
+	return !!uid && getControllerOf(resource)?.uid === uid;
 }
 
 // Models kubernetes/pkg/controller/deployment/util/deployment_util.go ReplicaSetsByRevision.

@@ -7,6 +7,7 @@ import { expect, it } from "vitest";
 
 import type * as k8s from "../../../client";
 import { defaultDeploymentUniqueLabelKey } from "../../../apis/apps/v1/types";
+import type { DeploymentLister } from "../../../client-go/listers/apps/v1/deployment";
 import { browser } from "../../../test/describe";
 import {
 	deploymentComplete,
@@ -15,10 +16,12 @@ import {
 	findNewReplicaSet,
 	findOldReplicaSets,
 	getActualReplicaCountForReplicaSets,
+	getDeploymentsForReplicaSet,
 	getDesiredReplicasAnnotation,
 	getReplicaCountForReplicaSets,
 	getTerminatingReplicaCountForReplicaSets,
 	isSaturated,
+	listReplicaSets,
 	maxReplicasAnnotation,
 	maxUnavailable,
 	minAvailable,
@@ -396,6 +399,11 @@ browser.describe("deployment util", () => {
 		rs4.status!.replicas = 1;
 		rs4.status!.terminatingReplicas = undefined;
 
+		const rs5 = generateRS(generateDeployment("defaulted-rs"));
+		delete rs5.spec!.replicas;
+		rs5.status!.replicas = 0;
+		rs5.status!.terminatingReplicas = undefined;
+
 		const tests: {
 			name: string;
 			sets: k8s.V1ReplicaSet[];
@@ -444,6 +452,13 @@ browser.describe("deployment util", () => {
 				expectedCount: 7,
 				expectedActual: 6,
 				expectedTerminating: undefined,
+			},
+			{
+				name: "missing replicas defaults to one",
+				sets: [rs5],
+				expectedCount: 1,
+				expectedActual: 0,
+				expectedTerminating: 0,
 			},
 		];
 
@@ -883,6 +898,57 @@ browser.describe("deployment util", () => {
 
 		expect(isSaturated(deployment, replicaSet)).toBe(false);
 	});
+
+	it("gets deployments for replica set", () => {
+		const matchingDeployment = generateDeployment("nginx");
+		matchingDeployment.metadata!.name = "matching";
+		const emptySelectorDeployment = generateDeployment("nginx");
+		emptySelectorDeployment.metadata!.name = "empty-selector";
+		emptySelectorDeployment.spec!.selector = {};
+		const otherDeployment = generateDeployment("other");
+		otherDeployment.metadata!.name = "other";
+		const replicaSet = generateRS(matchingDeployment);
+		replicaSet.metadata!.name = "matching-rs";
+
+		const [deployments, err] = getDeploymentsForReplicaSet(
+			newTestDeploymentLister([emptySelectorDeployment, otherDeployment, matchingDeployment]),
+			replicaSet,
+		);
+
+		expect(err).toBeUndefined();
+		expect(deployments.map((deployment) => deployment.metadata?.name)).toEqual(["matching"]);
+
+		replicaSet.metadata!.labels = {};
+		const [emptyDeployments, emptyErr] = getDeploymentsForReplicaSet(
+			newTestDeploymentLister([matchingDeployment]),
+			replicaSet,
+		);
+		expect(emptyDeployments).toEqual([]);
+		expect(emptyErr?.message).toContain("because it has no labels");
+	});
+
+	it("lists replica sets for deployment through supplied list function", async () => {
+		const deployment = generateDeployment("nginx");
+		deployment.metadata!.uid = "deployment-uid";
+		const owned = generateRS(deployment);
+		owned.metadata!.name = "owned";
+		const unowned = generateRS(deployment);
+		unowned.metadata!.name = "unowned";
+		unowned.metadata!.ownerReferences = [];
+		let gotNamespace = "";
+		let gotLabelSelector = "";
+
+		const [replicaSets, err] = await listReplicaSets(deployment, async (namespace, options) => {
+			gotNamespace = namespace;
+			gotLabelSelector = options.labelSelector ?? "";
+			return [[owned, unowned], undefined];
+		});
+
+		expect(err).toBeUndefined();
+		expect(gotNamespace).toBe("default");
+		expect(gotLabelSelector).toBe("name=nginx");
+		expect(replicaSets.map((replicaSet) => replicaSet.metadata?.name)).toEqual(["owned"]);
+	});
 });
 
 function generateRS(deployment: k8s.V1Deployment): k8s.V1ReplicaSet {
@@ -940,6 +1006,24 @@ function generateDeployment(image: string): k8s.V1Deployment {
 				},
 			},
 		},
+	};
+}
+
+function newTestDeploymentLister(deployments: k8s.V1Deployment[]): DeploymentLister {
+	return {
+		list: (_selector) => [deployments, undefined],
+		deployments: (namespace) => ({
+			list: (_selector) => [
+				deployments.filter(
+					(deployment) => (deployment.metadata?.namespace ?? "default") === namespace,
+				),
+				undefined,
+			],
+			get: (name) => [
+				deployments.find((deployment) => deployment.metadata?.name === name),
+				undefined,
+			],
+		}),
 	};
 }
 
