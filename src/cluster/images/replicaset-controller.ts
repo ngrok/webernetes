@@ -37,7 +37,7 @@ export class ReplicaSetController extends BaseImage {
 			return await super.exec(ctx, argv);
 		}
 		const controller = new Controller(ctx.api, ctx.kubeConfig, this.controllerFeatures);
-		await controller.start(ctx);
+		await controller.run(ctx);
 		try {
 			return await ctx.waitUntilKilled();
 		} finally {
