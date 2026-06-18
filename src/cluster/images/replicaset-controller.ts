@@ -7,17 +7,19 @@ import type { ProcessContext } from "../cri";
 import { BaseImage } from "./base";
 
 export {
-	calculateStatus,
 	defaultReplicaSetControllerFeatures,
-	filterOutCondition,
-	getCondition,
 	getPodKeys,
 	getPodsToDelete,
+	slowStartBatch,
+} from "../../controller/replicaset/replica-set";
+export {
+	calculateStatus,
+	filterOutCondition,
+	getCondition,
 	newReplicaSetCondition,
 	removeCondition,
 	setCondition,
-	slowStartBatch,
-} from "../../controller/replicaset/replica-set";
+} from "../../controller/replicaset/replica-set-utils";
 export type { ReplicaSetControllerFeatures } from "../../controller/replicaset/replica-set";
 
 export class ReplicaSetController extends BaseImage {

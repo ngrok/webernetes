@@ -3,9 +3,11 @@
  * Derived from Kubernetes, translated and modified for Webernetes.
  */
 import * as k8s from "../client";
-import { getControllerOf } from "../apimachinery/pkg/apis/meta/v1/controller_ref";
+import { getControllerOf, isControlledBy } from "../apimachinery/pkg/apis/meta/v1/controller_ref";
 import { getDeletionCostFromPodAnnotations } from "../apis/core/helper/helpers";
 import { validatePodName } from "../apis/core/validation/validation";
+import { Set as LabelSet } from "../apimachinery/pkg/labels/labels";
+import type { Selector } from "../apimachinery/pkg/labels/selector";
 import { safeEncodeString } from "../apimachinery/pkg/util/rand/rand";
 import { hasStatusCause, isNotFoundError } from "../client/errors";
 import type { EventRecorder } from "../client-go/tools/record/event";
@@ -123,6 +125,46 @@ export function filterPodsByOwner(
 		result.push(...pods);
 	}
 	return [result, undefined];
+}
+
+// Models kubernetes/pkg/controller/controller_utils.go FilterClaimedPods.
+export function filterClaimedPods(
+	controller: k8s.KubernetesObject,
+	selector: Selector,
+	pods: k8s.V1Pod[],
+): k8s.V1Pod[] {
+	const result: k8s.V1Pod[] = [];
+	for (const pod of pods) {
+		if (!isControlledBy(pod, controller)) {
+			continue;
+		}
+		if (selector.matches(new LabelSet(pod.metadata?.labels))) {
+			result.push(pod);
+		}
+	}
+	return result;
+}
+
+// Models kubernetes/pkg/controller/controller_utils.go FilterActivePods.
+export function filterActivePods(pods: k8s.V1Pod[]): k8s.V1Pod[] {
+	const result: k8s.V1Pod[] = [];
+	for (const p of pods) {
+		if (isPodActive(p)) {
+			result.push(p);
+		}
+	}
+	return result;
+}
+
+// Models kubernetes/pkg/controller/controller_utils.go FilterTerminatingPods.
+export function filterTerminatingPods(pods: k8s.V1Pod[]): k8s.V1Pod[] {
+	const result: k8s.V1Pod[] = [];
+	for (const p of pods) {
+		if (isPodTerminating(p)) {
+			result.push(p);
+		}
+	}
+	return result;
 }
 
 // Models kubernetes/pkg/controller/controller_utils.go ControlleeExpectations.

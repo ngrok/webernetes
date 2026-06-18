@@ -76,6 +76,22 @@ export function isPodReady(pod: V1Pod): boolean {
 	return isPodReadyConditionTrue(pod.status ?? {});
 }
 
+// Models kubernetes/pkg/api/v1/pod/util.go IsPodAvailable.
+export function isPodAvailable(pod: V1Pod, minReadySeconds: number, now: Date): boolean {
+	if (!isPodReady(pod)) {
+		return false;
+	}
+
+	const c = getPodReadyCondition(pod.status ?? {});
+	if (
+		minReadySeconds === 0 ||
+		(c?.lastTransitionTime && readyDurationElapsed(c.lastTransitionTime, minReadySeconds, now))
+	) {
+		return true;
+	}
+	return false;
+}
+
 // Models kubernetes/pkg/api/v1/pod/util.go IsPodTerminal.
 export function isPodTerminal(pod: V1Pod): boolean {
 	return isPodPhaseTerminal(pod.status?.phase);
@@ -101,6 +117,18 @@ export function getPodReadyCondition(status: V1PodStatus): V1PodCondition | unde
 // Models kubernetes/pkg/api/v1/pod/util.go GetContainersReadyCondition.
 export function getContainersReadyCondition(status: V1PodStatus): V1PodCondition | undefined {
 	return getPodCondition(status, "ContainersReady");
+}
+
+function readyDurationElapsed(
+	lastTransitionTime: Date | string,
+	minReadySeconds: number,
+	now: Date,
+): boolean {
+	const parsed =
+		lastTransitionTime instanceof Date
+			? lastTransitionTime.getTime()
+			: Date.parse(lastTransitionTime);
+	return !Number.isNaN(parsed) && parsed + minReadySeconds * 1000 <= now.getTime();
 }
 
 // Models kubernetes/pkg/api/v1/pod/util.go IsRestartableInitContainer.

@@ -33,6 +33,15 @@ export function getControllerOfNoCopy(controllee: KubernetesObject): V1OwnerRefe
 	return undefined;
 }
 
+// Models staging/src/k8s.io/apimachinery/pkg/apis/meta/v1/controller_ref.go IsControlledBy.
+export function isControlledBy(obj: KubernetesObject, owner: KubernetesObject): boolean {
+	const ref = getControllerOfNoCopy(obj);
+	if (!ref) {
+		return false;
+	}
+	return ref.uid === owner.metadata?.uid;
+}
+
 // Models staging/src/k8s.io/apimachinery/pkg/apis/meta/v1/controller_ref.go NewControllerRef.
 export function newControllerRef(owner: KubernetesObject, gvk: GroupVersionKind): V1OwnerReference {
 	return {

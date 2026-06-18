@@ -20,18 +20,20 @@ import * as time from "../../go/time";
 import { browser } from "../../test/describe";
 import { FakePodControl, keyFunc, podKey } from "../controller-utils";
 import {
-	calculateStatus,
 	defaultReplicaSetControllerFeatures,
-	getCondition,
 	getPodKeys,
 	getPodsToDelete,
-	removeCondition,
 	ReplicaSetController,
-	setCondition,
 	slowStartBatch,
-	updateReplicaSetStatus,
 	type ReplicaSetControllerFeatures,
 } from "./replica-set";
+import {
+	calculateStatus,
+	getCondition,
+	removeCondition,
+	setCondition,
+	updateReplicaSetStatus,
+} from "./replica-set-utils";
 
 let uidCounter = 0;
 
