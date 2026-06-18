@@ -8,7 +8,6 @@ import {
 	newControllerRef,
 } from "../../apimachinery/pkg/apis/meta/v1/controller_ref";
 import { labelSelectorAsSelector } from "../../apimachinery/pkg/apis/meta/v1/helpers";
-import { Set as LabelSet } from "../../apimachinery/pkg/labels/labels";
 import type { Selector } from "../../apimachinery/pkg/labels/selector";
 import {
 	GroupResource,
@@ -23,11 +22,11 @@ import { newPodLister, type PodLister } from "../../client-go/listers/core/v1/po
 import type { Indexer } from "../../client-go/tools/cache/index";
 import {
 	DeletedFinalStateUnknown,
-	ExplicitKey,
 	metaNamespaceKeyFunc,
 	newIndexer,
 	splitMetaNamespaceKey,
 } from "../../client-go/tools/cache/store";
+import * as podutil from "../../cluster/api/v1/pod/util";
 import { defaultTypedControllerRateLimiter } from "../../client-go/util/workqueue/default-rate-limiters";
 import {
 	newTypedRateLimitingQueueWithConfig,
@@ -44,10 +43,12 @@ import {
 import {
 	ActivePodsWithRanks,
 	addPodControllerIndexer,
+	filterActivePods,
+	filterClaimedPods,
 	filterPodsByOwner,
+	filterTerminatingPods,
 	findMinNextPodAvailabilityCheck,
 	isPodActive,
-	isPodTerminating,
 	keyFunc,
 	newControllerExpectations,
 	RealPodControl,
@@ -60,9 +61,9 @@ import { deepEqual } from "../../deep-equal";
 import type * as context from "../../go/context";
 import type { Clock } from "../../clock";
 import { untilWithContext } from "../../apimachinery/pkg/util/wait/backoff";
+import { calculateStatus, updateReplicaSetStatus } from "./replica-set-utils";
 
 const defaultBurstReplicas = 500;
-const statusUpdateRetries = 1;
 const slowStartInitialBatchSize = 1;
 const controllerUIDIndex = "controllerUID";
 const replicaSetGroupResource = new GroupResource("apps", "replicasets");
@@ -124,7 +125,7 @@ export class ReplicaSetController {
 		this.rsIndexer = newIndexer(metaNamespaceKeyFunc, {
 			[controllerUIDIndex]: replicaSetControllerUIDIndexFunc,
 		});
-		this.podIndexer = newIndexer(podKeyFunc, {});
+		this.podIndexer = newIndexer(metaNamespaceKeyFunc, {});
 		addPodControllerIndexer(this.podIndexer);
 		this.rsLister = newReplicaSetLister(this.rsIndexer);
 		this.podLister = newPodLister(this.podIndexer);
@@ -399,7 +400,11 @@ export class ReplicaSetController {
 				return;
 			}
 			this.enqueueRS(rs);
-			if (!isPodReady(oldPod) && isPodReady(curPod) && (rs.spec?.minReadySeconds ?? 0) > 0) {
+			if (
+				!podutil.isPodReady(oldPod) &&
+				podutil.isPodReady(curPod) &&
+				(rs.spec?.minReadySeconds ?? 0) > 0
+			) {
 				this.enqueueRSAfter(rs, (rs.spec?.minReadySeconds ?? 0) * 1000);
 			}
 			return;
@@ -712,173 +717,6 @@ export class ReplicaSetController {
 	}
 }
 
-// Models kubernetes/pkg/controller/replicaset/replica_set_utils.go updateReplicaSetStatus.
-export async function updateReplicaSetStatus(
-	api: k8s.KubeClient["appsv1"],
-	namespace: string,
-	name: string,
-	rs: k8s.V1ReplicaSet,
-	newStatus: k8s.V1ReplicaSetStatus,
-	_controllerFeatures: ReplicaSetControllerFeatures,
-): Promise<[k8s.V1ReplicaSet | undefined, Error | undefined]> {
-	if (
-		(rs.status?.replicas ?? 0) === newStatus.replicas &&
-		(rs.status?.fullyLabeledReplicas ?? 0) === newStatus.fullyLabeledReplicas &&
-		(rs.status?.readyReplicas ?? 0) === newStatus.readyReplicas &&
-		(rs.status?.availableReplicas ?? 0) === newStatus.availableReplicas &&
-		ptrEqual(rs.status?.terminatingReplicas, newStatus.terminatingReplicas) &&
-		rs.metadata?.generation === rs.status?.observedGeneration &&
-		deepEqual(rs.status?.conditions ?? [], newStatus.conditions ?? [], { ignoreUndefined: true })
-	) {
-		return [rs, undefined];
-	}
-
-	newStatus.observedGeneration = rs.metadata?.generation;
-
-	let getErr: Error | undefined;
-	let updateErr: Error | undefined;
-	let updatedRS: k8s.V1ReplicaSet | undefined;
-	for (let i = 0, current = rs; ; i++) {
-		try {
-			current.status = newStatus;
-			updatedRS = await api.replaceNamespacedReplicaSetStatus({
-				name,
-				namespace,
-				body: current,
-			});
-			return [updatedRS, undefined];
-		} catch (error) {
-			updateErr = toError(error);
-		}
-		if (i >= statusUpdateRetries) {
-			break;
-		}
-		try {
-			current = await api.readNamespacedReplicaSet({ name, namespace });
-		} catch (error) {
-			getErr = toError(error);
-			return [undefined, getErr];
-		}
-	}
-
-	return [undefined, updateErr];
-}
-
-// Models kubernetes/pkg/controller/replicaset/replica_set_utils.go calculateStatus.
-export function calculateStatus(
-	rs: k8s.V1ReplicaSet,
-	activePods: k8s.V1Pod[],
-	terminatingPods: k8s.V1Pod[],
-	manageReplicasErr: Error | undefined,
-	controllerFeatures: ReplicaSetControllerFeatures,
-	now: Date,
-): k8s.V1ReplicaSetStatus {
-	const newStatus: k8s.V1ReplicaSetStatus = { replicas: 0, ...(rs.status ?? {}) };
-	let fullyLabeledReplicasCount = 0;
-	let readyReplicasCount = 0;
-	let availableReplicasCount = 0;
-	const templateLabel = new LabelSet(rs.spec?.template?.metadata?.labels).asSelectorPreValidated();
-	for (const pod of activePods) {
-		if (templateLabel.matches(new LabelSet(pod.metadata?.labels))) {
-			fullyLabeledReplicasCount++;
-		}
-		if (isPodReady(pod)) {
-			readyReplicasCount++;
-			if (isPodAvailable(pod, rs.spec?.minReadySeconds ?? 0, now)) {
-				availableReplicasCount++;
-			}
-		}
-	}
-
-	const terminatingReplicasCount = controllerFeatures.enableStatusTerminatingReplicas
-		? terminatingPods.length
-		: undefined;
-
-	const failureCond = getCondition(rs.status, "ReplicaFailure");
-	if (manageReplicasErr && !failureCond) {
-		let reason = "";
-		const diff = activePods.length - (rs.spec?.replicas ?? 1);
-		if (diff < 0) {
-			reason = "FailedCreate";
-		} else if (diff > 0) {
-			reason = "FailedDelete";
-		}
-		const cond = newReplicaSetCondition(
-			"ReplicaFailure",
-			"True",
-			reason,
-			manageReplicasErr.message,
-			now,
-		);
-		setCondition(newStatus, cond);
-	} else if (!manageReplicasErr && failureCond) {
-		removeCondition(newStatus, "ReplicaFailure");
-	}
-
-	newStatus.replicas = activePods.length;
-	newStatus.fullyLabeledReplicas = fullyLabeledReplicasCount;
-	newStatus.readyReplicas = readyReplicasCount;
-	newStatus.availableReplicas = availableReplicasCount;
-	newStatus.terminatingReplicas = terminatingReplicasCount;
-	return newStatus;
-}
-
-// Models kubernetes/pkg/controller/replicaset/replica_set_utils.go NewReplicaSetCondition.
-export function newReplicaSetCondition(
-	condType: string,
-	status: string,
-	reason: string,
-	message: string,
-	now: Date,
-): k8s.V1ReplicaSetCondition {
-	return {
-		type: condType,
-		status,
-		lastTransitionTime: now,
-		reason,
-		message,
-	};
-}
-
-// Models kubernetes/pkg/controller/replicaset/replica_set_utils.go GetCondition.
-export function getCondition(
-	status: k8s.V1ReplicaSetStatus | undefined,
-	condType: string,
-): k8s.V1ReplicaSetCondition | undefined {
-	return (status?.conditions ?? []).find((condition) => condition.type === condType);
-}
-
-// Models kubernetes/pkg/controller/replicaset/replica_set_utils.go SetCondition.
-export function setCondition(
-	status: k8s.V1ReplicaSetStatus,
-	condition: k8s.V1ReplicaSetCondition,
-): void {
-	const currentCond = getCondition(status, condition.type ?? "");
-	if (
-		currentCond &&
-		currentCond.status === condition.status &&
-		currentCond.reason === condition.reason
-	) {
-		return;
-	}
-	status.conditions = filterOutCondition(status.conditions ?? [], condition.type ?? "");
-	status.conditions.push(condition);
-}
-
-// Models kubernetes/pkg/controller/replicaset/replica_set_utils.go RemoveCondition.
-export function removeCondition(status: k8s.V1ReplicaSetStatus, condType: string): void {
-	const conditions = filterOutCondition(status.conditions ?? [], condType);
-	status.conditions = conditions.length > 0 ? conditions : undefined;
-}
-
-// Models kubernetes/pkg/controller/replicaset/replica_set_utils.go filterOutCondition.
-export function filterOutCondition(
-	conditions: k8s.V1ReplicaSetCondition[],
-	condType: string,
-): k8s.V1ReplicaSetCondition[] {
-	return conditions.filter((condition) => condition.type !== condType);
-}
-
 // Models kubernetes/pkg/controller/replicaset/replica_set.go slowStartBatch.
 export async function slowStartBatch(
 	count: number,
@@ -962,80 +800,6 @@ function replicaSetControllerUIDIndexFunc(
 		return [[], undefined];
 	}
 	return [[controllerRef.uid ?? ""], undefined];
-}
-
-// Models staging/src/k8s.io/client-go/tools/cache/store.go MetaNamespaceKeyFunc.
-function podKeyFunc(pod: k8s.V1Pod | ExplicitKey): [string, Error | undefined] {
-	if (pod instanceof ExplicitKey) {
-		return [pod.key, undefined];
-	}
-	return [podKey(pod), undefined];
-}
-
-// Models staging/src/k8s.io/apimachinery/pkg/apis/meta/v1/controller_ref.go IsControlledBy.
-function isControlledBy(resource: k8s.KubernetesObject, owner: k8s.KubernetesObject): boolean {
-	const uid = owner.metadata?.uid;
-	return !!uid && getControllerOf(resource)?.uid === uid;
-}
-
-// Models kubernetes/pkg/controller/controller_utils.go FilterActivePods.
-function filterActivePods(pods: k8s.V1Pod[]): k8s.V1Pod[] {
-	return pods.filter(isPodActive);
-}
-
-// Models kubernetes/pkg/controller/controller_utils.go FilterTerminatingPods.
-function filterTerminatingPods(pods: k8s.V1Pod[]): k8s.V1Pod[] {
-	return pods.filter(isPodTerminating);
-}
-
-// Models kubernetes/pkg/controller/controller_utils.go FilterClaimedPods.
-function filterClaimedPods(
-	rs: k8s.V1ReplicaSet,
-	selector: Selector,
-	pods: k8s.V1Pod[],
-): k8s.V1Pod[] {
-	return pods.filter(
-		(pod) => isControlledBy(pod, rs) && selector.matches(new LabelSet(pod.metadata?.labels)),
-	);
-}
-
-// Models kubernetes/pkg/api/v1/pod/util.go IsPodReady.
-function isPodReady(pod: k8s.V1Pod | undefined): boolean {
-	return !!pod && readyCondition(pod)?.status === "True";
-}
-
-// Models kubernetes/pkg/api/v1/pod/util.go IsPodAvailable.
-function isPodAvailable(pod: k8s.V1Pod, minReadySeconds: number, now: Date): boolean {
-	const condition = readyCondition(pod);
-	if (condition?.status !== "True") {
-		return false;
-	}
-	if (minReadySeconds === 0) {
-		return true;
-	}
-	const readyAtMs = timestampMs(condition.lastTransitionTime);
-	return readyAtMs !== undefined && now.getTime() - readyAtMs >= minReadySeconds * 1000;
-}
-
-// Models kubernetes/pkg/api/v1/pod/util.go GetPodReadyCondition.
-function readyCondition(pod: k8s.V1Pod): k8s.V1PodCondition | undefined {
-	return (pod.status?.conditions ?? []).find((condition) => condition.type === "Ready");
-}
-
-function timestampMs(value: Date | string | undefined): number | undefined {
-	if (value instanceof Date) {
-		return value.getTime();
-	}
-	if (typeof value === "string") {
-		const parsed = Date.parse(value);
-		return Number.isNaN(parsed) ? undefined : parsed;
-	}
-	return undefined;
-}
-
-// Models k8s.io/utils/ptr Equal.
-function ptrEqual(left: number | undefined, right: number | undefined): boolean {
-	return left === right;
 }
 
 function isReplicaSetNotFoundError(err: Error, name: string): boolean {
