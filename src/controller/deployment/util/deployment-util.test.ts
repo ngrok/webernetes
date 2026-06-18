@@ -15,8 +15,10 @@ import {
 	findNewReplicaSet,
 	findOldReplicaSets,
 	getActualReplicaCountForReplicaSets,
+	getDesiredReplicasAnnotation,
 	getReplicaCountForReplicaSets,
 	getTerminatingReplicaCountForReplicaSets,
+	isSaturated,
 	maxReplicasAnnotation,
 	maxUnavailable,
 	minAvailable,
@@ -342,6 +344,31 @@ browser.describe("deployment util", () => {
 				requireRS: test.expectedRequire,
 			});
 		}
+	});
+
+	it("finds old replica sets in creation order", () => {
+		const base = new Date("2026-01-01T00:00:00Z");
+		const deployment = generateDeployment("nginx");
+
+		const newRS = generateRS(deployment);
+		newRS.metadata!.name = "new";
+		newRS.metadata!.creationTimestamp = new Date(base.getTime() + 60_000);
+		newRS.metadata!.labels![defaultDeploymentUniqueLabelKey] = "hash";
+
+		const oldDeployment = generateDeployment("nginx");
+		oldDeployment.spec!.template!.spec!.containers![0]!.name = "nginx-old";
+
+		const newerOldRS = generateRS(oldDeployment);
+		newerOldRS.metadata!.name = "newer-old";
+		newerOldRS.metadata!.creationTimestamp = new Date(base.getTime() + 120_000);
+
+		const olderOldRS = generateRS(oldDeployment);
+		olderOldRS.metadata!.name = "older-old";
+		olderOldRS.metadata!.creationTimestamp = base;
+
+		const [, allRS] = findOldReplicaSets(deployment, [newerOldRS, newRS, olderOldRS]);
+
+		expect(allRS.map((rs) => rs.metadata?.name)).toEqual(["older-old", "newer-old"]);
 	});
 
 	// Models kubernetes/pkg/controller/deployment/util/deployment_util_test.go TestGetReplicaCountForReplicaSets.
@@ -822,6 +849,39 @@ browser.describe("deployment util", () => {
 		expect(setReplicasAnnotations(replicaSet, 12, 13)).toBe(true);
 		expect(replicaSet.metadata?.annotations?.[desiredReplicasAnnotation]).toBe("12");
 		expect(replicaSet.metadata?.annotations?.[maxReplicasAnnotation]).toBe("13");
+	});
+
+	it("rejects malformed non-negative int32 annotations", () => {
+		const replicaSet: k8s.V1ReplicaSet = {
+			metadata: {
+				annotations: {
+					[desiredReplicasAnnotation]: "10abc",
+				},
+			},
+		};
+		expect(getDesiredReplicasAnnotation(replicaSet)).toEqual([0, false]);
+
+		replicaSet.metadata!.annotations![desiredReplicasAnnotation] = "-1";
+		expect(getDesiredReplicasAnnotation(replicaSet)).toEqual([0, false]);
+
+		replicaSet.metadata!.annotations![desiredReplicasAnnotation] = "2147483648";
+		expect(getDesiredReplicasAnnotation(replicaSet)).toEqual([0, false]);
+
+		replicaSet.metadata!.annotations![desiredReplicasAnnotation] = "2147483647";
+		expect(getDesiredReplicasAnnotation(replicaSet)).toEqual([2147483647, true]);
+	});
+
+	it("rejects malformed desired replicas annotation when checking saturation", () => {
+		const deployment = generateDeployment("nginx");
+		deployment.spec!.replicas = 1;
+		const replicaSet = generateRS(deployment);
+		replicaSet.spec!.replicas = 1;
+		replicaSet.status!.availableReplicas = 1;
+		replicaSet.metadata!.annotations = {
+			[desiredReplicasAnnotation]: "1junk",
+		};
+
+		expect(isSaturated(deployment, replicaSet)).toBe(false);
 	});
 });
 

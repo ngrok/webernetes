@@ -7,7 +7,7 @@ import { defaultDeploymentUniqueLabelKey } from "../../../apis/apps/v1/types";
 import { getClock } from "../../../clock-context";
 import { deepEqual } from "../../../deep-equal";
 import { getScaledValueFromIntOrPercent } from "../../../apimachinery/pkg/util/intstr/intstr";
-import { parseInt } from "../../../go/strconv";
+import { parseInt, parseUint } from "../../../go/strconv";
 import type * as context from "../../../go/context";
 import {
 	compareReplicaSetsByCreationTimestamp,
@@ -285,6 +285,7 @@ function getMaxReplicasAnnotation(replicaSet: k8s.V1ReplicaSet): [number, boolea
 	return getNonNegativeInt32FromAnnotation(replicaSet, maxReplicasAnnotation);
 }
 
+// Models kubernetes/pkg/controller/deployment/util/deployment_util.go getNonNegativeInt32FromAnnotation.
 function getNonNegativeInt32FromAnnotation(
 	replicaSet: k8s.V1ReplicaSet,
 	annotationKey: string,
@@ -293,11 +294,11 @@ function getNonNegativeInt32FromAnnotation(
 	if (annotationValue === undefined) {
 		return [0, false];
 	}
-	const parsed = Number.parseInt(annotationValue, 10);
-	if (!Number.isInteger(parsed) || parsed < 0 || parsed > maxInt32) {
+	const [parsed, err] = parseUint(annotationValue, 10, 32);
+	if (err || parsed > BigInt(maxInt32)) {
 		return [0, false];
 	}
-	return [parsed, true];
+	return [Number(parsed), true];
 }
 
 // Models kubernetes/pkg/controller/deployment/util/deployment_util.go ReplicasAnnotationsNeedUpdate.
@@ -364,14 +365,17 @@ export function isSaturated(
 		return false;
 	}
 	const desiredString = rs.metadata?.annotations?.[desiredReplicasAnnotation];
-	const desired = desiredString === undefined ? Number.NaN : Number.parseInt(desiredString, 10);
-	if (Number.isNaN(desired)) {
+	if (desiredString === undefined) {
+		return false;
+	}
+	const [desired, err] = parseInt(desiredString, 10, 0);
+	if (err) {
 		return false;
 	}
 	const deploymentReplicas = deployment.spec?.replicas ?? 1;
 	return (
 		(rs.spec?.replicas ?? 0) === deploymentReplicas &&
-		desired === deploymentReplicas &&
+		Number(desired) === deploymentReplicas &&
 		(rs.status?.availableReplicas ?? 0) === deploymentReplicas
 	);
 }
@@ -456,8 +460,8 @@ export function findNewReplicaSet(
 	deployment: k8s.V1Deployment,
 	replicaSets: k8s.V1ReplicaSet[],
 ): k8s.V1ReplicaSet | undefined {
-	const sorted = [...replicaSets].sort(compareReplicaSetsByCreationTimestamp);
-	for (const replicaSet of sorted) {
+	replicaSets.sort(compareReplicaSetsByCreationTimestamp);
+	for (const replicaSet of replicaSets) {
 		if (equalIgnoreHash(replicaSet.spec?.template, deployment.spec?.template)) {
 			return replicaSet;
 		}

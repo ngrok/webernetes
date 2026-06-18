@@ -17,6 +17,7 @@ import * as context from "../../go/context";
 import { browser } from "../../test/describe";
 import { DeploymentController } from "./deployment-controller";
 import { newDeployment, newReplicaSet } from "./test-helpers";
+import { revisionAnnotation } from "./util/deployment-util";
 
 // Models kubernetes/pkg/controller/deployment/deployment_controller_test.go fixture.
 class Fixture {
@@ -177,6 +178,47 @@ browser.describe("DeploymentController", ({ ctx }) => {
 
 		const [key] = keyFunc(d);
 		await f.run(key);
+	});
+
+	it("updates deployment revision after AlreadyExists for a matching new replica set", async () => {
+		const f = newFixture(ctx);
+
+		const d = newDeployment("foo", 1, undefined, undefined, undefined, { foo: "bar" });
+		f.dLister = [...f.dLister, d];
+		f.objects = [...f.objects, d];
+
+		const dc = await f.newController();
+		f.client!.addReactor("create", "replicasets", async (action) => {
+			const body = (action.request as { body: k8s.V1ReplicaSet }).body;
+			const existing = structuredClone(body);
+			existing.metadata = { ...existing.metadata, uid: `${existing.metadata?.name ?? ""}-uid` };
+			dc.replicaSets.set(replicaSetKey(existing), existing);
+			await dc.replicaSetIndexer.add(existing);
+			return [
+				true,
+				undefined,
+				new Error(`replicasets.apps "${existing.metadata?.name ?? ""}" already exists`),
+			];
+		});
+
+		const [key] = keyFunc(d);
+		const err = await dc.syncDeployment(ctx, key);
+		if (err) {
+			throw err;
+		}
+
+		const revisionUpdated = f
+			.client!.actions()
+			.some(
+				(action) =>
+					action.verb === "update" &&
+					action.resource === "deployments" &&
+					action.subresource === "status" &&
+					(action.request as { body: k8s.V1Deployment }).body.metadata?.annotations?.[
+						revisionAnnotation
+					] === "1",
+			);
+		expect(revisionUpdated).toBe(true);
 	});
 
 	// Models kubernetes/pkg/controller/deployment/deployment_controller_test.go TestSyncDeploymentDontDoAnythingDuringDeletion.
@@ -709,6 +751,24 @@ browser.describe("DeploymentController", ({ ctx }) => {
 
 		await dc.deleteReplicaSet(ctx, rs);
 		expect(dc.queue.len()).toBe(0);
+	});
+
+	it("processNextWorkItem marks the key done when syncHandler throws", async () => {
+		const f = newFixture(ctx);
+		const dc = await f.newController();
+		const key = "default/foo";
+		dc.syncHandler = async () => {
+			throw new Error("boom");
+		};
+
+		dc.queue.add(key);
+		await expect(dc.processNextWorkItem(ctx)).rejects.toThrow("boom");
+
+		dc.queue.add(key);
+		expect(dc.queue.len()).toBe(1);
+		const [queuedKey, quit] = await dc.queue.get();
+		expect({ queuedKey, quit }).toEqual({ queuedKey: key, quit: false });
+		dc.queue.done(queuedKey!);
 	});
 });
 
