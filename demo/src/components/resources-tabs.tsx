@@ -27,6 +27,7 @@ import {
 	demoControlPort,
 	fetchPodPort,
 	idFor,
+	podDisplayPhase,
 	podIdsForLabelSelector,
 	podIdsForService,
 	sortByName,
@@ -425,7 +426,7 @@ function Pods({
 						>
 							<Table.Cell>{getName(pod, "-")}</Table.Cell>
 							<Table.Cell>{getNamespace(pod) ?? "default"}</Table.Cell>
-							<Table.Cell>{pod.status?.phase ?? "Pending"}</Table.Cell>
+							<Table.Cell>{podDisplayPhase(pod)}</Table.Cell>
 							<Table.Cell>{pod.spec?.nodeName ?? "unscheduled"}</Table.Cell>
 							<Table.Cell>
 								{getReadyContainers(pod)}/{pod.spec?.containers?.length ?? 0}

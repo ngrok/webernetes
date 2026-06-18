@@ -10,11 +10,13 @@ import { useCluster } from "./hooks";
 import { setup } from "./setup";
 
 type PreNetworkEvent = w8s.PreNetworkRequestEvent | w8s.PreNetworkResponseEvent;
+const containerTerminationLatencyMs = 2000;
 
 const demoClusterOptions: w8s.ClusterOptions = {
 	latencyProvider: w8s.newLatencyProvider({
 		clusterNetworkRequestLatency: (event) => getLatency("request", event),
 		clusterNetworkResponseLatency: (event) => getLatency("response", event),
+		containerTerminationLatency: () => containerTerminationLatencyMs,
 	}),
 };
 

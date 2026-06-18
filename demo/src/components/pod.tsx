@@ -1,7 +1,7 @@
 import { Badge } from "@ngrok/mantle/badge";
 import { forwardRef, type ComponentPropsWithoutRef } from "react";
 import * as w8s from "webernetes";
-import { getName, hasReadiness, idFor } from "../helpers";
+import { getName, hasReadiness, idFor, isPodTerminating } from "../helpers";
 
 export function Pod({ highlighted = false, pod }: { highlighted?: boolean; pod: w8s.V1Pod }) {
 	return <PodContent highlighted={highlighted} pod={pod} />;
@@ -18,6 +18,7 @@ const PodContent = forwardRef<HTMLDivElement, PodContentProps>(function PodConte
 ) {
 	const name = getName(pod);
 	const ready = isPodReady(pod);
+	const terminating = isPodTerminating(pod);
 	const showReadiness = hasReadiness(pod);
 
 	return (
@@ -30,10 +31,16 @@ const PodContent = forwardRef<HTMLDivElement, PodContentProps>(function PodConte
 			}`}
 		>
 			<div className="w-full min-w-0 truncate font-mono text-xs font-semibold">{name}</div>
-			{showReadiness && (
-				<Badge appearance="muted" color={ready ? "success" : "warning"}>
-					{ready ? "Ready" : "Not ready"}
+			{terminating ? (
+				<Badge appearance="muted" color="warning">
+					Terminating
 				</Badge>
+			) : (
+				showReadiness && (
+					<Badge appearance="muted" color={ready ? "success" : "warning"}>
+						{ready ? "Ready" : "Not ready"}
+					</Badge>
+				)
 			)}
 		</div>
 	);

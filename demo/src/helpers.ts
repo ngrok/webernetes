@@ -59,6 +59,14 @@ export function hasReadiness(pod: w8s.V1Pod): boolean {
 	return pod.spec?.containers?.some((container) => container.readinessProbe !== undefined) ?? false;
 }
 
+export function isPodTerminating(pod: w8s.V1Pod): boolean {
+	return pod.metadata?.deletionTimestamp !== undefined;
+}
+
+export function podDisplayPhase(pod: w8s.V1Pod): string {
+	return isPodTerminating(pod) ? "Terminating" : (pod.status?.phase ?? "Pending");
+}
+
 export function getRestartCount(pod: w8s.V1Pod): number {
 	return (
 		pod.status?.containerStatuses?.reduce((count, status) => count + status.restartCount, 0) ?? 0
