@@ -1599,6 +1599,7 @@ export class KubeGenericRuntimeManager implements Runtime, CommandRunner {
 					image: imageRef,
 					userSpecifiedImage: container.image,
 				},
+				sourceContainer: container,
 				command,
 				args,
 				workingDir: container.workingDir,

@@ -69,6 +69,7 @@ async function makeExpectedConfig(
 			attempt: restartCountUint32,
 		},
 		image: { image: container.image ?? "", userSpecifiedImage: container.image },
+		sourceContainer: container,
 		command: container.command,
 		args: undefined,
 		workingDir: container.workingDir,

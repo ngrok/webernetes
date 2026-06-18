@@ -32,7 +32,7 @@ const PodContent = forwardRef<HTMLDivElement, PodContentProps>(function PodConte
 		>
 			<div className="w-full min-w-0 truncate font-mono text-xs font-semibold">{name}</div>
 			{terminating ? (
-				<Badge appearance="muted" color="warning">
+				<Badge appearance="muted" color="danger">
 					Terminating
 				</Badge>
 			) : (

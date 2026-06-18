@@ -1,8 +1,11 @@
 import type { ProcessContext } from "./runtime";
 
+export type ImageSignal = "SIGTERM" | "SIGKILL";
+
 export interface ImageDefinition {
 	defaultCommand?: readonly string[];
 	exec(context: ProcessContext, argv: readonly string[]): Promise<number>;
+	signalHandler?(context: ProcessContext, signal: ImageSignal): Promise<void> | void;
 }
 
 export interface ImageConstructor {
