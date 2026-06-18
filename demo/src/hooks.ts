@@ -48,6 +48,66 @@ export function useCluster(
 	};
 }
 
+export function usePauseClusterWhenPageInactive(cluster: w8s.Cluster | undefined): void {
+	const pageActive = usePageActive();
+	const autoPaused = useRef(false);
+
+	useEffect(() => {
+		if (!cluster) {
+			autoPaused.current = false;
+			return;
+		}
+
+		if (!pageActive) {
+			if (!cluster.isPaused()) {
+				cluster.pause();
+				autoPaused.current = true;
+			}
+			return;
+		}
+
+		if (autoPaused.current && cluster.isPaused()) {
+			cluster.resume();
+		}
+		autoPaused.current = false;
+	}, [cluster, pageActive]);
+}
+
+export function usePageActive(): boolean {
+	const [active, setActive] = useState(isPageActive);
+
+	useEffect(() => {
+		function updateActive(): void {
+			setActive(isPageActive());
+		}
+
+		function updateInactive(): void {
+			setActive(false);
+		}
+
+		document.addEventListener("visibilitychange", updateActive);
+		window.addEventListener("blur", updateActive);
+		window.addEventListener("focus", updateActive);
+		window.addEventListener("pagehide", updateInactive);
+		window.addEventListener("pageshow", updateActive);
+		updateActive();
+
+		return () => {
+			document.removeEventListener("visibilitychange", updateActive);
+			window.removeEventListener("blur", updateActive);
+			window.removeEventListener("focus", updateActive);
+			window.removeEventListener("pagehide", updateInactive);
+			window.removeEventListener("pageshow", updateActive);
+		};
+	}, []);
+
+	return active;
+}
+
+function isPageActive(): boolean {
+	return document.visibilityState === "visible" && document.hasFocus();
+}
+
 export function useInformer<TResource extends w8s.ClusterInformerResource>({
 	cluster,
 	fieldSelector,

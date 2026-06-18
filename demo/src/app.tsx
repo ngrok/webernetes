@@ -6,7 +6,7 @@ import { Header } from "./components/header";
 import { RequestOverlay } from "./components/request-overlay";
 import { ResourcesTabs } from "./components/resources-tabs";
 import { distance, getHeader, healthCheckHeader, idFor, kubeletIdForNodeName } from "./helpers";
-import { useCluster } from "./hooks";
+import { useCluster, usePauseClusterWhenPageInactive } from "./hooks";
 import { setup } from "./setup";
 
 type PreNetworkEvent = w8s.PreNetworkRequestEvent | w8s.PreNetworkResponseEvent;
@@ -22,6 +22,7 @@ const demoClusterOptions: w8s.ClusterOptions = {
 
 export function App() {
 	const { cluster, reset } = useCluster(setup, demoClusterOptions);
+	usePauseClusterWhenPageInactive(cluster);
 	const [namespace, setNamespace] = useState<string | undefined>("default");
 	const [highlightedPodIds, setHighlightedPodIds] = useState<Set<string>>(new Set());
 	const requestLayerRef = useRef<HTMLDivElement>(null);
