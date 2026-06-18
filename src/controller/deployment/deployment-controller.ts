@@ -184,29 +184,78 @@ export class DeploymentController {
 			"/api/v1/pods",
 			async () => await this.api.corev1.listPodForAllNamespaces(),
 		);
-		this.deploymentInformer.on("add", (deployment) => void this.addDeployment(ctx, deployment));
-		this.deploymentInformer.on(
-			"update",
-			(deployment) => void this.updateDeployment(ctx, deployment),
-		);
-		this.deploymentInformer.on(
-			"delete",
-			(deployment) => void this.deleteDeployment(ctx, deployment),
-		);
-		this.replicaSetInformer.on("add", (replicaSet) => void this.addReplicaSet(ctx, replicaSet));
-		this.replicaSetInformer.on("update", (replicaSet) => {
-			const [oldReplicaSet] = this.replicaSetIndexer.getByKey(replicaSetKey(replicaSet));
-			void this.updateReplicaSet(ctx, oldReplicaSet ?? replicaSet, replicaSet);
+		this.deploymentInformer.on("add", (deployment) => {
+			void (async () => {
+				const key = deploymentKey(deployment);
+				if (key) {
+					this.deployments.set(key, deployment);
+				}
+				await this.deploymentIndexer.add(deployment);
+				await this.addDeployment(ctx, deployment);
+			})();
 		});
-		this.replicaSetInformer.on(
-			"delete",
-			(replicaSet) => void this.deleteReplicaSet(ctx, replicaSet),
-		);
-		this.podInformer.on("add", (pod) => void this.addPod(ctx, pod));
-		this.podInformer.on("update", (pod) => void this.updatePod(ctx, pod));
+		this.deploymentInformer.on("update", (deployment) => {
+			void (async () => {
+				const key = deploymentKey(deployment);
+				let oldDeployment: k8s.V1Deployment | undefined;
+				if (key) {
+					[oldDeployment] = this.deploymentIndexer.getByKey(key);
+					this.deployments.set(key, deployment);
+				}
+				await this.deploymentIndexer.update(deployment);
+				await this.updateDeployment(ctx, oldDeployment ?? deployment, deployment);
+			})();
+		});
+		this.deploymentInformer.on("delete", (deployment) => {
+			void (async () => {
+				const key = deploymentKey(deployment);
+				if (key) {
+					this.deployments.delete(key);
+				}
+				await this.deploymentIndexer.delete(deployment);
+				await this.deleteDeployment(ctx, deployment);
+			})();
+		});
+		this.replicaSetInformer.on("add", (replicaSet) => {
+			void (async () => {
+				this.replicaSets.set(replicaSetKey(replicaSet), replicaSet);
+				await this.replicaSetIndexer.add(replicaSet);
+				await this.addReplicaSet(ctx, replicaSet);
+			})();
+		});
+		this.replicaSetInformer.on("update", (replicaSet) => {
+			void (async () => {
+				const [oldReplicaSet] = this.replicaSetIndexer.getByKey(replicaSetKey(replicaSet));
+				this.replicaSets.set(replicaSetKey(replicaSet), replicaSet);
+				await this.replicaSetIndexer.update(replicaSet);
+				await this.updateReplicaSet(ctx, oldReplicaSet ?? replicaSet, replicaSet);
+			})();
+		});
+		this.replicaSetInformer.on("delete", (replicaSet) => {
+			void (async () => {
+				this.replicaSets.delete(replicaSetKey(replicaSet));
+				await this.replicaSetIndexer.delete(replicaSet);
+				await this.deleteReplicaSet(ctx, replicaSet);
+			})();
+		});
+		this.podInformer.on("add", (pod) => {
+			void (async () => {
+				this.pods.set(podKey(pod), pod);
+				await this.podIndexer.add(pod);
+			})();
+		});
+		this.podInformer.on("update", (pod) => {
+			void (async () => {
+				this.pods.set(podKey(pod), pod);
+				await this.podIndexer.update(pod);
+			})();
+		});
 		this.podInformer.on("delete", (pod) => {
-			void this.removePod(pod);
-			void this.deletePod(ctx, pod).catch(() => undefined);
+			void (async () => {
+				this.pods.delete(podKey(pod));
+				await this.podIndexer.delete(pod);
+				await this.deletePod(ctx, pod).catch(() => undefined);
+			})();
 		});
 		await this.deploymentInformer.start();
 		await this.replicaSetInformer.start();
@@ -218,24 +267,16 @@ export class DeploymentController {
 
 	// Models kubernetes/pkg/controller/deployment/deployment_controller.go addDeployment.
 	async addDeployment(_ctx: context.Context, deployment: k8s.V1Deployment): Promise<void> {
-		const key = deploymentKey(deployment);
-		if (key) {
-			this.deployments.set(key, deployment);
-		}
-		await this.deploymentIndexer.add(deployment);
 		this.enqueueDeployment(deployment);
 	}
 
 	// Models kubernetes/pkg/controller/deployment/deployment_controller.go updateDeployment.
 	private async updateDeployment(
 		_ctx: context.Context,
-		deployment: k8s.V1Deployment,
+		_oldDeployment: k8s.V1Deployment,
+		curDeployment: k8s.V1Deployment,
 	): Promise<void> {
-		const key = deploymentKey(deployment);
-		if (key) {
-			this.deployments.set(key, deployment);
-		}
-		await this.deploymentIndexer.update(deployment);
+		const deployment = curDeployment;
 		this.enqueueDeployment(deployment);
 	}
 
@@ -244,18 +285,11 @@ export class DeploymentController {
 		_ctx: context.Context,
 		deployment: k8s.V1Deployment,
 	): Promise<void> {
-		const key = deploymentKey(deployment);
-		if (key) {
-			this.deployments.delete(key);
-		}
-		await this.deploymentIndexer.delete(deployment);
 		this.enqueueDeployment(deployment);
 	}
 
 	// Models kubernetes/pkg/controller/deployment/deployment_controller.go addReplicaSet.
 	async addReplicaSet(ctx: context.Context, replicaSet: k8s.V1ReplicaSet): Promise<void> {
-		this.replicaSets.set(replicaSetKey(replicaSet), replicaSet);
-		await this.replicaSetIndexer.add(replicaSet);
 		if (replicaSet.metadata?.deletionTimestamp) {
 			await this.deleteReplicaSet(ctx, replicaSet);
 			return;
@@ -284,8 +318,6 @@ export class DeploymentController {
 		if (curRS.metadata?.resourceVersion === oldRS.metadata?.resourceVersion) {
 			return;
 		}
-		this.replicaSets.set(replicaSetKey(curRS), curRS);
-		await this.replicaSetIndexer.update(curRS);
 		const curControllerRef = getControllerOf(curRS);
 		const oldControllerRef = oldRS ? getControllerOf(oldRS) : undefined;
 		const controllerRefChanged = !deepEqual(curControllerRef, oldControllerRef);
@@ -312,8 +344,6 @@ export class DeploymentController {
 
 	// Models kubernetes/pkg/controller/deployment/deployment_controller.go deleteReplicaSet.
 	async deleteReplicaSet(_ctx: context.Context, replicaSet: k8s.V1ReplicaSet): Promise<void> {
-		this.replicaSets.delete(replicaSetKey(replicaSet));
-		await this.replicaSetIndexer.delete(replicaSet);
 		const controller = getControllerOf(replicaSet);
 		if (!controller) {
 			return;
@@ -322,21 +352,6 @@ export class DeploymentController {
 		if (deployment) {
 			this.enqueueDeployment(deployment);
 		}
-	}
-
-	private async addPod(_ctx: context.Context, pod: k8s.V1Pod): Promise<void> {
-		this.pods.set(podKey(pod), pod);
-		await this.podIndexer.add(pod);
-	}
-
-	private async updatePod(_ctx: context.Context, pod: k8s.V1Pod): Promise<void> {
-		this.pods.set(podKey(pod), pod);
-		await this.podIndexer.update(pod);
-	}
-
-	private async removePod(pod: k8s.V1Pod): Promise<void> {
-		this.pods.delete(podKey(pod));
-		await this.podIndexer.delete(pod);
 	}
 
 	// Models kubernetes/pkg/controller/deployment/deployment_controller.go deletePod.
