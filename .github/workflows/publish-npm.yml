@@ -1,0 +1,45 @@
+name: npmjs
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write # create the release PR, tags, and GitHub releases
+  pull-requests: write # create/update the changesets "Version Packages" PR
+  id-token: write # OIDC for npm trusted publishing (no npm token needed)
+
+env:
+  DO_NOT_TRACK: 1
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    if: github.repository == 'ngrok/webernetes'
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install pnpm 📦
+        uses: pnpm/action-setup@v6
+        # use version from package.json#packageManager field
+        with:
+          run_install: false
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: ".nvmrc"
+          cache: "pnpm"
+
+      - name: Install Dependencies 📥
+        run: pnpm install --frozen-lockfile
+
+      - name: Create Release Pull Request or Publish to npm
+        uses: changesets/action@v1
+        with:
+          publish: pnpm changeset:publish
+          version: pnpm changeset:version
+        env:
+          # Trusted publishing (OIDC) handles npm auth via the id-token
+          # permission above — intentionally no NPM_TOKEN here.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

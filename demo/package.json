@@ -15,7 +15,7 @@
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "shiki": "^4.2.0",
-    "webernetes": "workspace:*",
+    "webernetes": "workspace:@ngrok/webernetes@*",
     "yaml": "^2.9.0"
   },
   "devDependencies": {
