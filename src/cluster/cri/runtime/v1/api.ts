@@ -78,7 +78,7 @@ export interface ContainerConfig {
 	labels?: Record<string, string>;
 	annotations?: Record<string, string>;
 	stopSignal?: "SIGTERM" | "SIGKILL";
-	sourceContainer?: V1Container;
+	sourceContainer: V1Container;
 }
 
 export interface ContainerPort {

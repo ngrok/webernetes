@@ -4,13 +4,20 @@ import { Channel, ReadOnlyChannel, select } from "../../go/channel";
 import * as context from "../../go/context";
 import * as time from "../../go/time";
 import type { KubeConfig } from "../../client/config";
-import { AppsV1Api, CoreV1Api, DiscoveryV1Api, type KubeClient } from "../../client";
+import {
+	AppsV1Api,
+	CoreV1Api,
+	DiscoveryV1Api,
+	type KubeClient,
+	type V1Container,
+} from "../../client";
 import { newCommandTimedOutError } from "../cri-client/pkg";
+import { getLatencyProvider } from "../../latency";
 import type { DnsHandler, DnsListener } from "../cni/dns";
 import * as http from "../cni/http";
 import { ClusterNetwork, type NetworkRegistration } from "../cni/network";
 import { parseContainerID } from "../kubelet/container/runtime";
-import type { ImageDefinition } from "./image";
+import type { ImageDefinition, ImageSignal } from "./image";
 import { ImageRegistry } from "./image";
 import type { ImageManagerService, RuntimeService, ServiceError } from "./apis/services";
 import type {
@@ -47,6 +54,22 @@ function rawContainerID(id: string): string {
 
 function errorFromUnknown(error: unknown): Error {
 	return error instanceof Error ? error : new Error(String(error));
+}
+
+function latencyMillis(value: number): number {
+	return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+async function waitForLatency(ctx: context.Context, latencyMs: number): Promise<void> {
+	if (!(latencyMs > 0)) {
+		return;
+	}
+	const selected = await select()
+		.case(ctx.done(), () => ctx.err() ?? context.Canceled)
+		.case(time.after(ctx, latencyMs), () => undefined);
+	if (selected) {
+		throw selected;
+	}
 }
 
 export interface ExecOptions {
@@ -171,14 +194,14 @@ export class InProcessRuntimeService
 		}
 	}
 
-	async stopPodSandbox(_ctx: context.Context, podSandboxId: string): Promise<ServiceError> {
+	async stopPodSandbox(ctx: context.Context, podSandboxId: string): Promise<ServiceError> {
 		const sandbox = this.sandboxes.get(rawContainerID(podSandboxId));
 		if (!sandbox) {
 			return undefined;
 		}
 		try {
 			for (const container of sandbox.containers.values()) {
-				await container.stop();
+				await container.stop(ctx);
 			}
 			sandbox.unregisterNetwork();
 			return undefined;
@@ -324,7 +347,7 @@ export class InProcessRuntimeService
 	}
 
 	async stopContainer(
-		_ctx: context.Context,
+		ctx: context.Context,
 		containerId: string,
 		timeout?: number,
 	): Promise<ServiceError> {
@@ -333,21 +356,21 @@ export class InProcessRuntimeService
 			return err;
 		}
 		try {
-			await container.stop(timeout ?? 0);
+			await container.stop(ctx, timeout ?? 0);
 			return undefined;
 		} catch (error) {
 			return errorFromUnknown(error);
 		}
 	}
 
-	async removeContainer(_ctx: context.Context, containerId: string): Promise<ServiceError> {
+	async removeContainer(ctx: context.Context, containerId: string): Promise<ServiceError> {
 		const rawId = rawContainerID(containerId);
 		const container = this.containers.get(rawId);
 		if (!container) {
 			return undefined;
 		}
 		try {
-			await container.stop();
+			await container.stop(ctx);
 			container.sandbox.containers.delete(container.id);
 			this.containers.delete(rawId);
 			return undefined;
@@ -516,8 +539,17 @@ export class InProcessRuntimeService
 		container: ContainerInstance,
 		argv: readonly string[],
 		run: (context: ProcessContext, argv: readonly string[]) => Promise<number>,
+		signalHandler?: (context: ProcessContext, signal: ImageSignal) => Promise<void> | void,
 	): ProcessInstance {
-		const process = new ProcessInstance(this.ctx, this.nextPid++, container, argv, run, this);
+		const process = new ProcessInstance(
+			this.ctx,
+			this.nextPid++,
+			container,
+			argv,
+			run,
+			signalHandler,
+			this,
+		);
 		this.processes.set(process.pid, process);
 		void process.wait().finally(() => {
 			this.processes.delete(process.pid);
@@ -763,6 +795,7 @@ export class ContainerInstance {
 	readonly ports: readonly ContainerPort[];
 	readonly restartCount: number;
 	readonly createdAt: number;
+	readonly apiContainer: V1Container;
 	readonly fs = new ContainerFileSystem();
 	private readonly image: ImageDefinition;
 	private state: ContainerStatus["state"] = "Created";
@@ -786,6 +819,7 @@ export class ContainerInstance {
 		this.env = new Map(Object.entries(config.env ?? {}));
 		this.ports = config.ports ?? [];
 		this.createdAt = runtime.clock.nowMs();
+		this.apiContainer = config.sourceContainer;
 		this.image = this.createImage();
 	}
 
@@ -797,7 +831,12 @@ export class ContainerInstance {
 			throw new Error(`container ${this.id} is already running`);
 		}
 		const argv = this.startArgv();
-		const process = this.runtime.createProcess(this, argv, this.image.exec.bind(this.image));
+		const process = this.runtime.createProcess(
+			this,
+			argv,
+			this.image.exec.bind(this.image),
+			this.image.signalHandler?.bind(this.image),
+		);
 		this.state = "Running";
 		this.startedAtMs = this.runtime.clock.nowMs();
 		this.finishedAtMs = undefined;
@@ -822,14 +861,58 @@ export class ContainerInstance {
 		return process;
 	}
 
-	async stop(timeoutSeconds = 0): Promise<void> {
-		if (this.mainProcess && this.mainProcess.state !== "Exited") {
-			await this.mainProcess.kill(
-				timeoutSeconds === 0 ? "SIGKILL" : (this.config.stopSignal ?? "SIGTERM"),
-			);
+	async stop(ctx: context.Context, timeoutSeconds = 0): Promise<void> {
+		const process = this.mainProcess;
+		if (process && process.state !== "Exited") {
+			if (timeoutSeconds <= 0) {
+				await process.kill("SIGKILL");
+			} else {
+				const signal = this.config.stopSignal ?? "SIGTERM";
+				const timeoutMs = timeoutSeconds * 1000;
+				const latencyMs = Math.min(
+					latencyMillis(
+						getLatencyProvider(ctx).containerTerminationLatency({
+							container: this.apiContainer,
+						}),
+					),
+					timeoutMs,
+				);
+				if (latencyMs > 0) {
+					await waitForLatency(ctx, latencyMs);
+				}
+				if (latencyMs >= timeoutMs) {
+					await process.kill("SIGKILL");
+				} else {
+					await process.kill(signal);
+				}
+				if (!(await this.waitForProcessExitOrTimeout(ctx, process, timeoutMs - latencyMs))) {
+					await process.kill("SIGKILL");
+				}
+			}
+			await process.wait();
 		}
 		this.state = "Exited";
 		this.finishedAtMs = this.runtime.clock.nowMs();
+	}
+
+	private async waitForProcessExitOrTimeout(
+		ctx: context.Context,
+		process: ProcessInstance,
+		timeoutMs: number,
+	): Promise<boolean> {
+		const exited = new Channel<void>(1);
+		void process.wait().then(() => {
+			exited.trySend(undefined);
+			return undefined;
+		});
+		const selected = await select()
+			.case(exited, () => "exited" as const)
+			.case(time.after(ctx, timeoutMs), () => "timedOut" as const)
+			.case(ctx.done(), () => "canceled" as const);
+		if (selected === "canceled") {
+			throw ctx.err() ?? context.Canceled;
+		}
+		return selected === "exited";
 	}
 
 	status(): ContainerStatus {
@@ -888,6 +971,9 @@ export class ProcessInstance {
 		readonly container: ContainerInstance,
 		readonly argv: readonly string[],
 		private readonly run: (context: ProcessContext, argv: readonly string[]) => Promise<number>,
+		private readonly signalHandler:
+			| ((context: ProcessContext, signal: ImageSignal) => Promise<void> | void)
+			| undefined,
 		private readonly runtime: InProcessRuntimeService,
 	) {
 		this.startedAt = runtime.clock.nowMs();
@@ -895,6 +981,7 @@ export class ProcessInstance {
 	}
 
 	readonly startedAt: number;
+	private processContext: ProcessContext | undefined;
 
 	get state(): ProcessState {
 		return this.processState;
@@ -925,8 +1012,9 @@ export class ProcessInstance {
 			throw new Error(`process ${this.pid} was already started`);
 		}
 		this.processState = "Running";
-		const context = new ProcessContext(this, this.runtime);
-		void this.run(context, this.argv)
+		const processContext = new ProcessContext(this, this.runtime);
+		this.processContext = processContext;
+		void this.run(processContext, this.argv)
 			.then((code) => this.finish(code))
 			.catch((error: unknown) => {
 				if (error instanceof ProcessExit) {
@@ -942,10 +1030,22 @@ export class ProcessInstance {
 	}
 
 	async kill(signal: "SIGTERM" | "SIGKILL" = "SIGTERM"): Promise<void> {
+		if (this.processState === "Exited") {
+			return;
+		}
 		const exitCode = signal === "SIGKILL" ? 137 : 143;
 		this.killedExitCode = exitCode;
+		const processContext = this.processContext;
+		if (this.signalHandler && processContext) {
+			await this.signalHandler(processContext, signal);
+			if (signal === "SIGTERM") {
+				return;
+			}
+		}
 		this.cancelContext();
-		this.finish(exitCode);
+		if (signal === "SIGKILL") {
+			this.finish(exitCode);
+		}
 	}
 
 	trackListener(listener: { close(): void }): void {
