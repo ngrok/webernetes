@@ -135,7 +135,8 @@ const text = await resp.text(); // hello, world
 ```
 
 Pods are also able to talk to each other over HTTP. To see how this works in a
-more complete example, check out the code under the `demo/` directory.
+few runnable examples, check out the code under the `examples/` directory. For
+the full visual demo, check out the code under the `demo/` directory.
 
 ## What's implemented and what isn't
 
