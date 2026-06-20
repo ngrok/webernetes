@@ -295,7 +295,7 @@ function RequestTooltipSection({ title, exchange }: { title: string; exchange: T
 				{title}
 			</div>
 			<div className="w-full overflow-auto font-mono text-[0.6875rem] leading-snug">
-				<div className="text-warning-600 font-semibold">{exchange.line}</div>
+				<div className="text-warning-700 font-semibold">{exchange.line}</div>
 				{exchange.headers.length > 0 ? (
 					<div>
 						{exchange.headers.map((header, index) => (
@@ -365,6 +365,7 @@ function HighlightedJsonCode({ code }: { code: string }) {
 			<CodeBlock.Body>
 				<CodeBlock.Code
 					value={value}
+					tabIndex={0}
 					className="max-h-60 w-full text-[0.6875rem] leading-snug"
 					style={{ margin: 0, overflow: "auto", padding: 0 }}
 				/>
