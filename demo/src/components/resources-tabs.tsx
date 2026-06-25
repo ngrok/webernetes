@@ -752,6 +752,7 @@ function RowActionIconButton({ label, ...props }: ComponentProps<typeof IconButt
 function ResourceYamlPopover({ resource }: { resource: w8s.KubernetesObject }) {
 	const yaml = useMemo(() => resourceYaml(resource), [resource]);
 	const label = "Inspect manifest";
+	const dialogLabel = `${getName(resource) || resource.kind || "Resource"} manifest`;
 	return (
 		<Tooltip.Root>
 			<Popover.Root>
@@ -771,6 +772,7 @@ function ResourceYamlPopover({ resource }: { resource: w8s.KubernetesObject }) {
 					align="end"
 					side="left"
 					sideOffset={8}
+					aria-label={dialogLabel}
 					preferredWidth="max-w-[min(48rem,calc(100vw-2rem))]"
 					className="p-3"
 					style={{ width: "min(48rem, calc(100vw - 2rem))" }}
@@ -823,6 +825,7 @@ function HighlightedYamlCode({ code }: { code: string }) {
 			<CodeBlock.Body>
 				<CodeBlock.Code
 					value={value}
+					tabIndex={0}
 					className="max-h-96 w-full text-[0.6875rem] leading-snug"
 					style={{ margin: 0, overflow: "auto", padding: 0 }}
 				/>

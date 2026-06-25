@@ -33,7 +33,11 @@ export function App() {
 	}
 
 	if (!cluster) {
-		return <div className="text-muted text-sm">Booting simulated Kubernetes cluster...</div>;
+		return (
+			<div className="text-muted text-sm" role="status">
+				Booting simulated Kubernetes cluster...
+			</div>
+		);
 	}
 
 	return (
@@ -45,15 +49,33 @@ export function App() {
 				onReset={reset}
 			/>
 			<main className="space-y-6">
-				<div ref={requestLayerRef} className="relative space-y-6">
-					<Cluster cluster={cluster} highlightedPodIds={highlightedPodIds} namespace={namespace} />
-					<RequestOverlay cluster={cluster} containerRef={requestLayerRef} namespace={namespace} />
-				</div>
-				<ResourcesTabs
-					cluster={cluster}
-					namespace={namespace}
-					onHighlightedPodIdsChange={setHighlightedPodIds}
-				/>
+				<section aria-labelledby="cluster-heading">
+					<h2 id="cluster-heading" className="sr-only">
+						Cluster nodes
+					</h2>
+					<div ref={requestLayerRef} className="relative space-y-6">
+						<Cluster
+							cluster={cluster}
+							highlightedPodIds={highlightedPodIds}
+							namespace={namespace}
+						/>
+						<RequestOverlay
+							cluster={cluster}
+							containerRef={requestLayerRef}
+							namespace={namespace}
+						/>
+					</div>
+				</section>
+				<section aria-labelledby="resources-heading">
+					<h2 id="resources-heading" className="sr-only">
+						Resources
+					</h2>
+					<ResourcesTabs
+						cluster={cluster}
+						namespace={namespace}
+						onHighlightedPodIdsChange={setHighlightedPodIds}
+					/>
+				</section>
 			</main>
 		</div>
 	);

@@ -26,6 +26,7 @@ export function Header({
 
 	return (
 		<header className="flex flex-wrap items-center justify-end gap-4">
+			<h1 className="sr-only">webernetes demo</h1>
 			<div className="w-48">
 				<Select.Root
 					value={namespace ?? "__all_namespaces__"}
@@ -33,7 +34,7 @@ export function Header({
 						onNamespaceChange(value === "__all_namespaces__" ? undefined : value)
 					}
 				>
-					<Select.Trigger>
+					<Select.Trigger aria-label="Namespace">
 						<Select.Value />
 					</Select.Trigger>
 					<Select.Content>
