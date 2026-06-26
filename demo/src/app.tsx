@@ -37,24 +37,35 @@ export function App() {
 	}
 
 	return (
-		<div className="mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-6 px-4 py-6 md:px-6">
-			<Header
-				cluster={cluster}
-				namespace={namespace}
-				onNamespaceChange={changeNamespace}
-				onReset={reset}
-			/>
-			<main className="space-y-6">
-				<div ref={requestLayerRef} className="relative space-y-6">
-					<Cluster cluster={cluster} highlightedPodIds={highlightedPodIds} namespace={namespace} />
-					<RequestOverlay cluster={cluster} containerRef={requestLayerRef} namespace={namespace} />
-				</div>
-				<ResourcesTabs
+		<div className="demo-shell min-h-screen">
+			<div className="demo-glow" aria-hidden="true" />
+			<div className="relative z-10 flex min-h-screen w-full flex-col">
+				<Header
 					cluster={cluster}
 					namespace={namespace}
-					onHighlightedPodIdsChange={setHighlightedPodIds}
+					onNamespaceChange={changeNamespace}
+					onReset={reset}
 				/>
-			</main>
+				<main className="mx-auto w-full max-w-7xl space-y-6 px-4 py-6 md:px-6">
+					<div ref={requestLayerRef} className="relative space-y-6">
+						<Cluster
+							cluster={cluster}
+							highlightedPodIds={highlightedPodIds}
+							namespace={namespace}
+						/>
+						<RequestOverlay
+							cluster={cluster}
+							containerRef={requestLayerRef}
+							namespace={namespace}
+						/>
+					</div>
+					<ResourcesTabs
+						cluster={cluster}
+						namespace={namespace}
+						onHighlightedPodIdsChange={setHighlightedPodIds}
+					/>
+				</main>
+			</div>
 		</div>
 	);
 }

@@ -8,6 +8,7 @@ export function ThemeToggle() {
 
 	return (
 		<RadioGroup.ButtonGroup
+			className="demo-theme-toggle"
 			value={isDark ? "dark" : "light"}
 			onChange={(value) => setTheme(value as "light" | "dark")}
 			aria-label={theme === "system" ? `Theme, using system theme (${appliedTheme})` : "Theme"}
