@@ -179,7 +179,7 @@ What's not supported yet:
 - Volume mounts.
 - Any sort of affinity rules.
 - Resources.
-- Probably a lot of other things, but those are the big ones that come to mine.
+- Probably a lot of other things, but those are the big ones that come to mind.
 
 ### Services
 
