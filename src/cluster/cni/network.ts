@@ -351,17 +351,54 @@ export class ClusterNetwork extends EventEmitter {
 			throw new NetworkError(`unsupported Service type ${service.spec?.type}`);
 		}
 		const key = namespacedNameKey(namespace, name);
-		this.unregisterService(namespace, name);
+		const previous = this.servicesByKey.get(key);
+		const previousClusterIP = previous ? serviceClusterIP(previous) : undefined;
+		if (previousClusterIP && previousClusterIP !== clusterIP) {
+			this.servicesByClusterIp.delete(previousClusterIP);
+		}
 		this.servicesByKey.set(key, service);
 		this.servicesByClusterIp.set(clusterIP, service);
+		const currentRouteKeys = new Set<string>();
+		const currentNodePorts = new Set<number>();
 		for (const port of service.spec?.ports ?? []) {
 			const routeKey = servicePortKey(service, port);
-			this.targetListsByServicePort.set(routeKey, new TargetList());
+			currentRouteKeys.add(routeKey);
+			if (!this.targetListsByServicePort.has(routeKey)) {
+				this.targetListsByServicePort.set(routeKey, new TargetList());
+			}
 			if (type === "NodePort" && port.nodePort !== undefined) {
-				if (this.servicesByNodePort.has(port.nodePort)) {
+				const existingRoute = this.servicesByNodePort.get(port.nodePort);
+				if (
+					existingRoute &&
+					namespacedNameKey(
+						serviceNamespace(existingRoute.service),
+						serviceName(existingRoute.service),
+					) !== key
+				) {
 					throw new NetworkError(`NodePort ${port.nodePort} is already registered`);
 				}
+				currentNodePorts.add(port.nodePort);
 				this.servicesByNodePort.set(port.nodePort, { service, port });
+			}
+		}
+		if (previous) {
+			for (const port of previous.spec?.ports ?? []) {
+				const routeKey = servicePortKey(previous, port);
+				if (!currentRouteKeys.has(routeKey)) {
+					this.targetListsByServicePort.delete(routeKey);
+				}
+				if (port.nodePort !== undefined && !currentNodePorts.has(port.nodePort)) {
+					const existingRoute = this.servicesByNodePort.get(port.nodePort);
+					if (
+						existingRoute &&
+						namespacedNameKey(
+							serviceNamespace(existingRoute.service),
+							serviceName(existingRoute.service),
+						) === key
+					) {
+						this.servicesByNodePort.delete(port.nodePort);
+					}
+				}
 			}
 		}
 	}

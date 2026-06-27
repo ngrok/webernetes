@@ -364,6 +364,48 @@ browser.describe("ClusterNetwork", ({ ctx }) => {
 		);
 	});
 
+	it("keeps service targets while a service is re-registered before endpoint targets are reconciled", async () => {
+		const network = new ClusterNetwork();
+		const pod = new PodSandboxInstance(
+			"sandbox-1",
+			{
+				metadata: {
+					name: "web",
+					uid: "pod-uid",
+					namespace: "default",
+					attempt: 0,
+				},
+				pod: podOrigin("pod-uid"),
+			},
+			0,
+		);
+		const registration = network.setupPodSandbox(pod, "10.244.0.0/24");
+		pod.setNetworkRegistration(registration);
+		registration.bindHttp(8080, async () => ({
+			status: 200,
+			body: "ok",
+		}));
+
+		network.registerService(clusterIPService());
+		network.setServiceTargets("default", "web", 80, [`${registration.ip}:8080`]);
+
+		await expect(
+			network.fetch(ctx, podOrigin("client-uid"), "http://10.96.0.10:80/"),
+		).resolves.toEqual({
+			status: 200,
+			body: "ok",
+		});
+
+		network.registerService(clusterIPService());
+
+		await expect(
+			network.fetch(ctx, podOrigin("client-uid"), "http://10.96.0.10:80/"),
+		).resolves.toEqual({
+			status: 200,
+			body: "ok",
+		});
+	});
+
 	it("emits request and response events with service endpoint chains", async () => {
 		const network = new ClusterNetwork();
 		const pod = new PodSandboxInstance(
