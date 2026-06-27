@@ -1,5 +1,11 @@
 # @ngrok/webernetes
 
+## 0.1.2
+
+### Patch Changes
+
+- [`b03b8d2`](https://github.com/ngrok/webernetes/commit/b03b8d26e832fbb7b6e60c9e3d1b3c66c061896a) Thanks [@samwho](https://github.com/samwho)! - Preserve service targets when re-registering an existing Service so endpoint reconciliation cannot briefly or permanently leave routable Services without ready targets.
+
 ## 0.1.1
 
 ### Patch Changes
