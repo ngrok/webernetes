@@ -245,6 +245,7 @@ interface SortKey {
 
 interface EtcdOptions {
 	retainedRevisions?: number;
+	autoCompactionRetentionMs?: number;
 }
 
 export interface WithLockOptions {
@@ -399,12 +400,20 @@ class FakeState {
 	private readonly watchers = new Set<WatcherImpl>();
 	private readonly leases = new Map<string, LeaseRecord>();
 	private readonly clock: Clock;
+	private autoCompactionHandle?: number;
+	private revisionTimestamps = new Map<number, number>();
 
 	constructor(
 		private readonly ctx: context.Context,
-		private readonly options: Required<EtcdOptions>,
+		private readonly options: EtcdOptions & { retainedRevisions: number },
 	) {
 		this.clock = getClock(ctx);
+		if (this.options.autoCompactionRetentionMs !== undefined) {
+			const intervalMs = this.options.autoCompactionRetentionMs;
+			this.autoCompactionHandle = this.clock.setInterval(() => {
+				this.autoCompact(intervalMs);
+			}, intervalMs);
+		}
 	}
 
 	public range(namespace: string, options: RangeOptions): RangeResponse {
@@ -590,6 +599,9 @@ class FakeState {
 
 	public close(): void {
 		this.watchers.clear();
+		if (this.autoCompactionHandle !== undefined) {
+			this.clock.clearInterval(this.autoCompactionHandle);
+		}
 		for (const lease of this.leases.values()) {
 			this.clock.clearTimeout(lease.expireHandle);
 			this.clock.clearInterval(lease.keepAliveHandle);
@@ -701,7 +713,35 @@ class FakeState {
 
 	private bumpRevision(): number {
 		this.revision += 1;
+		if (this.options.autoCompactionRetentionMs !== undefined) {
+			this.revisionTimestamps.set(this.revision, this.clock.nowMs());
+		}
 		return this.revision;
+	}
+
+	private compactHistory(): void {
+		for (const [historyRevision] of this.history.entries()) {
+			if (historyRevision > this.compactedRevision) {
+				break;
+			}
+			this.history.delete(historyRevision);
+		}
+	}
+
+	private autoCompact(retentionMs: number): void {
+		const cutoff = this.clock.nowMs() - retentionMs;
+		let compactRevision = 0;
+		for (const [rev, timestamp] of this.revisionTimestamps.entries()) {
+			if (timestamp > cutoff) {break;}
+			compactRevision = rev;
+		}
+		if (compactRevision > 0) {
+			this.compact(compactRevision);
+			for (const [rev] of this.revisionTimestamps.entries()) {
+				if (rev > compactRevision) {break;}
+				this.revisionTimestamps.delete(rev);
+			}
+		}
 	}
 
 	private collectDeleted(namespace: string, options: DeleteOptions): StoredValue[] {
@@ -841,6 +881,7 @@ class FakeState {
 				this.compactedRevision = Math.max(this.compactedRevision, removed.historyRevision);
 			}
 		}
+		this.compactHistory();
 		this.histories.set(key, revisions);
 		return record;
 	}
@@ -1120,6 +1161,7 @@ export class Etcd extends Namespace {
 	constructor(ctx: context.Context, options?: EtcdOptions) {
 		const state = new FakeState(ctx, {
 			retainedRevisions: Math.max(1, options?.retainedRevisions ?? 3),
+			autoCompactionRetentionMs: options?.autoCompactionRetentionMs,
 		});
 		super(state, "");
 		this.stateRef = state;

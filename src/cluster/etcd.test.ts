@@ -1756,3 +1756,36 @@ etcd.describe("etcd", ({ createEtcd }) => {
 		});
 	});
 });
+
+import * as context from "../go/context.js";
+import { withClock } from "../clock-context.js";
+import { Clock } from "../clock.js";
+
+describe("Fake etcd auto-compaction", () => {
+	it("inline compaction trims global history when per-key history overflows", async () => {
+		const clock = new Clock();
+		const ctx = withClock(context.background(), clock);
+		const etcd = new Etcd(ctx, { retainedRevisions: 2 });
+		for (let i = 0; i < 5; i++) {
+			await etcd.put("key").value(`v${i}`);
+		}
+		await expect(etcd.get("key").revision(1).string()).rejects.toThrow(/compacted/);
+		etcd.close();
+	});
+
+	it("periodic auto-compaction cleans history after retention period", async () => {
+		const clock = new Clock();
+		const ctx = withClock(context.background(), clock);
+		const etcd = new Etcd(ctx, { autoCompactionRetentionMs: 1000 });
+
+		await etcd.put("a").value("1"); // rev 1
+		await etcd.put("b").value("2"); // rev 2
+
+		clock.step(1500);
+
+		await etcd.put("c").value("3"); // rev 3, triggers auto-compact check
+
+		await expect(etcd.get("a").revision(1).string()).rejects.toThrow(/compacted/);
+		etcd.close();
+	});
+});

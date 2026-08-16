@@ -101,6 +101,12 @@ export interface ClusterOptions {
 	 * the simulator defaults.
 	 */
 	kubeletConfiguration?: Partial<KubeletConfiguration>;
+	/**
+	 * Periodic auto-compaction retention in milliseconds for the simulated etcd.
+	 * History older than this is eligible for compaction. Set to `0` to disable.
+	 * Defaults to 5 minutes (300,000ms).
+	 */
+	autoCompactionRetentionMs?: number;
 }
 
 export type {
@@ -153,7 +159,9 @@ export class Cluster extends EventEmitter {
 			this,
 		);
 		this.cancelContext = cancelContext;
-		this.etcd = new Etcd(this.ctx);
+		this.etcd = new Etcd(this.ctx, {
+			autoCompactionRetentionMs: options.autoCompactionRetentionMs ?? 5 * 60 * 1000,
+		});
 		this.serviceCIDR = options.serviceCIDR;
 		this.nodePortRange = options.nodePortRange ?? DEFAULT_NODE_PORT_RANGE;
 		this.kubeConfig = new k8s.KubeConfig({
