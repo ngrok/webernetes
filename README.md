@@ -6,7 +6,7 @@ To see it in action, [check out the demo!](https://webernetes-demo.ngrok.app/)
 
 _Wait, what?_
 
-This project is a port of a subset of the Kubernetes project to make it such
+This project is a part of a subset of the Kubernetes project to make it such
 that clusters can be booted up in the browser, without any backend server
 components.
 
