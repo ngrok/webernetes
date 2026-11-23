@@ -1,52 +1,34 @@
-name: "Build and Push Container (ngrok-webernetes / app_3GV2ZywoIIZABypPyS04L3KDrbJ)"
+# ngrok ship manages this workflow. Ship opens a pull request whenever its
+# template changes. To take over the file and stop those pull requests, add
+# the line "# ngrok-ship: pipeline-updates disabled" anywhere in it.
+# This app is deployed on ngrok Ship (https://ngrok.com/ship).
+
+name: "ngrok ship (ngrok-webernetes)"
 
 on:
   push:
-    branches: ["**"]
+    branches: ["main"]
+  pull_request:
   workflow_dispatch:
 
-env:
-  IMAGE_REFERENCE: "registry.ship.ngrok.com/ac_1gbcp4ul5rptr9eqgwj21icgsux/app_3gv2zywoiizabyppys04l3kdrbj"
-  NGROK_APP_ID: "app_3GV2ZywoIIZABypPyS04L3KDrbJ"
+permissions:
+  contents: read
+  packages: write
+  id-token: write
 
 jobs:
-  build-and-push:
-    runs-on: "ubuntu-latest"
-    permissions:
-      contents: "read"
+  build:
+    # A pull request from a fork gets no OIDC token, so Ship cannot serve
+    # its build config. Skip the job instead of failing it.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
     steps:
-      - uses: "actions/checkout@v6"
-
-      - uses: "docker/login-action@v4"
+      # On a pull request, this checks out GitHub's merge of the PR into its
+      # base, so the preview runs what the merge will ship.
+      - uses: actions/checkout@v6
+      # To build this app only when it changes, add an `if:` to this step
+      # or a `paths:` filter under `on:`. Ship deploys only the images that
+      # this step reports, so a skipped build deploys nothing.
+      - uses: ngrok/ship-action@v1
         with:
-          registry: "registry.ship.ngrok.com"
-          username: "creg_3Fpsi82fNgKVILsGzy3HzE5JA28"
-          password: "${{ secrets.NGROK_REGISTRY_PASSWORD_CREG_3FPSI82FNGKVILSGZY3HZE5JA28 }}"
-
-      - id: "meta"
-        uses: "docker/metadata-action@v6"
-        with:
-          images: "${{ env.IMAGE_REFERENCE }}"
-          tags: |
-            type=sha,format=long,prefix=
-
-      - uses: "docker/build-push-action@v7"
-        with:
-          context: "."
-          file: "demo/Dockerfile"
-          push: true
-          tags: "${{ steps.meta.outputs.tags }}"
-          labels: "${{ steps.meta.outputs.labels }}"
-          build-args: |
-            COMMIT_SHA=${{ github.sha }}
-
-      - name: "Write image reference"
-        run: |
-          cat <<EOF > ngrok-image.json
-          {"image":"${{ steps.meta.outputs.tags }}","commit_sha":"${{ github.sha }}"}
-          EOF
-
-      - uses: "actions/upload-artifact@v7"
-        with:
-          name: "ngrok-compute-image"
-          path: "ngrok-image.json"
+          app-id: "app_3GV2ZywoIIZABypPyS04L3KDrbJ"
